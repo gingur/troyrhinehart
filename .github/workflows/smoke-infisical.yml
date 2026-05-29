@@ -9,7 +9,7 @@ on:
       env_slug:
         description: "Infisical environment slug"
         required: true
-        default: prod
+        default: production
 
 permissions:
   id-token: write
