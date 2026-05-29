@@ -5,7 +5,7 @@ on:
       project_slug:
         description: "Infisical project slug (visible in the project URL)"
         required: true
-        default: gingur
+        default: gingur-7xjq
       env_slug:
         description: "Infisical environment slug"
         required: true
@@ -24,7 +24,7 @@ jobs:
         with:
           method: oidc
           identity-id: f87b7cde-3016-4e85-84b5-0d077e8833e0
-          audience: https://github.com/gingur
+          oidc-audience: https://github.com/gingur
           project-slug: ${{ inputs.project_slug }}
           env-slug: ${{ inputs.env_slug }}
           secret-path: /troyrhinehart
