@@ -1,30 +1,21 @@
-import { useState } from 'react';
+import { Button } from './ui/button';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 
 interface CopyEmailProps {
   email: string;
 }
 
+/**
+ * Island that copies an email address to the clipboard, swapping its label to
+ * "Copied!" for a couple of seconds. Composes the {@link Button} primitive with
+ * the {@link useCopyToClipboard} hook; holds no styling or timer logic itself.
+ */
 export default function CopyEmail({ email }: CopyEmailProps) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(email);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard API unavailable (e.g. insecure context); silently ignore in v1.
-    }
-  };
+  const { copied, copy } = useCopyToClipboard();
 
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      aria-live="polite"
-      className="inline-flex items-center gap-2 rounded-md border border-neutral-700 bg-neutral-900 px-4 py-2 text-sm font-medium text-neutral-100 transition-colors hover:border-neutral-500 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
-    >
+    <Button variant="ghost" aria-live="polite" onClick={() => void copy(email)}>
       {copied ? 'Copied!' : 'Copy email'}
-    </button>
+    </Button>
   );
 }
