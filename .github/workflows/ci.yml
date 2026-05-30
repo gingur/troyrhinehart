@@ -5,10 +5,3 @@ on: [pull_request]
 jobs:
   ci:
     uses: gingur/devkit/.github/workflows/ci-node.yml@main
-    # Empty version inputs => devkit reads Node from .nvmrc and pnpm from the
-    # package.json `packageManager` field. Required: ci-node.yml defaults
-    # pnpm-version to "9", which collides with `packageManager` and makes
-    # pnpm/action-setup@v4 fail ("Multiple versions of pnpm specified").
-    with:
-      node-version: ''
-      pnpm-version: ''
