@@ -1,0 +1,7 @@
+name: Verify
+
+on: [pull_request]
+
+jobs:
+  verify:
+    uses: gingur/devkit/.github/workflows/node.verify.yml@main
