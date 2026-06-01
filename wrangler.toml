@@ -1,5 +1,10 @@
-name = "troyrhinehart"
 compatibility_date = "2026-01-01"
 
 [assets]
 directory = "./dist"
+
+[env.production]
+name = "troyrhinehart"
+
+[env.preview]
+name = "troyrhinehart-preview"   # placeholder; overridden per-PR by --name
