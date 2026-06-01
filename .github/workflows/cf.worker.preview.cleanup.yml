@@ -19,5 +19,5 @@ jobs:
       infisicalProject: gingur-7xjq
       infisicalEnv: production
       infisicalPath: /troyrhinehart
-      infisicalIdentity: f87b7cde-3016-4e85-84b5-0d077e8833e0
+      infisicalIdentity: 92d4a017-d03d-4e12-8330-fe7e28bd7c9e # gh-troyrhinehart-preview (env:preview)
     secrets: inherit
