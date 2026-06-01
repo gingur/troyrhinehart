@@ -1,0 +1,23 @@
+name: Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub OIDC
+  pull-requests: write # remove sticky preview comment
+
+jobs:
+  cleanup:
+    uses: gingur/devkit/.github/workflows/cf.worker.preview.cleanup.yml@main
+    with:
+      app: troyrhinehart
+      domain: troyrhinehart.com
+      cfZone: c83440558f899d5a1ad33ef4462a330a
+      infisicalProject: gingur-7xjq
+      infisicalEnv: production
+      infisicalPath: /troyrhinehart
+      infisicalIdentity: f87b7cde-3016-4e85-84b5-0d077e8833e0
+    secrets: inherit
