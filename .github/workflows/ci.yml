@@ -3,5 +3,5 @@ name: CI
 on: [pull_request]
 
 jobs:
-  ci:
-    uses: gingur/devkit/.github/workflows/ci-node.yml@main
+  verify:
+    uses: gingur/devkit/.github/workflows/node.verify.yml@main

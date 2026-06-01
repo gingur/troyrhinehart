@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   deploy:
-    uses: gingur/devkit/.github/workflows/deploy-cf-worker.yml@main
+    uses: gingur/devkit/.github/workflows/cf.worker.deploy.yml@main
     with:
-      environment: production
-      infisical-project-slug: gingur-7xjq
-      infisical-env-slug: production
-      infisical-secret-path: /troyrhinehart
-      infisical-identity-id: f87b7cde-3016-4e85-84b5-0d077e8833e0
+      env: production
+      infisicalProject: gingur-7xjq
+      infisicalEnv: production
+      infisicalPath: /troyrhinehart
+      infisicalIdentity: f87b7cde-3016-4e85-84b5-0d077e8833e0
