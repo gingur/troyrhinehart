@@ -30,3 +30,5 @@ pnpm typecheck  # astro check
 
 - **CI** (`.github/workflows/ci.yml`) — runs lint + typecheck + test on PRs via `gingur/devkit/.github/workflows/ci-node.yml@main`.
 - **Deploy** (`.github/workflows/deploy.yml`) — on push to `main`, builds and deploys via `gingur/devkit/.github/workflows/deploy-cf-worker.yml@main`. Cloudflare credentials are fetched at runtime from Infisical using GitHub OIDC — **there are no Cloudflare secrets stored in GitHub.**
+
+<!-- preview smoke test -->
