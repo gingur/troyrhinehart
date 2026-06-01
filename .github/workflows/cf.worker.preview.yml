@@ -15,7 +15,7 @@ jobs:
     with:
       app: troyrhinehart
       domain: troyrhinehart.com
-      cfZone: c83440558f899d5a1ad33ef4462a330a
+      cfZone: 237ce07141f91c1ef4e427be200e1936 # troyrhinehart.com
       infisicalProject: gingur-7xjq
       infisicalEnv: production
       infisicalPath: /troyrhinehart
