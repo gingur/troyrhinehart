@@ -3,11 +3,6 @@ name: Rollback
 on:
   workflow_dispatch:
     inputs:
-      env:
-        description: Target environment (production only)
-        type: choice
-        options: [production]
-        default: production
       version:
         description: Cloudflare version UUID (blank = previous version)
         type: string
@@ -21,7 +16,6 @@ jobs:
   rollback:
     uses: gingur/devkit/.github/workflows/cf.worker.rollback.yml@main
     with:
-      env: ${{ inputs.env }}
       version: ${{ inputs.version }}
       infisicalProject: gingur-7xjq
       infisicalEnv: production
