@@ -1,0 +1,2 @@
+npx lint-staged
+infisical scan git-changes --staged --config node_modules/@gingur/devkit/configs/infisical-scan.toml --redact --no-color

@@ -10,7 +10,8 @@
     "preview": "astro preview",
     "lint": "eslint .",
     "typecheck": "astro check",
-    "test": "echo \"no tests yet (v1 scaffold)\" && exit 0"
+    "test": "echo \"no tests yet (v1 scaffold)\" && exit 0",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9",
@@ -22,6 +23,8 @@
     "@types/react-dom": "^18",
     "astro": "^5",
     "eslint": "^9",
+    "husky": "^9",
+    "lint-staged": "^16",
     "prettier": "^3",
     "react": "^18",
     "react-dom": "^18",
