@@ -13,6 +13,7 @@ jobs:
   deploy:
     uses: gingur/devkit/.github/workflows/cf.worker.deploy.yml@main
     with:
+      runner: ${{ vars.RUNNER }}
       env: production
       infisicalProject: gingur-7xjq
       infisicalEnv: production
