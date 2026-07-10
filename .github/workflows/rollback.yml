@@ -16,6 +16,7 @@ jobs:
   rollback:
     uses: gingur/devkit/.github/workflows/cf.worker.rollback.yml@main
     with:
+      runner: ${{ vars.RUNNER }}
       version: ${{ inputs.version }}
       infisicalProject: gingur-7xjq
       infisicalEnv: production
