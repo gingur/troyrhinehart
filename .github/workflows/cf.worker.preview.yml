@@ -16,8 +16,8 @@ jobs:
       app: troyrhinehart
       domain: troyrhinehart.com
       cfZone: 237ce07141f91c1ef4e427be200e1936 # troyrhinehart.com
-      infisicalProject: gingur-7xjq
-      infisicalEnv: production
-      infisicalPath: /troyrhinehart
+      infisicalProject: gingur
+      infisicalEnv: prod
+      infisicalPath: /troyrhinehart/cloudflare
       infisicalIdentity: 92d4a017-d03d-4e12-8330-fe7e28bd7c9e # gh-troyrhinehart-preview (env:preview)
     secrets: inherit
