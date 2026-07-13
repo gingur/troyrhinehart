@@ -7,4 +7,4 @@ directory = "./dist"
 name = "troyrhinehart"
 
 [env.preview]
-name = "troyrhinehart-preview"   # placeholder; overridden per-PR by --name
+name = "troyrhinehart-preview" # placeholder; overridden per-PR by --name
