@@ -19,7 +19,7 @@ jobs:
       runner: ${{ vars.RUNNER }}
       version: ${{ inputs.version }}
       infisicalProject: gingur
-      infisicalEnv: prod
+      infisicalEnv: public
       infisicalPath: /troyrhinehart/cloudflare
       infisicalIdentity: f87b7cde-3016-4e85-84b5-0d077e8833e0
     secrets: inherit
