@@ -14,7 +14,7 @@ jobs:
     uses: gingur/devkit/.github/workflows/cf.worker.deploy.yml@main
     with:
       runner: ${{ vars.RUNNER }}
-      env: production
+      env: public
       infisicalProject: gingur
       infisicalEnv: public
       infisicalPath: /troyrhinehart/cloudflare
