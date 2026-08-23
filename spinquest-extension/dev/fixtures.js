@@ -263,6 +263,14 @@
     return s;
   }
 
+  // Fair-ish mines multiplier for `picks` safe reveals on a 25-tile board
+  // (product of survival odds inverted, 1% house edge).
+  function minesMult(mines, picks) {
+    let m = 1;
+    for (let i = 0; i < picks; i++) m *= (25 - i) / (25 - mines - i);
+    return r2(m * 0.99);
+  }
+
   function makeMinesSession(seed, nRounds, spanMin) {
     const rand = mulberry32(seed);
     const s = baseSession('mines', seed, spanMin);
@@ -272,15 +280,26 @@
       ts += step;
       const bet = pickBet(rand);
       const mines = [3, 5, 5, 10][Math.floor(rand() * 4)];
-      const won = rand() < 0.52;
-      const mult = won ? r2(1.1 + rand() * rand() * 6) : 0;
+      // Player aims for `target` picks; each pick survives with true odds, so
+      // bust depth and cashout multiplier stay mutually consistent.
+      const target = 1 + Math.floor(rand() * 7);
+      let picks = 0;
+      let bombed = false;
+      while (picks < target) {
+        const safeLeft = 25 - mines - picks;
+        const tilesLeft = 25 - picks;
+        if (rand() < safeLeft / tilesLeft) picks++;
+        else { bombed = true; break; }
+      }
+      const won = !bombed;
+      const mult = won ? minesMult(mines, picks) : 0;
       const payout = r2(bet * mult);
       s.rounds.push({
         id: 'm' + seed + '-' + k, ts: Math.round(ts),
-        bet, payout, multiplier: won ? mult : 0,
+        bet, payout, multiplier: mult,
         profit: r2(payout - bet),
         result: won ? 'win' : 'loss',
-        detail: { mines, revealedCount: Math.floor(1 + rand() * 8) },
+        detail: { mines, revealedCount: picks },
       });
     }
     s.stats = computeStats(s);
@@ -291,6 +310,22 @@
   const SUITS = ['hearts', 'diamonds', 'clubs', 'spades'];
   const card = (rand) => ({ rank: RANKS[Math.floor(rand() * 13)], suit: SUITS[Math.floor(rand() * 4)] });
 
+  // Blackjack hand total with soft aces.
+  const BJ_VAL = { A: 11, K: 10, Q: 10, J: 10, '10': 10 };
+  function bjTotal(cards) {
+    let total = 0, aces = 0;
+    for (const c of cards) {
+      const v = BJ_VAL[c.rank] || parseInt(c.rank, 10);
+      if (c.rank === 'A') aces++;
+      total += v;
+    }
+    while (total > 21 && aces) { total -= 10; aces--; }
+    return total;
+  }
+
+  // Real dealt hands: player hits to a seeded stand threshold (15-18),
+  // dealer draws to 17 — so busts, dealer busts, pushes and blackjacks all
+  // emerge from actual card play instead of a coin flip.
   function makeBlackjackSession(seed, nRounds, spanMin) {
     const rand = mulberry32(seed);
     const s = baseSession('blackjack', seed, spanMin);
@@ -299,9 +334,24 @@
     for (let k = 0; k < nRounds; k++) {
       ts += step;
       const bet = pickBet(rand);
-      const u = rand();
-      const result = u < 0.44 ? 'win' : u < 0.9 ? 'loss' : 'push';
-      const blackjack = result === 'win' && rand() < 0.08;
+      const player = [card(rand), card(rand)];
+      const dealer = [card(rand), card(rand)];
+      let pt = bjTotal(player);
+      const blackjack = pt === 21;
+      const dealerBJ = bjTotal(dealer) === 21;
+      if (!blackjack) {
+        const stand = 15 + Math.floor(rand() * 4);
+        while (pt < stand) { player.push(card(rand)); pt = bjTotal(player); }
+      }
+      let dt = bjTotal(dealer);
+      if (!blackjack && pt <= 21) {
+        while (dt < 17) { dealer.push(card(rand)); dt = bjTotal(dealer); }
+      }
+      let result;
+      if (blackjack) result = dealerBJ ? 'push' : 'win';
+      else if (pt > 21) result = 'loss';
+      else if (dt > 21) result = 'win';
+      else result = pt > dt ? 'win' : pt < dt ? 'loss' : 'push';
       const mult = result === 'win' ? (blackjack ? 2.5 : 2) : result === 'push' ? 1 : 0;
       const payout = r2(bet * mult);
       s.rounds.push({
@@ -309,7 +359,11 @@
         bet, payout, multiplier: mult,
         profit: r2(payout - bet),
         result,
-        detail: { player: [card(rand), card(rand)], dealer: [card(rand), card(rand)], blackjack },
+        detail: {
+          player, dealer,
+          playerTotal: pt, dealerTotal: dt,
+          blackjack: blackjack && result === 'win',
+        },
       });
     }
     s.stats = computeStats(s);
@@ -448,7 +502,7 @@
   }
   // BLACKJACK — between hands.
   {
-    const s = makeBlackjackSession(508, 41, 40);
+    const s = makeBlackjackSession(515, 41, 40);
     fixtures['blackjack-history'] = { state: snap('blackjack', { blackjack: s }, []), rawLog: makeRawLog('blackjack') };
   }
   // PLINKO — mid-drop.

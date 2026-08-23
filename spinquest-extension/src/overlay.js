@@ -97,6 +97,10 @@
 
   const posNegCls = (n) => (n > 0 ? 'sqx-pos' : n < 0 ? 'sqx-neg' : 'sqx-dim');
 
+  const isNum = Number.isFinite;
+
+  const pctOf = (n, d) => (d ? Math.round((n / d) * 100) + '%' : '—');
+
   // Duration/pace fallbacks for snapshots whose stats predate durationMs.
   const sessionDurationMs = (session) => {
     const s = session.stats || {};
@@ -636,35 +640,397 @@
     body.appendChild(grid);
   }
 
-  function renderExtras(body, session) {
-    const x = session.stats && session.stats.extra;
-    if (!x) return;
-    const box = h('div', 'sqx-extra');
+  // ---- game extras ----------------------------------------------------------
+  // Purpose-built per-game stat sections, computed straight off the snapshot's
+  // round/tick arrays (richer than the background's stats.extra summary).
+  // Grammar borrowed from PT4: terse labels, bare mono values, a dash for no
+  // data, and the raw made/opportunity fraction beside every rate so the
+  // sample size is never hidden. Color stays rationed: green/red = outcome,
+  // amber = big hit, wheel chips use the wheel's own colors.
+
+  function xSection(title, count) {
+    const wrap = h('div', 'sqx-extra');
     const lab = h('div', 'sqx-label');
-    lab.appendChild(h('span', null, x.label));
-    if (x.count != null) lab.appendChild(h('span', 'sqx-count', String(x.count)));
-    box.appendChild(lab);
-    const parts = [];
-    if (x.median != null) parts.push('median ' + x.median + '×');
-    if (x.under2x != null) parts.push(x.under2x + ' under 2×');
-    if (x.avg != null) parts.push('avg ' + x.avg + '×');
-    if (x.best != null) parts.push('best ' + x.best + '×');
-    if (x.bestMultiplier != null) parts.push('best cashout ' + x.bestMultiplier + '×');
-    if (x.cashouts != null) parts.push(x.cashouts + ' cashouts / ' + x.busts + ' busts');
-    if (x.record) parts.push(x.record);
-    if (x.hot) parts.push('hot: ' + x.hot.join(' '));
-    if (x.colors) parts.push('R' + x.colors.red + ' B' + x.colors.black + ' G' + x.colors.green);
-    if (parts.length) box.appendChild(h('div', 'sqx-detail', parts.join(' · ')));
-    if (Array.isArray(x.last) && x.last.length) {
-      const strip = h('div', 'sqx-strip');
-      for (const v of x.last) {
-        const chip = h('span', 'sqx-chip', String(v));
-        if (session.game === 'crash') chip.classList.add(v < 2 ? 'sqx-neg' : 'sqx-pos');
-        strip.appendChild(chip);
-      }
-      box.appendChild(strip);
+    lab.appendChild(h('span', null, title));
+    if (count != null) lab.appendChild(h('span', 'sqx-count', String(count)));
+    wrap.appendChild(lab);
+    const card = h('div', 'sqx-x-card');
+    wrap.appendChild(card);
+    return { wrap, card };
+  }
+
+  // Row of stat cells: [label, value|node, cls?, subline?]. The subline is the
+  // PT4-style sample fraction ("17/31") rendered small under the value.
+  function xStats(cells) {
+    const row = h('div', 'sqx-xstats');
+    for (const [label, value, cls, sub] of cells) {
+      const c = h('div', 'sqx-xstat');
+      c.appendChild(h('div', 'sqx-mini-l', label));
+      const v = h('div', 'sqx-mini-v' + (cls ? ' ' + cls : ''));
+      if (value instanceof Node) v.appendChild(value);
+      else v.textContent = value;
+      c.appendChild(v);
+      if (sub != null) c.appendChild(h('div', 'sqx-xsub', sub));
+      row.appendChild(c);
     }
-    body.appendChild(box);
+    return row;
+  }
+
+  const xCap = (text) => h('div', 'sqx-xcap', text);
+
+  // Fixed-column chip grid so values ring up in even columns.
+  function chipStrip(cols, chips) {
+    const grid = h('div', 'sqx-xchips');
+    grid.style.setProperty('--sqx-cols', String(cols));
+    for (const c of chips) {
+      const el = h('span', 'sqx-xchip' + (c.cls ? ' ' + c.cls : ''), c.text);
+      if (c.title) el.title = c.title;
+      grid.appendChild(el);
+    }
+    return grid;
+  }
+
+  // Segmented distribution bar: segs = [[cls, count], ...], zero segs skipped.
+  function segBar(segs) {
+    const bar = h('div', 'sqx-rbar');
+    for (const [cls, count] of segs) {
+      if (!count) continue;
+      const seg = h('span', 'sqx-rbar-s ' + cls);
+      seg.style.flexGrow = String(count);
+      bar.appendChild(seg);
+    }
+    return bar;
+  }
+
+  // Tiny stacked-column histogram. bars: [{label, segs: [[cls, count], ...]}].
+  function histo(bars) {
+    let maxTotal = 1;
+    for (const b of bars) {
+      const t = b.segs.reduce((a, s) => a + s[1], 0);
+      if (t > maxTotal) maxTotal = t;
+    }
+    const box = h('div', 'sqx-histo');
+    for (const b of bars) {
+      const col = h('div', 'sqx-histo-c');
+      const total = b.segs.reduce((a, s) => a + s[1], 0);
+      col.appendChild(h('div', 'sqx-histo-n', total ? String(total) : ''));
+      const barEl = h('div', 'sqx-histo-b');
+      for (const [cls, count] of b.segs) {
+        if (!count) continue;
+        const seg = h('div', 'sqx-histo-s ' + cls);
+        seg.style.height = Math.max(2, Math.round((count / maxTotal) * 30)) + 'px';
+        barEl.appendChild(seg);
+      }
+      if (!total) barEl.appendChild(h('div', 'sqx-histo-s sqx-histo-zero'));
+      col.appendChild(barEl);
+      col.appendChild(h('div', 'sqx-histo-l', b.label));
+      box.appendChild(col);
+    }
+    return box;
+  }
+
+  // Multiplier chip text tuned for narrow columns: 1.89 / 12.4 / 110.
+  const fmtPoint = (v) => (v >= 100 ? String(Math.round(v)) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
+
+  // "0.5×" / "1.5×" / "41×" — for plinko slot values that are already round.
+  const fmtSlotMult = (v) => (v >= 10 ? Math.round(v) : v) + '×';
+
+  const multChipCls = (v) => (v >= 10 ? 'sqx-xchip-hot' : v < 1 ? 'sqx-xchip-neg' : v === 1 ? 'sqx-xchip-dim' : 'sqx-xchip-pos');
+
+  function crashExtras(session) {
+    const points = (session.ticks || []).map((t) => t.crashPoint).filter(isNum);
+    const n = points.length;
+    if (!n) return null;
+    const sorted = [...points].sort((a, b) => a - b);
+    const mid = n >> 1;
+    const med = n % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    const under2 = points.filter((p) => p < 2).length;
+    const big = points.filter((p) => p >= 10).length;
+    // Longest (and current) run of rounds without a 10×+ payout window.
+    let maxDry = 0, run = 0;
+    for (const p of points) {
+      if (p >= 10) run = 0;
+      else if (++run > maxDry) maxDry = run;
+    }
+    let nowDry = 0;
+    for (let i = n - 1; i >= 0 && points[i] < 10; i--) nowDry++;
+
+    const { wrap, card } = xSection('Crash points', n);
+    card.appendChild(xStats([
+      ['median', fmtMult(med)],
+      ['< 2×', pctOf(under2, n), under2 * 2 >= n ? 'sqx-neg' : '', under2 + '/' + n],
+      ['≥ 10×', String(big), big ? 'sqx-hot' : 'sqx-dim', big + '/' + n],
+      ['10× drought', String(maxDry), '', 'now ' + nowDry],
+    ]));
+    const k = Math.min(15, n);
+    card.appendChild(xCap('last ' + k + ' rounds · newest first'));
+    card.appendChild(chipStrip(5, points.slice(-k).reverse().map((v) => ({
+      text: fmtPoint(v),
+      cls: v >= 10 ? 'sqx-xchip-hot' : v < 2 ? 'sqx-xchip-neg' : 'sqx-xchip-pos',
+    }))));
+    return wrap;
+  }
+
+  const WHEEL_REDS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+  const wheelColorOf = (num) => (num === 0 ? 'green' : WHEEL_REDS.has(num) ? 'red' : 'black');
+
+  // A wheel-colored number chip, optionally stacked over a tiny hit count.
+  function wheelChipCell(num, sub) {
+    const cell = h('span', 'sqx-wcell');
+    cell.appendChild(h('span', 'sqx-wchip sqx-wchip-' + wheelColorOf(num), String(num)));
+    if (sub != null) cell.appendChild(h('span', 'sqx-wsub', sub));
+    return cell;
+  }
+
+  function rouletteExtras(session) {
+    const ticks = (session.ticks || []).filter((t) => isNum(t.number));
+    const n = ticks.length;
+    if (!n) return null;
+    const freq = new Array(37).fill(0);
+    const lastSeen = new Array(37).fill(-1);
+    let red = 0, black = 0, green = 0;
+    ticks.forEach((t, i) => {
+      freq[t.number]++;
+      lastSeen[t.number] = i;
+      const c = t.color || wheelColorOf(t.number);
+      if (c === 'red') red++;
+      else if (c === 'green') green++;
+      else black++;
+    });
+    const idx = Array.from({ length: 37 }, (_, i) => i);
+    const hot = idx
+      .filter((i) => freq[i] > 0)
+      .sort((a, b) => freq[b] - freq[a] || lastSeen[b] - lastSeen[a])
+      .slice(0, 5);
+    const cold = idx
+      .slice()
+      .sort((a, b) => freq[a] - freq[b] || lastSeen[a] - lastSeen[b])
+      .slice(0, 5);
+
+    const { wrap, card } = xSection('Wheel', n);
+    card.appendChild(segBar([
+      ['sqx-rbar-red', red],
+      ['sqx-rbar-black', black],
+      ['sqx-rbar-green', green],
+    ]));
+    const leg = h('div', 'sqx-rleg');
+    const legItem = (cls, letter, c) => {
+      const it = h('span', 'sqx-rleg-i');
+      it.appendChild(h('span', 'sqx-wheel-dot sqx-wheel-' + cls));
+      it.appendChild(num(letter + ' ' + c));
+      it.appendChild(h('span', 'sqx-rleg-p', pctOf(c, n)));
+      return it;
+    };
+    leg.append(legItem('red', 'R', red), legItem('black', 'B', black), legItem('green', 'G', green));
+    card.appendChild(leg);
+
+    const wrow = (label, nums) => {
+      const row = h('div', 'sqx-wrow');
+      row.appendChild(h('span', 'sqx-wrow-l', label));
+      const chips = h('span', 'sqx-wrow-chips');
+      for (const i of nums) chips.appendChild(wheelChipCell(i, '×' + freq[i]));
+      row.appendChild(chips);
+      return row;
+    };
+    if (hot.length) card.appendChild(wrow('hot', hot));
+    card.appendChild(wrow('cold', cold));
+
+    const k = Math.min(12, n);
+    card.appendChild(xCap('last ' + k + ' spins · newest first'));
+    const strip = h('div', 'sqx-wstrip');
+    for (const t of ticks.slice(-k).reverse()) {
+      strip.appendChild(h('span', 'sqx-wchip sqx-wchip-' + (t.color || wheelColorOf(t.number)), String(t.number)));
+    }
+    card.appendChild(strip);
+    return wrap;
+  }
+
+  function minesExtras(session) {
+    const done = (session.rounds || []).filter((r) => r.result === 'win' || r.result === 'loss');
+    if (!done.length) return null;
+    const wins = done.filter((r) => r.result === 'win');
+    const busts = done.filter((r) => r.result === 'loss');
+    const mults = wins.map((r) => r.multiplier).filter(isNum);
+    const avg = mults.length ? mults.reduce((a, b) => a + b, 0) / mults.length : null;
+    const best = mults.length ? Math.max(...mults) : null;
+    const depthOf = (r) => (r.detail && isNum(r.detail.revealedCount) ? r.detail.revealedCount : null);
+    const wDepths = wins.map(depthOf).filter(isNum);
+    const bDepths = busts.map(depthOf).filter(isNum);
+    const avgD = (a) => (a.length ? (a.reduce((x, y) => x + y, 0) / a.length).toFixed(1) : '—');
+
+    const { wrap, card } = xSection('Mines', done.length);
+    card.appendChild(xStats([
+      ['cashed', pctOf(wins.length, done.length),
+        wins.length * 2 >= done.length ? 'sqx-pos' : 'sqx-neg', wins.length + '/' + done.length],
+      ['avg cash', avg == null ? '—' : fmtMult(avg), avg == null ? 'sqx-dim' : ''],
+      ['best', best == null ? '—' : fmtMult(best), best != null && best >= 5 ? 'sqx-hot' : ''],
+      ['picks ✓/✗', avgD(wDepths) + ' / ' + avgD(bDepths)],
+    ]));
+
+    // Depth pattern: how many safe picks games reach before cashing (green)
+    // or hitting a bomb (red), bucketed per pick count.
+    if (wDepths.length || bDepths.length) {
+      const maxDepth = Math.min(10, Math.max(1, ...wDepths, ...bDepths));
+      const minDepth = bDepths.includes(0) ? 0 : 1;
+      const bars = [];
+      for (let d = minDepth; d <= maxDepth; d++) {
+        bars.push({
+          label: String(d),
+          segs: [
+            ['sqx-hpos', wDepths.filter((x) => x === d).length],
+            ['sqx-hneg', bDepths.filter((x) => x === d).length],
+          ],
+        });
+      }
+      card.appendChild(xCap('depth pattern · picks at cashout ✓ / bust ✗'));
+      card.appendChild(histo(bars));
+    }
+
+    const k = Math.min(12, done.length);
+    card.appendChild(xCap('last ' + k + ' games · newest first'));
+    card.appendChild(chipStrip(6, done.slice(-k).reverse().map((r) => {
+      if (r.result === 'win') {
+        return { text: isNum(r.multiplier) ? fmtMult(r.multiplier) : '✓', cls: 'sqx-xchip-pos' };
+      }
+      const d = depthOf(r);
+      return { text: '✗' + (d != null ? d : ''), cls: 'sqx-xchip-neg', title: d != null ? 'bomb on pick ' + (d + 1) : 'bust' };
+    })));
+    return wrap;
+  }
+
+  function plinkoExtras(session) {
+    const mults = (session.rounds || []).map((r) => r.multiplier).filter(isNum);
+    const n = mults.length;
+    if (!n) return null;
+    const sorted = [...mults].sort((a, b) => a - b);
+    const mid = n >> 1;
+    const med = n % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    const avg = mults.reduce((a, b) => a + b, 0) / n;
+    const best = sorted[n - 1];
+    const big = mults.filter((v) => v >= 10).length;
+
+    const { wrap, card } = xSection('Drops', n);
+    card.appendChild(xStats([
+      ['avg', fmtMult(avg), avg >= 1 ? 'sqx-pos' : 'sqx-neg'],
+      ['median', fmtMult(med), med < 1 ? 'sqx-neg' : ''],
+      ['best', fmtSlotMult(best), best >= 10 ? 'sqx-hot' : best > 1 ? 'sqx-pos' : ''],
+      ['≥ 10×', String(big), big ? 'sqx-hot' : 'sqx-dim', big + '/' + n],
+    ]));
+
+    // Histogram over the slot multipliers actually hit this session.
+    const freq = new Map();
+    for (const v of mults) freq.set(v, (freq.get(v) || 0) + 1);
+    const values = [...freq.keys()].sort((a, b) => a - b);
+    card.appendChild(xCap('multiplier distribution'));
+    card.appendChild(histo(values.map((v) => ({
+      label: fmtSlotMult(v),
+      segs: [[v >= 10 ? 'sqx-hhot' : v < 1 ? 'sqx-hneg' : v === 1 ? 'sqx-hdim' : 'sqx-hpos', freq.get(v)]],
+    }))));
+
+    const k = Math.min(16, n);
+    card.appendChild(xCap('last ' + k + ' drops · newest first'));
+    card.appendChild(chipStrip(8, mults.slice(-k).reverse().map((v) => ({
+      text: fmtSlotMult(v),
+      cls: multChipCls(v),
+    }))));
+    return wrap;
+  }
+
+  const BJ_FACE_VAL = { A: 11, K: 10, Q: 10, J: 10 };
+
+  // Best blackjack total for a hand (aces soften), null if any card unknown.
+  function handTotalOf(cards) {
+    if (!Array.isArray(cards) || !cards.length) return null;
+    let total = 0, aces = 0;
+    for (const c of cards) {
+      const p = parseCard(c);
+      if (!p) return null;
+      const v = BJ_FACE_VAL[p.rank] || parseInt(p.rank, 10);
+      if (!isNum(v)) return null;
+      if (p.rank === 'A') aces++;
+      total += v;
+    }
+    while (total > 21 && aces) { total -= 10; aces--; }
+    return total;
+  }
+
+  function blackjackExtras(session) {
+    const rounds = session.rounds || [];
+    if (!rounds.length) return null;
+    let w = 0, l = 0, p = 0, bj = 0, meBust = 0, dlrBust = 0, known = 0;
+    const hands = [];
+    for (const r of rounds) {
+      if (r.result === 'win') w++;
+      else if (r.result === 'loss') l++;
+      else if (r.result === 'push') p++;
+      const d = r.detail || {};
+      if (d.blackjack) bj++;
+      const pt = isNum(d.playerTotal) ? d.playerTotal : handTotalOf(d.player);
+      const dt = isNum(d.dealerTotal) ? d.dealerTotal : handTotalOf(d.dealer);
+      if (isNum(pt)) {
+        known++;
+        if (pt > 21) meBust++;
+        if (isNum(dt) && dt > 21 && pt <= 21) dlrBust++;
+      }
+      hands.push({ pt, bj: !!d.blackjack, result: r.result });
+    }
+    const record = h('span', null);
+    record.append(
+      h('span', w ? 'sqx-pos' : 'sqx-dim', String(w)),
+      h('span', 'sqx-dim', '-'),
+      h('span', l ? 'sqx-neg' : 'sqx-dim', String(l)),
+      h('span', 'sqx-dim', '-'),
+      h('span', 'sqx-dim', String(p))
+    );
+
+    const { wrap, card } = xSection('Hands', rounds.length);
+    card.appendChild(xStats([
+      ['w-l-p', record, '', w + l ? pctOf(w, w + l) + ' win' : null],
+      ['blackjacks', String(bj), bj ? 'sqx-hot' : 'sqx-dim', bj + '/' + rounds.length],
+      ['you bust', pctOf(meBust, known), meBust ? 'sqx-neg' : 'sqx-dim', meBust + '/' + known],
+      ['dlr bust', pctOf(dlrBust, known), dlrBust ? 'sqx-pos' : 'sqx-dim', dlrBust + '/' + known],
+    ]));
+    card.appendChild(segBar([
+      ['sqx-rbar-pos', w],
+      ['sqx-rbar-neg', l],
+      ['sqx-rbar-dim', p],
+    ]));
+
+    const k = Math.min(12, hands.length);
+    card.appendChild(xCap('last ' + k + ' hands · your total · newest first'));
+    card.appendChild(chipStrip(6, hands.slice(-k).reverse().map((hd) => ({
+      text: hd.bj ? 'BJ' : hd.pt != null ? String(hd.pt) : hd.result === 'win' ? 'W' : hd.result === 'loss' ? 'L' : 'P',
+      cls: hd.bj ? 'sqx-xchip-hot'
+        : hd.result === 'win' ? 'sqx-xchip-pos'
+        : hd.result === 'loss' ? 'sqx-xchip-neg' : 'sqx-xchip-dim',
+    }))));
+    return wrap;
+  }
+
+  function renderExtras(body, session) {
+    const builders = {
+      crash: crashExtras,
+      roulette: rouletteExtras,
+      mines: minesExtras,
+      plinko: plinkoExtras,
+      blackjack: blackjackExtras,
+    };
+    const build = builders[session.game];
+    let el = null;
+    if (build) el = build(session);
+    else {
+      // Unknown game: fall back to whatever summary the background computed.
+      const x = session.stats && session.stats.extra;
+      if (x) {
+        const { wrap, card } = xSection(x.label || 'extras', x.count);
+        const parts = [];
+        for (const key of ['median', 'avg', 'best']) if (x[key] != null) parts.push(key + ' ' + x[key] + '×');
+        if (x.record) parts.push(x.record);
+        if (parts.length) card.appendChild(xCap(parts.join(' · ')));
+        el = parts.length ? wrap : null;
+      }
+    }
+    if (el) body.appendChild(el);
   }
 
   // ---- history --------------------------------------------------------------

@@ -580,28 +580,235 @@
 #sqx-hud .sqx-neg { color: var(--sqx-neg); }
 #sqx-hud .sqx-dim { color: var(--sqx-faint); }
 
-/* ---- extras / chips ------------------------------------------------------- */
+/* ---- per-game extras ------------------------------------------------------ */
 
-#sqx-hud .sqx-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 5px;
-}
-
-#sqx-hud .sqx-chip {
-  font-family: var(--sqx-mono);
-  font-variant-numeric: tabular-nums;
+#sqx-hud .sqx-x-card {
   background: var(--sqx-card);
   border: 1px solid var(--sqx-line);
-  border-radius: var(--sqx-r-chip);
-  padding: 1px 5px;
-  font-size: 10px;
-  color: var(--sqx-mute);
+  border-radius: var(--sqx-r-card);
+  padding: 6px 10px 8px;
 }
 
-#sqx-hud .sqx-chip.sqx-pos { color: var(--sqx-pos); }
-#sqx-hud .sqx-chip.sqx-neg { color: var(--sqx-neg); }
+/* stat cells with an optional sample-fraction subline */
+#sqx-hud .sqx-xstats {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#sqx-hud .sqx-xstat { min-width: 0; }
+
+#sqx-hud .sqx-xsub {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 8px;
+  color: var(--sqx-faint);
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+/* micro caption above a strip / histogram */
+#sqx-hud .sqx-xcap {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--sqx-hair);
+}
+
+/* fixed-column outcome chip grid — columns ring up evenly */
+#sqx-hud .sqx-xchips {
+  display: grid;
+  grid-template-columns: repeat(var(--sqx-cols, 6), 1fr);
+  gap: 3px;
+  margin-top: 4px;
+}
+
+#sqx-hud .sqx-xchip {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+  padding: 3px 2px;
+  border-radius: var(--sqx-r-chip);
+  background: var(--sqx-inset);
+  color: var(--sqx-mute);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#sqx-hud .sqx-xchip-pos { color: var(--sqx-pos); background: rgba(63, 221, 139, 0.09); }
+#sqx-hud .sqx-xchip-neg { color: var(--sqx-neg); background: rgba(255, 93, 110, 0.09); }
+#sqx-hud .sqx-xchip-hot { color: var(--sqx-live); background: rgba(242, 187, 75, 0.13); }
+#sqx-hud .sqx-xchip-dim { color: var(--sqx-faint); }
+
+/* segmented distribution bar (roulette colors / blackjack W-L-P) */
+#sqx-hud .sqx-rbar {
+  display: flex;
+  gap: 1px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+#sqx-hud .sqx-rbar-s { min-width: 2px; }
+#sqx-hud .sqx-rbar-red { background: #e0455a; }
+#sqx-hud .sqx-rbar-black { background: #39415c; }
+#sqx-hud .sqx-rbar-green { background: #27c86f; }
+#sqx-hud .sqx-rbar-pos { background: var(--sqx-pos); opacity: 0.85; }
+#sqx-hud .sqx-rbar-neg { background: var(--sqx-neg); opacity: 0.85; }
+#sqx-hud .sqx-rbar-dim { background: var(--sqx-faint); opacity: 0.7; }
+
+#sqx-hud .sqx-rleg {
+  display: flex;
+  gap: 14px;
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+#sqx-hud .sqx-rleg-i {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#sqx-hud .sqx-rleg-i .sqx-num { font-size: 10.5px; font-weight: 650; }
+
+#sqx-hud .sqx-rleg-p {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  color: var(--sqx-faint);
+}
+
+/* roulette number chips — wheel-true colors */
+#sqx-hud .sqx-wchip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 17px;
+  padding: 0 2px;
+  border-radius: 4px;
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+}
+
+#sqx-hud .sqx-wchip-red { background: #c93b50; }
+#sqx-hud .sqx-wchip-black { background: #2b3247; box-shadow: inset 0 0 0 1px #454f6e; }
+#sqx-hud .sqx-wchip-green { background: #1f9d5b; }
+
+/* hot/cold rows: side label + chip cells stacked over hit counts */
+#sqx-hud .sqx-wrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#sqx-hud .sqx-wrow-l {
+  flex: none;
+  width: 26px;
+  padding-top: 3px;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-wrow-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+#sqx-hud .sqx-wcell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+#sqx-hud .sqx-wsub {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 8px;
+  color: var(--sqx-faint);
+}
+
+/* last-spins strip: fixed 12 columns */
+#sqx-hud .sqx-wstrip {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 3px;
+  margin-top: 4px;
+}
+
+#sqx-hud .sqx-wstrip .sqx-wchip { min-width: 0; }
+
+/* stacked-column mini histogram */
+#sqx-hud .sqx-histo {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+#sqx-hud .sqx-histo-c {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+#sqx-hud .sqx-histo-n {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 7.5px;
+  line-height: 1;
+  height: 8px;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-histo-b {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  width: 100%;
+  max-width: 18px;
+  height: 32px;
+}
+
+#sqx-hud .sqx-histo-s { border-radius: 1px; }
+#sqx-hud .sqx-histo-s + .sqx-histo-s { margin-top: 1px; }
+#sqx-hud .sqx-hpos { background: var(--sqx-pos); opacity: 0.85; }
+#sqx-hud .sqx-hneg { background: var(--sqx-neg); opacity: 0.85; }
+#sqx-hud .sqx-hhot { background: var(--sqx-live); opacity: 0.9; }
+#sqx-hud .sqx-hdim { background: var(--sqx-faint); opacity: 0.6; }
+#sqx-hud .sqx-histo-zero { height: 2px; background: var(--sqx-hair); }
+
+#sqx-hud .sqx-histo-l {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--sqx-mute);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+}
 
 /* ---- history log ---------------------------------------------------------- */
 
