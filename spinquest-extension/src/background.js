@@ -1,59 +1,95 @@
 // Service worker: owns sessions. One active session per game, rotated after
-// an idle gap or on manual reset. Persists to chrome.storage.local and
-// broadcasts updates to the HUD overlay and the popup.
+// an idle gap (checked lazily on events AND by a periodic alarm, so idle
+// sessions archive even while nobody plays) or on manual reset. Persists to
+// chrome.storage.local and broadcasts updates to the HUD overlay and popup.
+//
+// MV3 restart safety: every message path awaits loadState() (single-flight),
+// so a freshly woken worker always rehydrates from storage before touching
+// state. Broadcast snapshots carry a monotonically increasing `seq` — it
+// starts at Date.now() so it keeps rising across worker restarts and
+// receivers can drop out-of-order/stale snapshots.
+//
+// All stats/session math lives in lib/stats.js (pure, shared with
+// dev/model-test.mjs).
 'use strict';
 
-const IDLE_GAP_MS = 30 * 60 * 1000; // new session after 30 min without a round
-const MAX_ROUNDS_PER_SESSION = 300;
-const MAX_TICKS = 100; // shared-outcome feed (crash points, roulette numbers)
-const MAX_ARCHIVED_SESSIONS = 30;
+import {
+  LIMITS,
+  appendRound,
+  appendTick,
+  computeStats,
+  createSession,
+  hasData,
+  makeSummary,
+} from './lib/stats.js';
+
+const SAVE_DEBOUNCE_MS = 1000; // coalesce storage writes under event storms
+const BROADCAST_MIN_INTERVAL_MS = 100; // coalesce broadcasts (autobet ~10+/s)
+const IDLE_SWEEP_ALARM = 'sqx-idle-sweep';
+const IDLE_SWEEP_PERIOD_MIN = 5;
 
 /**
  * state = {
  *   active: { [game]: Session },
- *   archived: Session[],           // most recent first
+ *   archived: Session[],           // most recent first, each with .summary
  *   focusedGame: string|null,      // game page the user is currently on
  * }
- * Session = { id, game, startedAt, lastActivityAt, rounds[], ticks[], current{} }
+ * Session = { id, game, startedAt, lastActivityAt, rounds[], ticks[],
+ *             current{}, carry?, stats?, summary? (archived only) }
  */
 let state = null;
-let saveTimer = null;
+let statePromise = null; // single-flight: concurrent messages share one load
 
-async function loadState() {
-  if (state) return state;
-  const stored = await chrome.storage.local.get('sqxState');
-  state = stored.sqxState || { active: {}, archived: [], focusedGame: null };
-  return state;
+function loadState() {
+  if (state) return Promise.resolve(state);
+  if (!statePromise) {
+    statePromise = chrome.storage.local.get('sqxState').then(
+      (stored) => {
+        statePromise = null;
+        if (!state) state = stored.sqxState || { active: {}, archived: [], focusedGame: null };
+        return state;
+      },
+      () => {
+        statePromise = null;
+        if (!state) state = { active: {}, archived: [], focusedGame: null };
+        return state;
+      }
+    );
+  }
+  return statePromise;
 }
+
+// --- persistence (debounced; at most one storage write per second) ----------
+
+let saveTimer = null;
+let dirty = false;
 
 function scheduleSave() {
+  dirty = true;
   if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    chrome.storage.local.set({ sqxState: state }).catch(() => {});
-  }, 1000);
+  saveTimer = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
 }
 
-function newSession(game) {
-  return {
-    id: game + '-' + Date.now().toString(36),
-    game,
-    startedAt: Date.now(),
-    lastActivityAt: Date.now(),
-    rounds: [],
-    ticks: [],
-    current: null,
-  };
+function flushSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (!dirty || !state) return;
+  dirty = false;
+  chrome.storage.local.set({ sqxState: state }).catch(() => {});
 }
+
+// --- session lifecycle ------------------------------------------------------
 
 function getActiveSession(game, { rotateIfIdle = true } = {}) {
   let session = state.active[game];
-  if (session && rotateIfIdle && Date.now() - session.lastActivityAt > IDLE_GAP_MS && session.rounds.length) {
+  if (session && rotateIfIdle && Date.now() - session.lastActivityAt > LIMITS.IDLE_GAP_MS && hasData(session)) {
     archive(session);
     session = null;
   }
   if (!session) {
-    session = newSession(game);
+    session = createSession(game);
     state.active[game] = session;
   }
   return session;
@@ -61,136 +97,30 @@ function getActiveSession(game, { rotateIfIdle = true } = {}) {
 
 function archive(session) {
   delete state.active[session.game];
-  if (!session.rounds.length && !session.ticks.length) return;
+  if (!hasData(session)) return;
   session.endedAt = Date.now();
   session.stats = computeStats(session);
+  session.summary = makeSummary(session, session.stats);
   delete session.current;
   state.archived.unshift(session);
-  state.archived.length = Math.min(state.archived.length, MAX_ARCHIVED_SESSIONS);
+  state.archived.length = Math.min(state.archived.length, LIMITS.MAX_ARCHIVED_SESSIONS);
 }
 
-// --- stats -----------------------------------------------------------------
-
-function computeStats(session) {
-  const rounds = session.rounds;
-  const stats = {
-    rounds: rounds.length,
-    wins: 0,
-    losses: 0,
-    pushes: 0,
-    wagered: 0,
-    returned: 0,
-    net: 0,
-    biggestWin: 0,
-    biggestLoss: 0,
-    streak: 0, // positive = consecutive wins, negative = consecutive losses
-  };
-
-  for (const r of rounds) {
-    if (r.result === 'win') stats.wins++;
-    else if (r.result === 'loss') stats.losses++;
-    else if (r.result === 'push') stats.pushes++;
-    if (typeof r.bet === 'number') stats.wagered += r.bet;
-    if (typeof r.payout === 'number') stats.returned += r.payout;
-    if (typeof r.profit === 'number') {
-      stats.net += r.profit;
-      if (r.profit > stats.biggestWin) stats.biggestWin = r.profit;
-      if (r.profit < stats.biggestLoss) stats.biggestLoss = r.profit;
+/** Archive every active session that idled out. Returns true if any did. */
+function sweepIdle() {
+  const now = Date.now();
+  let archivedAny = false;
+  for (const game of Object.keys(state.active)) {
+    const session = state.active[game];
+    if (now - session.lastActivityAt > LIMITS.IDLE_GAP_MS && hasData(session)) {
+      archive(session);
+      archivedAny = true;
     }
   }
-  const decided = stats.wins + stats.losses;
-  stats.winRate = decided ? Math.round((stats.wins / decided) * 100) : null;
-  for (const k of ['wagered', 'returned', 'net', 'biggestWin', 'biggestLoss']) {
-    stats[k] = Math.round(stats[k] * 100) / 100;
-  }
-
-  // Current streak from the tail.
-  for (let i = rounds.length - 1; i >= 0; i--) {
-    const r = rounds[i].result;
-    if (r !== 'win' && r !== 'loss') break;
-    const dir = r === 'win' ? 1 : -1;
-    if (stats.streak === 0) stats.streak = dir;
-    else if (Math.sign(stats.streak) === dir) stats.streak += dir;
-    else break;
-  }
-
-  stats.extra = gameExtras(session);
-  return stats;
+  return archivedAny;
 }
 
-function gameExtras(session) {
-  const { game, rounds, ticks } = session;
-
-  if (game === 'crash') {
-    const points = ticks.map((t) => t.crashPoint).filter((n) => typeof n === 'number');
-    if (!points.length) return null;
-    const sorted = [...points].sort((a, b) => a - b);
-    return {
-      label: 'crash points (all rounds seen)',
-      count: points.length,
-      median: sorted[Math.floor(sorted.length / 2)],
-      under2x: Math.round((points.filter((p) => p < 2).length / points.length) * 100) + '%',
-      last: points.slice(-15).reverse(),
-    };
-  }
-
-  if (game === 'roulette') {
-    const nums = ticks.map((t) => t.number).filter((n) => typeof n === 'number');
-    if (!nums.length) return null;
-    const freq = {};
-    let red = 0, black = 0, green = 0;
-    for (const t of ticks) {
-      if (typeof t.number !== 'number') continue;
-      freq[t.number] = (freq[t.number] || 0) + 1;
-      if (t.color === 'red') red++;
-      else if (t.color === 'black') black++;
-      else green++;
-    }
-    const byFreq = Object.entries(freq).sort((a, b) => b[1] - a[1]);
-    return {
-      label: 'spins seen',
-      count: nums.length,
-      hot: byFreq.slice(0, 4).map(([n, c]) => n + '×' + c),
-      colors: { red, black, green },
-      last: nums.slice(-15).reverse(),
-    };
-  }
-
-  if (game === 'plinko') {
-    const mults = rounds.map((r) => r.multiplier).filter((n) => typeof n === 'number');
-    if (!mults.length) return null;
-    return {
-      label: 'drop multipliers',
-      count: mults.length,
-      avg: Math.round((mults.reduce((a, b) => a + b, 0) / mults.length) * 100) / 100,
-      best: Math.max(...mults),
-      last: mults.slice(-15).reverse(),
-    };
-  }
-
-  if (game === 'mines') {
-    const cashed = rounds.filter((r) => r.result === 'win');
-    return {
-      label: 'games',
-      count: rounds.length,
-      cashouts: cashed.length,
-      busts: rounds.filter((r) => r.result === 'loss').length,
-      bestMultiplier: Math.max(0, ...cashed.map((r) => r.multiplier || 0)) || null,
-    };
-  }
-
-  if (game === 'blackjack') {
-    return {
-      label: 'hands',
-      count: rounds.length,
-      record: `${rounds.filter((r) => r.result === 'win').length}W-${rounds.filter((r) => r.result === 'loss').length}L-${rounds.filter((r) => r.result === 'push').length}P`,
-    };
-  }
-
-  return null;
-}
-
-// --- event handling --------------------------------------------------------
+// --- event handling ---------------------------------------------------------
 
 function applyGameEvent(game, event) {
   const session = getActiveSession(game);
@@ -204,36 +134,75 @@ function applyGameEvent(game, event) {
       updatedAt: Date.now(),
     };
   } else if (event.type === 'round') {
-    session.rounds.push(event.round);
-    if (session.rounds.length > MAX_ROUNDS_PER_SESSION) session.rounds.shift();
+    // Dedupe: a re-injected content script (page reload) can replay history
+    // payloads whose rounds this session already holds.
+    const id = event.round.id;
+    if (id != null && session.rounds.some((r) => r.id === id)) return;
+    appendRound(session, event.round);
     session.current = null; // deal resolved
   } else if (event.type === 'tick') {
-    session.ticks.push(event.tick);
-    if (session.ticks.length > MAX_TICKS) session.ticks.shift();
+    appendTick(session, event.tick);
   }
 
   session.stats = computeStats(session);
   scheduleSave();
-  broadcast();
+  requestBroadcast(game);
 }
 
-function snapshot() {
+// --- snapshots + broadcast --------------------------------------------------
+
+// Monotonic across worker restarts: seeded from the clock, bumped per snapshot.
+let seq = Date.now();
+
+function legacySummary(s) {
+  // Archived sessions persisted by older versions have no stored summary.
   return {
-    focusedGame: state.focusedGame,
-    active: state.active,
-    archivedSummaries: state.archived.map((s) => ({
-      id: s.id,
-      game: s.game,
-      startedAt: s.startedAt,
-      endedAt: s.endedAt,
-      rounds: s.rounds.length,
-      net: s.stats ? s.stats.net : 0,
-    })),
+    id: s.id,
+    game: s.game,
+    startedAt: s.startedAt,
+    endedAt: s.endedAt ?? null,
+    rounds: s.stats ? s.stats.rounds : s.rounds.length,
+    net: s.stats ? s.stats.net : 0,
   };
 }
 
-function broadcast() {
-  const msg = { type: 'SQX_STATE', state: snapshot() };
+function snapshot(changedGame = null) {
+  seq += 1;
+  return {
+    seq,
+    generatedAt: Date.now(),
+    changedGame, // which game's session changed, null = anything/everything
+    focusedGame: state.focusedGame,
+    active: state.active,
+    archivedSummaries: state.archived.map((s) => s.summary || legacySummary(s)),
+  };
+}
+
+let lastBroadcastAt = 0;
+let broadcastTimer = null;
+const pendingGames = new Set(); // '*' = a non-game-scoped change
+
+function requestBroadcast(game) {
+  pendingGames.add(game || '*');
+  if (broadcastTimer) return;
+  const wait = lastBroadcastAt + BROADCAST_MIN_INTERVAL_MS - Date.now();
+  if (wait <= 0) {
+    doBroadcast();
+  } else {
+    broadcastTimer = setTimeout(doBroadcast, wait);
+  }
+}
+
+function doBroadcast() {
+  if (broadcastTimer) {
+    clearTimeout(broadcastTimer);
+    broadcastTimer = null;
+  }
+  lastBroadcastAt = Date.now();
+  const changedGame =
+    pendingGames.size === 1 && !pendingGames.has('*') ? pendingGames.values().next().value : null;
+  pendingGames.clear();
+  const msg = { type: 'SQX_STATE', state: snapshot(changedGame) };
   chrome.runtime.sendMessage(msg).catch(() => {}); // popup, if open
   chrome.tabs.query({ url: '*://*.spinquest.com/*' }, (tabs) => {
     for (const tab of tabs || []) {
@@ -241,6 +210,8 @@ function broadcast() {
     }
   });
 }
+
+// --- messages ---------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
@@ -253,7 +224,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (state.focusedGame !== msg.game) {
         state.focusedGame = msg.game;
         scheduleSave();
-        broadcast();
+        requestBroadcast(null);
       }
       sendResponse({ ok: true });
     } else if (msg.type === 'SQX_GET_STATE') {
@@ -263,18 +234,36 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (session) archive(session);
       getActiveSession(msg.game, { rotateIfIdle: false });
       scheduleSave();
-      broadcast();
+      requestBroadcast(msg.game);
       sendResponse({ ok: true });
     } else if (msg.type === 'SQX_EXPORT') {
       sendResponse({ data: { exportedAt: new Date().toISOString(), ...state } });
     } else if (msg.type === 'SQX_CLEAR_ALL') {
       state = { active: {}, archived: [], focusedGame: state.focusedGame };
+      dirty = false;
       await chrome.storage.local.set({ sqxState: state });
-      broadcast();
+      requestBroadcast(null);
       sendResponse({ ok: true });
     } else {
       sendResponse({});
     }
-  })();
+  })().catch(() => sendResponse({}));
   return true; // async sendResponse
 });
+
+// --- idle-rotation alarm ----------------------------------------------------
+// Event-driven rotation only fires when a new event arrives; the alarm also
+// closes out sessions abandoned mid-visit (tab left open, player walked away).
+
+if (chrome.alarms) {
+  chrome.alarms.create(IDLE_SWEEP_ALARM, { periodInMinutes: IDLE_SWEEP_PERIOD_MIN });
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name !== IDLE_SWEEP_ALARM) return;
+    await loadState();
+    if (sweepIdle()) {
+      scheduleSave();
+      requestBroadcast(null);
+    }
+    flushSave(); // opportunistic: persist anything still debounced
+  });
+}
