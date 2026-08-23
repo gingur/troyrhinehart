@@ -6,8 +6,10 @@
 'use strict';
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import vm from 'node:vm';
 
 const devDir = dirname(fileURLToPath(import.meta.url));
 const {
@@ -18,9 +20,25 @@ const {
   createSession,
   gameExtras,
   hasData,
+  hasRound,
   makeSummary,
+  refreshPace,
   round2,
 } = await import(join(devDir, '..', 'src', 'lib', 'stats.js'));
+
+// The normalize layer (util.js + normalize.js) is plain content-script code
+// hanging off a global SQX — load the real files into a vm sandbox so the
+// exact shipped extraction logic is under test.
+function loadNormalize() {
+  const sandbox = { Math, JSON, Date, Number, Array, Object, String, Boolean, console };
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  for (const f of ['util.js', 'normalize.js']) {
+    vm.runInContext(readFileSync(join(devDir, '..', 'src', 'lib', f), 'utf8'), sandbox, { filename: f });
+  }
+  return sandbox.window.SQX;
+}
+const N = loadNormalize();
 
 let passed = 0;
 let failed = 0;
@@ -331,6 +349,133 @@ test('makeSummary: cap-aware lifetime numbers + duration fields', () => {
   assert.equal(sum.wins + sum.losses + sum.pushes, n);
   assert.equal(sum.durationMs, 40 * MIN);
   assert.equal(sum.betsPerMinute, stats.betsPerMinute);
+});
+
+// --- evicted-round replay dedupe (hasRound) ---------------------------------
+
+test('hasRound: sees window rounds AND cap-evicted ids (replay cannot double-count)', () => {
+  const s = createSession('plinko', T0);
+  const n = LIMITS.MAX_ROUNDS_PER_SESSION + 40;
+  for (let i = 0; i < n; i++) appendRound(s, { id: 'p' + i, ts: T0 + i, result: 'win', bet: 1, payout: 2, profit: 1 });
+  assert.equal(s.rounds.length, LIMITS.MAX_ROUNDS_PER_SESSION);
+  assert.equal(hasRound(s, 'p0'), true); // evicted 40 rounds ago
+  assert.equal(hasRound(s, 'p' + (n - 1)), true); // still in the window
+  assert.equal(hasRound(s, 'never-seen'), false);
+  assert.equal(hasRound(s, null), false);
+  // Replaying an evicted round must not change lifetime totals.
+  const before = computeStats(s, T0 + MIN).net;
+  if (!hasRound(s, 'p0')) appendRound(s, { id: 'p0', ts: T0, result: 'win', bet: 1, payout: 2, profit: 1 });
+  assert.equal(computeStats(s, T0 + MIN).net, before);
+});
+
+test('evicted-id memory is capped at MAX_EVICTED_IDS', () => {
+  const s = createSession('crash', T0);
+  const n = LIMITS.MAX_ROUNDS_PER_SESSION + LIMITS.MAX_EVICTED_IDS + 5;
+  for (let i = 0; i < n; i++) appendRound(s, { id: 'c' + i, ts: T0 + i, result: 'loss', bet: 1, payout: 0, profit: -1 });
+  assert.equal(s.carry.evictedIds.length, LIMITS.MAX_EVICTED_IDS);
+  assert.equal(hasRound(s, 'c0'), false); // fell off the id memory
+  assert.equal(hasRound(s, 'c5'), true); // oldest still remembered
+});
+
+// --- live pace refresh (refreshPace) ----------------------------------------
+
+test('refreshPace: duration/bpm track the clock between events, archived stays fixed', () => {
+  const s = sessionWith('roulette', [round('win', 1, 2), round('loss', 1, 0)], T0 + 2 * MIN);
+  assert.equal(s.stats.durationMs, 2 * MIN);
+  refreshPace(s, T0 + 8 * MIN); // 6 quiet minutes later, a snapshot is taken
+  assert.equal(s.stats.durationMs, 8 * MIN);
+  assert.equal(s.stats.betsPerMinute, 0.3); // 2 rounds / 8 min, round1
+  assert.equal(s.stats.rounds, 2); // rest of the stats untouched
+  s.endedAt = T0 + 4 * MIN;
+  refreshPace(s, T0 + 99 * MIN);
+  assert.equal(s.stats.durationMs, 4 * MIN); // archived: endedAt wins over now
+  refreshPace(createSession('mines', T0)); // no cached stats: must not throw
+});
+
+// --- normalize: round-id extraction -----------------------------------------
+
+test('id ranking: deep betId beats a shallower constant gameId', () => {
+  N._resetRoundIds();
+  const mk = (betId, payout) => N.extractRound({
+    ts: T0,
+    body: { gameId: 'plinko-main', bet: 1, payout, betDetails: { betId } },
+  });
+  const a = mk('b1', 2.1);
+  const b = mk('b2', 0.4);
+  assert.equal(a.id, 'b1');
+  assert.equal(b.id, 'b2'); // NOT 'plinko-main' twice
+});
+
+test('constant weak id across distinct rounds falls back to unique synthetic ids', () => {
+  N._resetRoundIds();
+  const mk = (payout, nonce) => N.extractRound({
+    ts: T0 + nonce,
+    body: { gameId: 'plinko-main', bet: 1, payout, path: [nonce, nonce + 1] },
+  });
+  const rounds = [mk(2.1, 1), mk(0.4, 2), mk(0.4, 3), mk(8.9, 4)];
+  const ids = rounds.map((r) => r.id);
+  assert.equal(ids[0], 'plinko-main'); // first occurrence has nothing to compare against
+  for (const id of ids.slice(1)) assert.notEqual(id, 'plinko-main');
+  assert.equal(new Set(ids).size, 4); // every round keeps a distinct id — none dropped
+});
+
+test('byte-identical replay keeps the same id (dedupe still catches re-fetched history)', () => {
+  N._resetRoundIds();
+  const body = { gameId: 'plinko-main', bet: 1, payout: 2.5, path: [0, 1] };
+  const first = N.extractRound({ ts: T0, body });
+  const replay = N.extractRound({ ts: T0 + 5000, body: JSON.parse(JSON.stringify(body)) });
+  assert.equal(first.id, replay.id); // capture time excluded from the signature
+  N._resetRoundIds();
+  // Synthetic ids are deterministic too: after a page reload (fresh memory)
+  // the same replayed bodies resolve to the same synthetic ids.
+  const mk = (payout) => N.extractRound({ ts: T0, body: { gameId: 'g', bet: 1, payout } });
+  const run1 = [mk(2), mk(3), mk(3)].map((r) => r.id);
+  N._resetRoundIds();
+  const run2 = [mk(2), mk(3), mk(3)].map((r) => r.id);
+  assert.deepEqual(run1, run2);
+});
+
+test('strong per-bet ids never trip the constant-id detector', () => {
+  N._resetRoundIds();
+  const ids = [];
+  for (let i = 0; i < 5; i++) {
+    ids.push(N.extractRound({ ts: T0 + i, body: { betId: 'bet-' + i, bet: 1, payout: i } }).id);
+  }
+  assert.deepEqual(ids, ['bet-0', 'bet-1', 'bet-2', 'bet-3', 'bet-4']);
+});
+
+// --- normalize: money-field semantics ---------------------------------------
+
+test('profit-shaped field is net, not gross: {bet:10, profit:5} is a +5 win', () => {
+  N._resetRoundIds();
+  const r = N.extractRound({ ts: T0, body: { bet: 10, profit: 5 } });
+  assert.equal(r.payout, 15);
+  assert.equal(r.profit, 5);
+  assert.equal(r.result, 'win');
+  const l = N.extractRound({ ts: T0, body: { bet: 10, profit: -10 } });
+  assert.equal(l.payout, 0);
+  assert.equal(l.result, 'loss');
+  assert.equal(N.looksSettled({ ts: T0, body: { bet: 10, profit: 5 } }), true);
+});
+
+test('negative bet/payout garbage is not recorded as money', () => {
+  N._resetRoundIds();
+  const r = N.extractRound({ ts: T0, body: { bet: -5, payout: 0 } });
+  assert.equal(r.bet, undefined); // negative bet rejected
+  assert.notEqual(r.result, 'win'); // and certainly not a +5 win
+  const skip = N.extractRound({ ts: T0, body: { amount: -3, betAmount: 2, payout: 4 } });
+  assert.equal(skip.bet, 2); // walk skips the negative match, finds the real one
+  assert.equal(skip.profit, 2);
+});
+
+test('multiplier-derived payout still works; division by zero bet stays guarded', () => {
+  N._resetRoundIds();
+  const r = N.extractRound({ ts: T0, body: { bet: 2, multiplier: 1.5 } });
+  assert.equal(r.payout, 3);
+  assert.equal(r.result, 'win');
+  const z = N.extractRound({ ts: T0, body: { bet: 0, payout: 0 } });
+  assert.equal(z.multiplier, undefined); // no 0/0 NaN
+  assert.equal(z.result, 'push');
 });
 
 // ----------------------------------------------------------------------------

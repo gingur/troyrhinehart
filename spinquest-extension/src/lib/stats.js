@@ -12,6 +12,7 @@ export const LIMITS = {
   MAX_ROUNDS_PER_SESSION: 300,
   MAX_TICKS: 100, // shared-outcome feed (crash points, roulette numbers)
   MAX_ARCHIVED_SESSIONS: 30,
+  MAX_EVICTED_IDS: 600, // dedupe memory for rounds already evicted by the cap
 };
 
 export const round2 = (n) => Math.round(n * 100) / 100;
@@ -53,7 +54,21 @@ function emptyCarry() {
     tailStreak: 0, // streak in progress at the eviction boundary
     bestWinStreak: 0,
     worstLossStreak: 0,
+    evictedIds: [], // capped id memory so a history replay can't re-append an evicted round
   };
+}
+
+/**
+ * True when the session already holds this round id — in the kept window OR
+ * among ids evicted by the cap. The background dedupes replays with this;
+ * checking only the window would double-count an evicted round replayed by a
+ * page reload (once in carry, once live).
+ */
+export function hasRound(session, id) {
+  if (id == null) return false;
+  if (session.rounds.some((r) => r.id === id)) return true;
+  const c = session.carry;
+  return Boolean(c && c.evictedIds && c.evictedIds.includes(id));
 }
 
 // Streak rule (shared by carry accumulation and computeStats): wins and
@@ -89,6 +104,11 @@ export function appendRound(session, round, max = LIMITS.MAX_ROUNDS_PER_SESSION)
     c.tailStreak = stepStreak(c.tailStreak, ev.result);
     if (c.tailStreak > c.bestWinStreak) c.bestWinStreak = c.tailStreak;
     if (c.tailStreak < c.worstLossStreak) c.worstLossStreak = c.tailStreak;
+    if (ev.id != null) {
+      const ids = c.evictedIds || (c.evictedIds = []); // legacy carries lack the array
+      ids.push(ev.id);
+      while (ids.length > LIMITS.MAX_EVICTED_IDS) ids.shift();
+    }
   }
 }
 
@@ -183,13 +203,26 @@ export function computeStats(session, now = Date.now()) {
   }
 
   // Duration and pace.
+  applyPace(stats, session, now);
+
+  stats.extra = gameExtras(session);
+  return stats;
+}
+
+function applyPace(stats, session, now) {
   const endAt = isNum(session.endedAt) ? session.endedAt : now;
   stats.durationMs = Math.max(0, endAt - (isNum(session.startedAt) ? session.startedAt : endAt));
   stats.betsPerMinute =
     stats.durationMs >= 1000 ? round1((stats.rounds * 60000) / stats.durationMs) : null;
+}
 
-  stats.extra = gameExtras(session);
-  return stats;
+/**
+ * Refresh only the wall-clock-dependent stats (durationMs, betsPerMinute) on
+ * a session's cached stats. Cheap enough to run on every snapshot, so a
+ * consumer polling during a quiet spell never sees a frozen duration/pace.
+ */
+export function refreshPace(session, now = Date.now()) {
+  if (session.stats) applyPace(session.stats, session, now);
 }
 
 // --- game-specific extras ----------------------------------------------------

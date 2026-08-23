@@ -48,6 +48,19 @@ SQX.deepNum = function deepNum(obj, keyRe) {
   return raw === undefined ? undefined : Number(raw);
 };
 
+/**
+ * deepNum restricted to sane non-negative values — bets, payouts and
+ * multipliers are never negative, so a negative match (a balance delta, a
+ * signed net) is skipped and the walk keeps looking for a better key.
+ */
+SQX.deepMoney = function deepMoney(obj, keyRe) {
+  const raw = SQX.deepFind(obj, keyRe, (v) => {
+    const n = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : NaN;
+    return Number.isFinite(n) && n >= 0;
+  });
+  return raw === undefined ? undefined : Number(raw);
+};
+
 SQX.deepStr = function deepStr(obj, keyRe) {
   return SQX.deepFind(obj, keyRe, (v) => typeof v === 'string' && v.length < 200);
 };

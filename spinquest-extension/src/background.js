@@ -20,7 +20,9 @@ import {
   computeStats,
   createSession,
   hasData,
+  hasRound,
   makeSummary,
+  refreshPace,
 } from './lib/stats.js';
 
 const SAVE_DEBOUNCE_MS = 1000; // coalesce storage writes under event storms
@@ -135,9 +137,10 @@ function applyGameEvent(game, event) {
     };
   } else if (event.type === 'round') {
     // Dedupe: a re-injected content script (page reload) can replay history
-    // payloads whose rounds this session already holds.
-    const id = event.round.id;
-    if (id != null && session.rounds.some((r) => r.id === id)) return;
+    // payloads whose rounds this session already holds — including rounds
+    // the cap has evicted (hasRound also checks carry.evictedIds, so a
+    // replayed evicted round is never counted twice).
+    if (hasRound(session, event.round.id)) return;
     appendRound(session, event.round);
     session.current = null; // deal resolved
   } else if (event.type === 'tick') {
@@ -168,9 +171,13 @@ function legacySummary(s) {
 
 function snapshot(changedGame = null) {
   seq += 1;
+  const now = Date.now();
+  // Live sessions carry stats cached at the last event; duration and pace
+  // drift with the clock, so refresh them per snapshot (cheap, no full pass).
+  for (const game of Object.keys(state.active)) refreshPace(state.active[game], now);
   return {
     seq,
-    generatedAt: Date.now(),
+    generatedAt: now,
     changedGame, // which game's session changed, null = anything/everything
     focusedGame: state.focusedGame,
     active: state.active,
