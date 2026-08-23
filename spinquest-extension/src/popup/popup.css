@@ -1,77 +1,260 @@
+/* Toolbar popup — same design tokens as the in-page HUD (overlay.css):
+   UI sans for labels, tabular mono for numbers, green/red strictly for
+   profit/loss, hairline dividers, card surfaces. */
+:root {
+  --sqx-bg: #0e121c;
+  --sqx-card: #151b2a;
+  --sqx-line: #272e44;
+  --sqx-hair: rgba(151, 163, 197, 0.13);
+  --sqx-text: #e8ecf5;
+  --sqx-mute: #98a1b8;
+  --sqx-faint: #5f6982;
+  --sqx-pos: #3fdd8b;
+  --sqx-neg: #ff5d6e;
+  --sqx-sans: -apple-system, "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
+  --sqx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 body {
   width: 340px;
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--sqx-sans);
   font-size: 12px;
-  background: #10121b;
-  color: #e6e9f0;
+  line-height: 1.45;
+  background: var(--sqx-bg);
+  color: var(--sqx-text);
+}
+
+.num {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 header {
-  padding: 10px 12px;
-  border-bottom: 1px solid #2c3044;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--sqx-hair);
 }
 
 h1 {
   margin: 0;
   font-size: 13px;
-  letter-spacing: 0.04em;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.sub {
+  font-size: 10px;
+  color: var(--sqx-faint);
+  margin-left: auto;
 }
 
 main {
   padding: 10px 12px;
   max-height: 420px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sqx-line) transparent;
 }
+
+.empty {
+  padding: 26px 16px 30px;
+  text-align: center;
+}
+
+.empty .t {
+  color: var(--sqx-mute);
+  font-weight: 550;
+}
+
+.empty .s {
+  color: var(--sqx-faint);
+  font-size: 11px;
+  font-style: italic;
+  margin-top: 3px;
+}
+
+/* ---- session cards -------------------------------------------------------- */
 
 .session {
-  border: 1px solid #2c3044;
+  background: var(--sqx-card);
+  border: 1px solid var(--sqx-line);
   border-radius: 8px;
-  padding: 8px 10px;
   margin-bottom: 8px;
+  overflow: hidden;
 }
 
-.session h2 {
-  margin: 0 0 4px;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: #8be9fd;
-}
-
-.line {
+.session-head {
   display: flex;
-  justify-content: space-between;
-  padding: 1px 0;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--sqx-hair);
 }
 
-.dim { color: #7f87a0; }
-.pos { color: #50fa7b; }
-.neg { color: #ff5555; }
+.game-badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--sqx-mute);
+  background: var(--sqx-bg);
+  border: 1px solid var(--sqx-line);
+  border-radius: 999px;
+  padding: 1px 8px 0;
+  line-height: 15px;
+}
 
-.archived {
-  margin-top: 6px;
+.live-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+.live-tag::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--sqx-pos);
+}
+
+.session-net {
+  margin-left: auto;
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.session-grid .stat {
+  padding: 5px 10px 6px;
+  border-left: 1px solid var(--sqx-hair);
+  min-width: 0;
+}
+
+.session-grid .stat:first-child { border-left: none; }
+
+.stat .l {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+  white-space: nowrap;
+}
+
+.stat .v {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 650;
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+.dim { color: var(--sqx-faint); }
+.pos { color: var(--sqx-pos); }
+.neg { color: var(--sqx-neg); }
+
+/* ---- archived list -------------------------------------------------------- */
+
+.archived { margin-top: 10px; }
+
+.archived .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+  margin: 0 2px 3px;
+}
+
+.count {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--sqx-mute);
+  background: var(--sqx-card);
+  border: 1px solid var(--sqx-line);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 13px;
+}
+
+.arch-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 2px;
+  border-top: 1px solid var(--sqx-hair);
   font-size: 11px;
 }
+
+.arch-row:first-of-type { border-top: none; }
+
+.arch-game {
+  color: var(--sqx-mute);
+  text-transform: capitalize;
+  min-width: 64px;
+}
+
+.arch-meta { color: var(--sqx-faint); font-size: 10.5px; }
+
+.arch-net {
+  margin-left: auto;
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* ---- footer --------------------------------------------------------------- */
 
 footer {
   display: flex;
   gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid #2c3044;
+  padding: 9px 12px 10px;
+  border-top: 1px solid var(--sqx-hair);
 }
 
 button {
   flex: 1;
-  background: #232739;
-  border: 1px solid #363b55;
-  color: #cdd3e0;
+  background: var(--sqx-card);
+  border: 1px solid var(--sqx-line);
+  color: var(--sqx-mute);
   border-radius: 6px;
   padding: 6px 0;
-  font-family: inherit;
+  font-family: var(--sqx-sans);
   font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
 }
 
-button:hover { background: #2e3350; }
+button:hover {
+  background: #1b2234;
+  color: var(--sqx-text);
+}
 
-button.danger { border-color: #6b2f3a; color: #ff9aa5; }
+button:focus-visible {
+  outline: 1px solid var(--sqx-mute);
+  outline-offset: 1px;
+}
+
+button.danger { color: rgba(255, 93, 110, 0.75); border-color: rgba(255, 93, 110, 0.28); }
+button.danger:hover { background: rgba(255, 93, 110, 0.1); color: var(--sqx-neg); }

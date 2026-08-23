@@ -7,68 +7,69 @@ const fmtMoney = (n) => {
   return (n > 0 ? '+' : '') + n.toFixed(2);
 };
 
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+
 function render(state) {
   const main = $('#content');
   main.textContent = '';
 
   const games = Object.keys(state.active || {});
   if (!games.length) {
-    const p = document.createElement('p');
-    p.className = 'dim';
-    p.textContent = 'No active sessions. Open a game on spinquest.com and play a round.';
-    main.appendChild(p);
+    const box = el('div', 'empty');
+    box.appendChild(el('div', 't', 'No active sessions'));
+    box.appendChild(el('div', 's', 'Open a game on spinquest.com and play a round.'));
+    main.appendChild(box);
   }
 
   for (const game of games) {
     const s = state.active[game];
     const stats = s.stats || {};
-    const box = document.createElement('div');
-    box.className = 'session';
+    const box = el('div', 'session');
 
-    const h2 = document.createElement('h2');
-    h2.textContent = game.toUpperCase() + (state.focusedGame === game ? ' · active tab' : '');
-    box.appendChild(h2);
+    const head = el('div', 'session-head');
+    head.appendChild(el('span', 'game-badge', game.toUpperCase()));
+    if (state.focusedGame === game) head.appendChild(el('span', 'live-tag', 'active tab'));
+    const net = typeof stats.net === 'number' ? stats.net : null;
+    head.appendChild(
+      el('span', 'session-net ' + (net > 0 ? 'pos' : net < 0 ? 'neg' : 'dim'), fmtMoney(net))
+    );
+    box.appendChild(head);
 
-    const rows = [
-      ['rounds', stats.rounds ?? 0],
-      ['win rate', stats.winRate == null ? '—' : stats.winRate + '%'],
-      ['wagered', (stats.wagered ?? 0).toFixed ? stats.wagered.toFixed(2) : stats.wagered],
-      ['net', fmtMoney(stats.net)],
-      ['streak', !stats.streak ? '—' : (stats.streak > 0 ? 'W' : 'L') + Math.abs(stats.streak)],
+    const grid = el('div', 'session-grid');
+    const cells = [
+      ['rounds', String(stats.rounds ?? 0), ''],
+      ['win rate', stats.winRate == null ? '—' : stats.winRate + '%', ''],
+      ['wagered', typeof stats.wagered === 'number' ? stats.wagered.toFixed(2) : String(stats.wagered ?? '—'), ''],
+      ['streak', !stats.streak ? '—' : (stats.streak > 0 ? 'W' : 'L') + Math.abs(stats.streak),
+        stats.streak > 0 ? 'pos' : stats.streak < 0 ? 'neg' : ''],
     ];
-    for (const [label, value] of rows) {
-      const line = document.createElement('div');
-      line.className = 'line';
-      const l = document.createElement('span');
-      l.className = 'dim';
-      l.textContent = label;
-      const v = document.createElement('span');
-      v.textContent = String(value);
-      if (label === 'net' && typeof stats.net === 'number' && stats.net !== 0) {
-        v.className = stats.net > 0 ? 'pos' : 'neg';
-      }
-      line.append(l, v);
-      box.appendChild(line);
+    for (const [label, value, cls] of cells) {
+      const c = el('div', 'stat');
+      c.appendChild(el('div', 'l', label));
+      c.appendChild(el('div', 'v' + (cls ? ' ' + cls : ''), value));
+      grid.appendChild(c);
     }
+    box.appendChild(grid);
     main.appendChild(box);
   }
 
   if (state.archivedSummaries && state.archivedSummaries.length) {
-    const div = document.createElement('div');
-    div.className = 'archived';
-    const title = document.createElement('div');
-    title.className = 'dim';
-    title.textContent = 'Past sessions:';
-    div.appendChild(title);
+    const div = el('div', 'archived');
+    const label = el('div', 'label');
+    label.appendChild(el('span', null, 'Past sessions'));
+    label.appendChild(el('span', 'count', String(state.archivedSummaries.length)));
+    div.appendChild(label);
     for (const s of state.archivedSummaries.slice(0, 8)) {
-      const line = document.createElement('div');
-      line.className = 'line';
-      const l = document.createElement('span');
-      l.textContent = `${s.game} · ${s.rounds} rounds · ${new Date(s.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
-      const v = document.createElement('span');
-      v.textContent = fmtMoney(s.net);
-      v.className = s.net > 0 ? 'pos' : s.net < 0 ? 'neg' : 'dim';
-      line.append(l, v);
+      const line = el('div', 'arch-row');
+      line.appendChild(el('span', 'arch-game', s.game));
+      line.appendChild(el('span', 'arch-meta num',
+        s.rounds + ' rounds · ' + new Date(s.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })));
+      line.appendChild(el('span', 'arch-net ' + (s.net > 0 ? 'pos' : s.net < 0 ? 'neg' : 'dim'), fmtMoney(s.net)));
       div.appendChild(line);
     }
     main.appendChild(div);
