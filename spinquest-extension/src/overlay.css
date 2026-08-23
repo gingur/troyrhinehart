@@ -1,0 +1,183 @@
+/* HUD overlay — deliberately high-specificity/isolated so site styles don't bleed in. */
+#sqx-hud {
+  all: initial;
+  position: fixed;
+  top: 72px;
+  right: 16px;
+  z-index: 2147483000;
+  width: 300px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e6e9f0;
+  background: rgba(16, 18, 27, 0.94);
+  border: 1px solid #2c3044;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  user-select: none;
+}
+
+#sqx-hud * {
+  all: revert;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+#sqx-hud .sqx-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: grab;
+  border-bottom: 1px solid #2c3044;
+}
+
+#sqx-hud .sqx-title {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+#sqx-hud .sqx-game {
+  color: #8be9fd;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  flex: 1;
+  text-align: center;
+}
+
+#sqx-hud .sqx-btns {
+  display: flex;
+  gap: 4px;
+}
+
+#sqx-hud .sqx-btn {
+  background: #232739;
+  border: 1px solid #363b55;
+  color: #cdd3e0;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+#sqx-hud .sqx-btn:hover {
+  background: #2e3350;
+}
+
+#sqx-hud .sqx-body {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+#sqx-hud .sqx-empty {
+  color: #9aa1b5;
+  padding: 4px 0;
+}
+
+#sqx-hud .sqx-label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: #7f87a0;
+  margin-bottom: 3px;
+}
+
+#sqx-hud .sqx-current {
+  border: 1px solid #3d4468;
+  background: rgba(61, 68, 104, 0.18);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+
+#sqx-hud .sqx-current-line {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+#sqx-hud .sqx-mult {
+  color: #f1fa8c;
+  font-weight: 700;
+}
+
+#sqx-hud .sqx-detail {
+  color: #b9c0d4;
+  margin-top: 2px;
+}
+
+#sqx-hud .sqx-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+#sqx-hud .sqx-stat {
+  background: #1b1e2d;
+  border: 1px solid #2c3044;
+  border-radius: 7px;
+  padding: 5px 6px;
+  text-align: center;
+}
+
+#sqx-hud .sqx-stat-v {
+  font-weight: 700;
+  font-size: 12px;
+}
+
+#sqx-hud .sqx-stat-l {
+  font-size: 9px;
+  color: #7f87a0;
+  letter-spacing: 0.06em;
+}
+
+#sqx-hud .sqx-pos { color: #50fa7b; }
+#sqx-hud .sqx-neg { color: #ff5555; }
+#sqx-hud .sqx-dim { color: #7f87a0; }
+
+#sqx-hud .sqx-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+#sqx-hud .sqx-chip {
+  background: #1b1e2d;
+  border: 1px solid #2c3044;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+}
+
+#sqx-hud .sqx-history .sqx-row {
+  display: grid;
+  grid-template-columns: 48px 1fr 56px 64px;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px dashed #232739;
+}
+
+#sqx-hud .sqx-row :last-child { text-align: right; }
+
+#sqx-hud .sqx-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 2px;
+}
+
+#sqx-hud .sqx-raw-row {
+  padding: 4px 0;
+  border-bottom: 1px dashed #232739;
+  word-break: break-all;
+  font-size: 10px;
+}

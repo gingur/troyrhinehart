@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "SpinQuest Session HUD",
+  "version": "0.1.0",
+  "description": "Unifies SpinQuest casino game data into per-game sessions: current deal, round history, and session stats in one HUD.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://spinquest.com/*", "https://*.spinquest.com/*"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://spinquest.com/*", "https://*.spinquest.com/*"],
+      "js": ["src/page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://spinquest.com/*", "https://*.spinquest.com/*"],
+      "js": [
+        "src/lib/util.js",
+        "src/lib/normalize.js",
+        "src/adapters/plinko.js",
+        "src/adapters/mines.js",
+        "src/adapters/crash.js",
+        "src/adapters/blackjack.js",
+        "src/adapters/roulette.js",
+        "src/adapters/generic.js",
+        "src/content.js",
+        "src/overlay.js"
+      ],
+      "css": ["src/overlay.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "SpinQuest Session HUD"
+  }
+}
