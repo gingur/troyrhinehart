@@ -401,7 +401,7 @@
   // CRASH — mid-deal: multiplier climbing, player has a live bet.
   {
     const s = makeCrashSession(101, 26, 34);
-    s.current = { phase: 'flying', bet: 5, multiplier: 1.87, updatedAt: NOW, detail: {} };
+    s.current = { phase: 'flying', bet: 5, multiplier: 1.87, updatedAt: NOW, detail: { autoCashout: 2.5 } };
     fixtures['crash-mid-deal'] = { state: snap('crash', { crash: s }, archivedSummaries(7, 3)), rawLog: makeRawLog('crash') };
   }
   // CRASH — between deals, long history (68 player rounds over ~40 min).
@@ -418,13 +418,13 @@
   // ROULETTE — mid-spin: bet placed, wheel spinning.
   {
     const s = makeRouletteSession(304, 17, 22);
-    s.current = { phase: 'spinning', bet: 10, updatedAt: NOW, detail: {} };
+    s.current = { phase: 'spinning', bet: 10, updatedAt: NOW, detail: { betType: 'red', payoutMult: 2 } };
     fixtures['roulette-mid-spin'] = { state: snap('roulette', { roulette: s }, []), rawLog: makeRawLog('roulette') };
   }
   // MINES — mid-deal: 6 tiles revealed, running multiplier.
   {
     const s = makeMinesSession(405, 23, 31);
-    s.current = { phase: 'picking', bet: 2.5, multiplier: 2.14, updatedAt: NOW, detail: { mines: 5, revealedCount: 6 } };
+    s.current = { phase: 'picking', bet: 2.5, multiplier: 2.14, updatedAt: NOW, detail: { mines: 5, revealedCount: 6, tilesTotal: 25 } };
     fixtures['mines-mid-deal'] = { state: snap('mines', { mines: s }, archivedSummaries(10, 2)), rawLog: makeRawLog('mines') };
   }
   // MINES — between games.
@@ -454,7 +454,7 @@
   // PLINKO — mid-drop.
   {
     const s = makePlinkoSession(609, 34, 28);
-    s.current = { phase: 'dropping', bet: 1, updatedAt: NOW, detail: { risk: 'high' } };
+    s.current = { phase: 'dropping', bet: 1, updatedAt: NOW, detail: { risk: 'high', rows: 16, maxMult: 110 } };
     fixtures['plinko-mid-drop'] = { state: snap('plinko', { plinko: s }, []), rawLog: makeRawLog('plinko') };
   }
   // PLINKO — long drop history (61 rounds).

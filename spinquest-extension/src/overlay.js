@@ -205,15 +205,26 @@
     return box;
   }
 
+  // ---- current deal ---------------------------------------------------------
+  // One card per game, tuned so the decision-relevant number dominates:
+  // crash/mines lead with the live multiplier + cash-out-now value, blackjack
+  // renders card tiles and a totals duel, roulette/plinko lead with the bet
+  // at risk + potential payout. Everything degrades gracefully to whatever
+  // fields the adapter managed to map.
+
   function renderCurrent(body, session) {
     const cur = session.current;
     if (!cur) return;
+    const d = cur.detail || {};
+    const game = session.game;
     const box = h('div', 'sqx-current');
 
     const top = h('div', 'sqx-current-top');
     top.appendChild(h('span', 'sqx-live-dot'));
     top.appendChild(h('span', 'sqx-phase', cur.phase || 'deal'));
-    if (typeof cur.bet === 'number') {
+    // Roulette/plinko show the bet as the hero number — no duplicate up top.
+    const betIsHero = (game === 'roulette' || game === 'plinko') && typeof cur.bet === 'number';
+    if (typeof cur.bet === 'number' && !betIsHero) {
       const bet = h('span', 'sqx-current-bet');
       bet.appendChild(document.createTextNode('bet '));
       bet.appendChild(num(cur.bet.toFixed(2)));
@@ -221,37 +232,241 @@
     }
     box.appendChild(top);
 
-    if (typeof cur.multiplier === 'number') {
-      box.appendChild(h('div', 'sqx-mult-big', cur.multiplier.toFixed(2) + '×'));
-    }
-
-    const d = cur.detail || {};
-    if (session.game === 'blackjack' && (d.player || d.dealer)) {
-      const cards = (arr) => (Array.isArray(arr) ? arr.map(cardText).join(' ') : '?');
-      box.appendChild(h('div', 'sqx-detail', 'You: ' + cards(d.player) + (d.playerTotal ? ' (' + d.playerTotal + ')' : '')));
-      box.appendChild(h('div', 'sqx-detail', 'Dealer: ' + cards(d.dealer) + (d.dealerTotal ? ' (' + d.dealerTotal + ')' : '')));
-    } else if (session.game === 'mines') {
-      const bits = [];
-      if (d.mines != null) bits.push(d.mines + ' mines');
-      if (d.revealedCount != null) bits.push(d.revealedCount + ' revealed');
-      if (bits.length) box.appendChild(h('div', 'sqx-detail', bits.join(' · ')));
-    } else if (session.game === 'crash' && d.crashPoint != null) {
-      box.appendChild(h('div', 'sqx-detail', 'crashed at ' + d.crashPoint + '×'));
-    } else if (session.game === 'roulette' && d.number != null) {
-      box.appendChild(h('div', 'sqx-detail', 'landed ' + d.number + ' (' + d.color + ')'));
+    if (game === 'blackjack' && (d.player || d.dealer)) {
+      renderBlackjackDeal(box, d);
+    } else if (game === 'mines') {
+      renderMinesDeal(box, cur, d);
+    } else if (game === 'crash') {
+      renderCrashDeal(box, cur, d);
+    } else if (game === 'roulette') {
+      renderRouletteDeal(box, cur, d, session);
+    } else if (game === 'plinko') {
+      renderPlinkoDeal(box, cur, d, session);
+    } else if (typeof cur.multiplier === 'number') {
+      box.appendChild(heroRow(null, cur.multiplier.toFixed(2), '×', 'sqx-hero-live', null));
     }
     body.appendChild(box);
   }
 
-  function cardText(c) {
-    if (c == null) return '?';
-    if (typeof c === 'string') return c;
-    if (typeof c === 'object') {
-      const rank = c.rank ?? c.value ?? c.face ?? '?';
-      const suit = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' }[String(c.suit || '').toLowerCase()] || c.suit || '';
-      return String(rank) + suit;
+  // Big-number row: [label?] value+unit on the left, optional right block.
+  function heroRow(label, value, unit, cls, right) {
+    const row = h('div', 'sqx-hero');
+    const main = h('div', 'sqx-hero-main');
+    if (label) main.appendChild(h('div', 'sqx-hero-l', label));
+    const v = h('div', 'sqx-hero-num' + (cls ? ' ' + cls : ''));
+    v.appendChild(h('span', null, value));
+    if (unit) v.appendChild(h('span', 'sqx-hero-unit', unit));
+    main.appendChild(v);
+    row.appendChild(main);
+    if (right) row.appendChild(right);
+    return row;
+  }
+
+  // Right-aligned "what you'd get" block next to the hero number.
+  function cashBlock(label, mainText, mainCls, subText, subCls) {
+    const b = h('div', 'sqx-cash');
+    b.appendChild(h('div', 'sqx-cash-l', label));
+    const v = h('div', 'sqx-cash-v');
+    v.appendChild(h('span', mainCls || null, mainText));
+    if (subText) v.appendChild(h('span', 'sqx-cash-sub' + (subCls ? ' ' + subCls : ''), subText));
+    b.appendChild(v);
+    return b;
+  }
+
+  // Row of tiny label/value stats under the hero. items: [label, value|node, cls?]
+  function miniRow(items) {
+    const row = h('div', 'sqx-mini');
+    for (const [label, value, cls] of items) {
+      const c = h('div', 'sqx-mini-c');
+      c.appendChild(h('div', 'sqx-mini-l', label));
+      const v = h('div', 'sqx-mini-v' + (cls ? ' ' + cls : ''));
+      if (value instanceof Node) v.appendChild(value);
+      else v.textContent = value;
+      c.appendChild(v);
+      row.appendChild(c);
     }
-    return String(c);
+    return row;
+  }
+
+  function cashOutRight(cur) {
+    if (typeof cur.multiplier !== 'number' || typeof cur.bet !== 'number') return null;
+    const val = cur.bet * cur.multiplier;
+    const prof = Math.round((val - cur.bet) * 100) / 100;
+    return cashBlock('cash out now', fmtAmount(val), null, fmtMoney(prof), posNegCls(prof));
+  }
+
+  function renderCrashDeal(box, cur, d) {
+    if (typeof cur.multiplier === 'number') {
+      box.appendChild(heroRow(null, cur.multiplier.toFixed(2), '×', 'sqx-hero-live', cashOutRight(cur)));
+    }
+    const minis = [];
+    if (typeof d.autoCashout === 'number') {
+      minis.push(['auto cash', d.autoCashout.toFixed(2) + '×']);
+      if (typeof cur.bet === 'number') {
+        const w = Math.round(cur.bet * (d.autoCashout - 1) * 100) / 100;
+        minis.push(['win @ auto', fmtMoney(w), posNegCls(w)]);
+      }
+    }
+    if (d.crashPoint != null) minis.push(['crashed at', d.crashPoint + '×', 'sqx-neg']);
+    if (minis.length) box.appendChild(miniRow(minis));
+  }
+
+  function renderMinesDeal(box, cur, d) {
+    if (typeof cur.multiplier === 'number') {
+      box.appendChild(heroRow(null, cur.multiplier.toFixed(2), '×', 'sqx-hero-live', cashOutRight(cur)));
+    }
+    const total = typeof d.tilesTotal === 'number' ? d.tilesTotal : 25;
+    const mines = typeof d.mines === 'number' ? d.mines : null;
+    const picked = typeof d.revealedCount === 'number' ? d.revealedCount : null;
+    const minis = [];
+    if (mines != null && picked != null && picked + mines <= total) {
+      const left = total - picked; // unrevealed tiles
+      const safeLeft = left - mines; // safe tiles among them
+      if (safeLeft > 0 && typeof cur.multiplier === 'number') {
+        minis.push(['next tile', ((cur.multiplier * left) / safeLeft).toFixed(2) + '×']);
+      }
+      if (left > 0) minis.push(['safe odds', Math.round((safeLeft / left) * 100) + '%']);
+      minis.push(['picked', picked + '/' + (total - mines)]);
+      minis.push(['mines', String(mines)]);
+    } else {
+      if (picked != null) minis.push(['revealed', String(picked)]);
+      if (mines != null) minis.push(['mines', String(mines)]);
+    }
+    if (minis.length) box.appendChild(miniRow(minis));
+  }
+
+  function renderRouletteDeal(box, cur, d, session) {
+    const pays = typeof d.payoutMult === 'number' ? d.payoutMult : null;
+    if (typeof cur.bet === 'number') {
+      const right = pays != null
+        ? cashBlock('to win', fmtMoney(Math.round(cur.bet * (pays - 1) * 100) / 100), 'sqx-pos', null, null)
+        : null;
+      box.appendChild(heroRow('bet at risk', cur.bet.toFixed(2), null, null, right));
+    }
+    const minis = [];
+    if (d.betType) minis.push(['bet on', wheelValue(d.betType, null)]);
+    if (pays != null) minis.push(['pays', pays + '×']);
+    const ticks = Array.isArray(session.ticks) ? session.ticks : [];
+    const lastTick = ticks.length ? ticks[ticks.length - 1] : null;
+    if (lastTick && typeof lastTick.number === 'number') {
+      minis.push(['last spin', wheelValue(lastTick.color, lastTick.number)]);
+    }
+    if (d.number != null) minis.push(['landed', wheelValue(d.color, d.number)]);
+    if (minis.length) box.appendChild(miniRow(minis));
+  }
+
+  // "red 14" / "RED" with a little wheel-color swatch.
+  function wheelValue(color, number) {
+    const wrap = h('span', 'sqx-wheel');
+    const c = String(color || '').toLowerCase();
+    if (c === 'red' || c === 'black' || c === 'green') {
+      wrap.appendChild(h('span', 'sqx-wheel-dot sqx-wheel-' + c));
+    }
+    wrap.appendChild(h('span', null, number != null ? String(number) : String(color || '?').toUpperCase()));
+    return wrap;
+  }
+
+  function renderPlinkoDeal(box, cur, d, session) {
+    const maxMult = typeof d.maxMult === 'number' ? d.maxMult : null;
+    if (typeof cur.bet === 'number') {
+      const right = maxMult != null
+        ? cashBlock('max win', fmtAmount(cur.bet * maxMult), null, maxMult + '×', 'sqx-dim')
+        : null;
+      box.appendChild(heroRow('bet at risk', cur.bet.toFixed(2), null, null, right));
+    }
+    const minis = [];
+    if (d.risk) minis.push(['risk', String(d.risk), String(d.risk).toLowerCase() === 'high' ? 'sqx-live' : '']);
+    if (typeof d.rows === 'number') minis.push(['rows', String(d.rows)]);
+    const rounds = Array.isArray(session.rounds) ? session.rounds : [];
+    const last = rounds.length ? rounds[rounds.length - 1] : null;
+    if (last && typeof last.multiplier === 'number') {
+      minis.push(['last drop', last.multiplier + '×', last.multiplier >= 1 ? 'sqx-pos' : 'sqx-neg']);
+    }
+    if (minis.length) box.appendChild(miniRow(minis));
+  }
+
+  // -- blackjack: card tiles + totals duel ------------------------------------
+
+  const SUIT_GLYPH = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
+  const SUIT_LETTER = { h: 'hearts', d: 'diamonds', c: 'clubs', s: 'spades', '♥': 'hearts', '♦': 'diamonds', '♣': 'clubs', '♠': 'spades' };
+
+  // -> { rank, suit } or null for a hidden/unknown card.
+  function parseCard(c) {
+    if (c == null) return null;
+    if (typeof c === 'object') {
+      const rank = c.rank ?? c.value ?? c.face;
+      if (rank == null) return null;
+      return { rank: String(rank), suit: String(c.suit || '').toLowerCase() };
+    }
+    const s = String(c).trim();
+    if (!s || s === '?') return null;
+    const m = s.match(/^(10|[2-9]|[atjqk])\s*([hdcs♥♦♣♠]?)$/i);
+    if (m) {
+      let rank = m[1].toUpperCase();
+      if (rank === 'T') rank = '10';
+      return { rank, suit: SUIT_LETTER[m[2].toLowerCase()] || '' };
+    }
+    return { rank: s, suit: '' };
+  }
+
+  function cardTile(c) {
+    const p = parseCard(c);
+    if (!p) {
+      const t = h('span', 'sqx-card sqx-card-down');
+      t.appendChild(h('span', 'sqx-card-rank', '?'));
+      return t;
+    }
+    const red = p.suit === 'hearts' || p.suit === 'diamonds';
+    const t = h('span', 'sqx-card' + (red ? ' sqx-card-red' : ''));
+    t.appendChild(h('span', 'sqx-card-rank', p.rank));
+    const g = SUIT_GLYPH[p.suit];
+    if (g) t.appendChild(h('span', 'sqx-card-suit', g));
+    return t;
+  }
+
+  function cardsRow(arr, alignRight) {
+    const row = h('div', 'sqx-cards' + (alignRight ? ' sqx-cards-r' : ''));
+    if (Array.isArray(arr) && arr.length) for (const c of arr) row.appendChild(cardTile(c));
+    else row.appendChild(cardTile(null));
+    return row;
+  }
+
+  function totalEl(total, alignRight) {
+    const n = typeof total === 'number' ? total : null;
+    const cls = n == null ? ' sqx-dim' : n > 21 ? ' sqx-neg' : n === 21 ? ' sqx-pos' : '';
+    const el = h('div', 'sqx-duel-total' + cls + (alignRight ? ' sqx-duel-tr' : ''));
+    el.appendChild(h('span', null, n == null ? (total != null ? String(total) : '—') : String(n)));
+    if (n != null && n > 21) el.appendChild(h('span', 'sqx-duel-flag', 'bust'));
+    if (n === 21) el.appendChild(h('span', 'sqx-duel-flag', '21!'));
+    return el;
+  }
+
+  function renderBlackjackDeal(box, d) {
+    const duel = h('div', 'sqx-duel');
+
+    const you = h('div', 'sqx-duel-side');
+    you.appendChild(h('div', 'sqx-duel-l', 'you'));
+    you.appendChild(cardsRow(d.player, false));
+    you.appendChild(totalEl(d.playerTotal, false));
+    duel.appendChild(you);
+
+    duel.appendChild(h('div', 'sqx-duel-vs', 'vs'));
+
+    const dealerCards = Array.isArray(d.dealer) ? d.dealer : [];
+    const hidden = dealerCards.some((c) => parseCard(c) == null);
+    const dealer = h('div', 'sqx-duel-side sqx-duel-right');
+    dealer.appendChild(h('div', 'sqx-duel-l', hidden ? 'dealer shows' : 'dealer'));
+    dealer.appendChild(cardsRow(d.dealer, true));
+    if (hidden) {
+      // Up-card rank is the number a player actually reasons against.
+      const up = dealerCards.map(parseCard).find(Boolean);
+      const el = h('div', 'sqx-duel-total sqx-duel-tr', up ? up.rank : d.dealerTotal != null ? String(d.dealerTotal) : '—');
+      dealer.appendChild(el);
+    } else {
+      dealer.appendChild(totalEl(d.dealerTotal, true));
+    }
+    duel.appendChild(dealer);
+    box.appendChild(duel);
   }
 
   // Cumulative-profit values for the sparkline: prefer the background-computed

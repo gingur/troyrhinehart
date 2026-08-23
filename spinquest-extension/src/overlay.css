@@ -282,15 +282,211 @@
 
 #sqx-hud .sqx-current-bet .sqx-num { color: var(--sqx-text); }
 
-#sqx-hud .sqx-mult-big {
+/* hero row: the one number you act on, as big as the card allows */
+#sqx-hud .sqx-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+#sqx-hud .sqx-hero-l {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+  margin-bottom: 1px;
+}
+
+#sqx-hud .sqx-hero-num {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
   font-family: var(--sqx-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 20px;
+  font-size: 27px;
   font-weight: 700;
-  line-height: 1.2;
-  color: var(--sqx-live);
-  margin-top: 2px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--sqx-text);
   transition: color 200ms ease;
+}
+
+#sqx-hud .sqx-hero-num.sqx-hero-live { color: var(--sqx-live); }
+
+#sqx-hud .sqx-hero-unit {
+  font-size: 15px;
+  font-weight: 650;
+  opacity: 0.85;
+}
+
+/* right-aligned "what you'd get" block beside the hero number */
+#sqx-hud .sqx-cash { text-align: right; flex: none; }
+
+#sqx-hud .sqx-cash-l {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-cash-v {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+#sqx-hud .sqx-cash-sub {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* tiny label/value stats under the hero */
+#sqx-hud .sqx-mini {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--sqx-hair);
+}
+
+#sqx-hud .sqx-mini-c { min-width: 0; }
+
+#sqx-hud .sqx-mini-l {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+  white-space: nowrap;
+}
+
+#sqx-hud .sqx-mini-v {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 650;
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+#sqx-hud .sqx-mini-v.sqx-live { color: var(--sqx-live); }
+
+/* roulette wheel-color swatch inside a mini value */
+#sqx-hud .sqx-wheel { display: inline-flex; align-items: center; gap: 4px; }
+
+#sqx-hud .sqx-wheel-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+#sqx-hud .sqx-wheel-red { background: #e0455a; }
+#sqx-hud .sqx-wheel-black { background: #2b3247; box-shadow: inset 0 0 0 1px var(--sqx-mute); }
+#sqx-hud .sqx-wheel-green { background: #27c86f; }
+
+/* blackjack duel: you vs dealer, card tiles + big totals */
+#sqx-hud .sqx-duel {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#sqx-hud .sqx-duel-right { text-align: right; }
+
+#sqx-hud .sqx-duel-vs {
+  align-self: center;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-duel-l {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-duel-total {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-top: 4px;
+}
+
+#sqx-hud .sqx-duel-tr { justify-content: flex-end; }
+
+#sqx-hud .sqx-duel-flag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* card tiles (PT4-style, two-color deck on light tile) */
+#sqx-hud .sqx-cards {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+#sqx-hud .sqx-cards-r { justify-content: flex-end; }
+
+#sqx-hud .sqx-card {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 24px;
+  height: 32px;
+  border-radius: 4px;
+  background: #f2f4fa;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  color: #1a2130;
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+#sqx-hud .sqx-card-red { color: #cf2e44; }
+
+#sqx-hud .sqx-card-rank {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#sqx-hud .sqx-card-suit {
+  font-size: 10px;
+  line-height: 1;
+}
+
+#sqx-hud .sqx-card-down {
+  background: repeating-linear-gradient(135deg, #1b2234 0 3px, #222b42 3px 6px);
+  border: 1px solid var(--sqx-line);
+  box-shadow: none;
+  color: var(--sqx-faint);
 }
 
 #sqx-hud .sqx-detail {
