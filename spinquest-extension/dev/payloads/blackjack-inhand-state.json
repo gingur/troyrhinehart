@@ -1,0 +1,68 @@
+{
+  "game": "blackjack",
+  "note": "mid-hand deal -> state with hands and totals, no round",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/blackjack/hit",
+      "ts": 1787000000000,
+      "body": {
+        "playerHand": [
+          {
+            "rank": "K",
+            "suit": "S"
+          },
+          {
+            "rank": "7",
+            "suit": "D"
+          }
+        ],
+        "dealerHand": [
+          {
+            "rank": "9",
+            "suit": "H"
+          }
+        ],
+        "playerTotal": 17,
+        "dealerTotal": 9,
+        "actions": [
+          "hit",
+          "stand"
+        ],
+        "status": "player_turn"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "blackjack",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "in-hand",
+          "detail": {
+            "playerTotal": 17,
+            "dealerTotal": 9,
+            "player": [
+              {
+                "rank": "K",
+                "suit": "S"
+              },
+              {
+                "rank": "7",
+                "suit": "D"
+              }
+            ],
+            "dealer": [
+              {
+                "rank": "9",
+                "suit": "H"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

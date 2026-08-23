@@ -1,0 +1,44 @@
+{
+  "game": "plinko",
+  "note": "absurd magnitudes (big-int-ish strings, 1e15 numbers) never become money",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/plinko/bet",
+      "ts": 1787000000000,
+      "body": {
+        "betId": "bm-1",
+        "bet": "123456789012345678901234567890",
+        "payout": "999999999999999999",
+        "state": "settled"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/plinko/bet",
+      "ts": 1787000001000,
+      "body": {
+        "betId": "bm-2",
+        "bet": 1000000000000000,
+        "payout": 3,
+        "state": "settled"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "bm-2",
+          "bet": "__absent__",
+          "payout": 3,
+          "result": "unknown"
+        }
+      }
+    }
+  ]
+}

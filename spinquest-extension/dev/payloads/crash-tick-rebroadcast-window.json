@@ -1,0 +1,88 @@
+{
+  "game": "crash",
+  "note": "id-less end-of-round frame rebroadcast within 10s is one tick; past the window it is a new round",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000000000,
+      "body": {
+        "status": "crashed",
+        "crashPoint": 2.31,
+        "seq": 1
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000005000,
+      "body": {
+        "status": "crashed",
+        "crashPoint": 2.31,
+        "seq": 2
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000020000,
+      "body": {
+        "status": "crashed",
+        "crashPoint": 2.31,
+        "seq": 3
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000000000,
+          "crashPoint": 2.31
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000020000,
+          "crashPoint": 2.31
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    }
+  ]
+}

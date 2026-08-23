@@ -1,0 +1,44 @@
+{
+  "game": "crash",
+  "note": "namespaced+ack socket.io prefix 42/crash,17[...]; engine.io control frames are noise",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "2"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "3probe"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "42/crash,17[\"round:end\",{\"crash_point\":1.07}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "crashPoint": 1.07
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed",
+          "detail": {
+            "crashPoint": 1.07
+          }
+        }
+      }
+    }
+  ]
+}

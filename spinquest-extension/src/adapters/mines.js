@@ -16,6 +16,15 @@ SQX.adapters.push({
     if (evt.direction !== 'in') return [];
     const body = evt.body;
 
+    // History payloads: a list of settled games, one round per entry.
+    const list = SQX.roundsFromList(evt, (round, item) => {
+      round.detail = {
+        mines: SQX.deepNum(item, /^(mines?|mineCount|mine_count|bombs?)$/i),
+        revealedCount: SQX.deepNum(item, /^(revealedCount|revealed_count|picksCount)$/i),
+      };
+    });
+    if (list) return list;
+
     const mineCount = SQX.deepNum(body, /^(mines?|mineCount|mine_count|bombs?)$/i);
     const revealed = SQX.deepFind(body, /^(revealed|revealedTiles|opened|picks|selectedTiles)$/i, (v) => Array.isArray(v));
     const status = SQX.deepStr(body, SQX.KEYS.state);

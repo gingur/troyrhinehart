@@ -1,0 +1,70 @@
+{
+  "game": "crash",
+  "note": "mixed history: entries the player bet on become rounds, the rest only ticks; per-entry timestamps win",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/crash/my-history",
+      "ts": 1787000200000,
+      "body": {
+        "data": {
+          "rounds": [
+            {
+              "roundId": "ph-1",
+              "crashPoint": 2.5,
+              "bet": 1,
+              "payout": 2.5,
+              "createdAt": 1787000100000
+            },
+            {
+              "roundId": "ph-2",
+              "crashPoint": 1.01
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000100000,
+          "crashPoint": 2.5,
+          "id": "ph-1"
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "ph-1",
+          "ts": 1787000100000,
+          "bet": 1,
+          "payout": 2.5,
+          "profit": 1.5,
+          "result": "win",
+          "detail": {
+            "crashPoint": 2.5
+          }
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000200000,
+          "crashPoint": 1.01,
+          "id": "ph-2"
+        }
+      }
+    }
+  ]
+}

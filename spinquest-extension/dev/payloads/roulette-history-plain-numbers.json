@@ -1,0 +1,78 @@
+{
+  "game": "roulette",
+  "note": "spin history as a bare integer array -> one tick per number",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/roulette/history",
+      "ts": 1787000000000,
+      "body": {
+        "history": [
+          32,
+          0,
+          15,
+          19,
+          4
+        ]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000000000,
+          "number": 32,
+          "color": "red"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000000000,
+          "number": 0,
+          "color": "green"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000000000,
+          "number": 15,
+          "color": "black"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000000000,
+          "number": 19,
+          "color": "red"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "ts": 1787000000000,
+          "number": 4,
+          "color": "black"
+        }
+      }
+    }
+  ]
+}

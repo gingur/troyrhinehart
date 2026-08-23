@@ -12,7 +12,15 @@ SQX.adapters.push({
   },
 
   parse(evt) {
-    if (evt.direction !== 'in' || !SQX.looksSettled(evt)) return [];
+    if (evt.direction !== 'in') return [];
+
+    // Batched/history payloads: every settled-looking entry becomes a round.
+    const list = SQX.roundsFromList(evt, (round) => {
+      round.detail = { source: 'generic' };
+    });
+    if (list) return list;
+
+    if (!SQX.looksSettled(evt)) return [];
     const round = SQX.extractRound(evt);
     if (!round) return [];
     round.detail = { source: 'generic' };

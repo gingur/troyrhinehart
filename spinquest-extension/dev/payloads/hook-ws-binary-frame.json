@@ -1,0 +1,38 @@
+{
+  "game": "roulette",
+  "note": "binary (ArrayBuffer) WebSocket frame holding JSON is decoded and captured",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "binary": "arraybuffer",
+      "frame": "{\"round_id\":\"wb-9\",\"winningNumber\":21}"
+    }
+  ],
+  "expected": [
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "number": 21,
+          "color": "red",
+          "id": "wb-9"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "result",
+          "detail": {
+            "number": 21,
+            "color": "red"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "game": "crash",
+  "note": "socket.io text frame 42[\"event\",{...}] with a rising multiplier",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/?EIO=4&transport=websocket",
+      "frame": "42[\"crash:tick\",{\"multiplier\":1.42}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "flying",
+          "multiplier": 1.42
+        }
+      }
+    }
+  ]
+}

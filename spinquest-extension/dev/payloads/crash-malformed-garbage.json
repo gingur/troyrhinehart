@@ -1,0 +1,51 @@
+{
+  "game": "crash",
+  "note": "unparseable frames and poisoned values produce nothing — and never throw",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "ð¤¡notjson"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"crash:end\""
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000000000,
+      "body": {
+        "crashPoint": "NaN"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000000500,
+      "body": {
+        "crashPoint": {
+          "deeply": {
+            "nested": {}
+          }
+        }
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/x",
+      "ts": 1787000001000,
+      "body": 42
+    }
+  ],
+  "expected": []
+}

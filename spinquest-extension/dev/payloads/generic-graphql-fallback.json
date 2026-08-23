@@ -1,0 +1,40 @@
+{
+  "game": "crash",
+  "note": "GraphQL envelope with no game-specific keys on a crash page falls to the generic adapter",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/graphql",
+      "ts": 1787000000000,
+      "body": {
+        "data": {
+          "placeBet": {
+            "id": "g-3",
+            "amount": 5,
+            "payout": 0,
+            "state": "settled"
+          }
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "g-3",
+          "bet": 5,
+          "payout": 0,
+          "profit": -5,
+          "result": "loss",
+          "detail": {
+            "source": "generic"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "game": "plinko",
+  "note": "nulls, empty shells, negative strings, over-deep nesting: nothing extracted, nothing thrown",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/a",
+      "ts": 1787000000000,
+      "body": {
+        "data": null
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/b",
+      "ts": 1787000000100,
+      "body": {
+        "results": [
+          null
+        ]
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/c",
+      "ts": 1787000000200,
+      "body": [
+        [
+          [
+            []
+          ]
+        ]
+      ]
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/d",
+      "ts": 1787000000300,
+      "body": {
+        "bet": {}
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/e",
+      "ts": 1787000000400,
+      "body": {
+        "bet": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/f",
+      "ts": 1787000000500,
+      "body": {
+        "amount": "-5",
+        "state": "settled"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/g",
+      "ts": 1787000000600,
+      "body": {
+        "a": {
+          "b": {
+            "c": {
+              "d": {
+                "e": {
+                  "f": {
+                    "g": {
+                      "bet": 1,
+                      "payout": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "expected": []
+}

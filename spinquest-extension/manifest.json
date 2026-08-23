@@ -14,7 +14,9 @@
       "matches": ["https://spinquest.com/*", "https://*.spinquest.com/*"],
       "js": ["src/page-hook.js"],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true,
+      "match_about_blank": true
     },
     {
       "matches": ["https://spinquest.com/*", "https://*.spinquest.com/*"],
@@ -27,9 +29,15 @@
         "src/adapters/blackjack.js",
         "src/adapters/roulette.js",
         "src/adapters/generic.js",
-        "src/content.js",
-        "src/overlay.js"
+        "src/content.js"
       ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": ["https://spinquest.com/*", "https://*.spinquest.com/*"],
+      "js": ["src/overlay.js"],
       "css": ["src/overlay.css"],
       "run_at": "document_start"
     }

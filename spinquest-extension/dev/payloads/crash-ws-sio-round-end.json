@@ -1,0 +1,35 @@
+{
+  "game": "crash",
+  "note": "socket.io frame carrying a string-encoded crash point and a strong round id",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/?EIO=4&transport=websocket",
+      "frame": "42[\"crash:end\",{\"roundId\":\"r-889\",\"crashPoint\":\"2.31\"}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "crashPoint": 2.31,
+          "id": "r-889"
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed",
+          "detail": {
+            "crashPoint": 2.31
+          }
+        }
+      }
+    }
+  ]
+}

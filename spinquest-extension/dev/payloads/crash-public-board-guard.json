@@ -1,0 +1,51 @@
+{
+  "game": "crash",
+  "note": "multiplayer bet board (usernames) must never become the player's own round",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000000000,
+      "body": {
+        "roundId": "pub-7",
+        "crashPoint": 2.07,
+        "bets": [
+          {
+            "username": "whale88",
+            "betId": "x1",
+            "bet": 500,
+            "payout": 1035
+          },
+          {
+            "username": "fish2",
+            "betId": "x2",
+            "bet": 5,
+            "payout": 0
+          }
+        ]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "crashPoint": 2.07,
+          "id": "pub-7"
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    }
+  ]
+}

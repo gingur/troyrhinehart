@@ -1,0 +1,44 @@
+{
+  "game": "mines",
+  "note": "in-progress reveal -> state patch with running multiplier (string-encoded)",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/mines/reveal",
+      "ts": 1787000000000,
+      "body": {
+        "gameId": "m-1",
+        "mines": 3,
+        "revealed": [
+          4,
+          9
+        ],
+        "multiplier": "1.32",
+        "bet": 0.5,
+        "status": "active"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "mines",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "revealing",
+          "multiplier": 1.32,
+          "bet": 0.5,
+          "detail": {
+            "mines": 3,
+            "revealedCount": 2,
+            "revealed": [
+              4,
+              9
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

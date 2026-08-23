@@ -38,14 +38,32 @@ SQX.deepFind = function deepFind(obj, keyRe, accept) {
   return found;
 };
 
+// Anything at or past this magnitude is not money or a multiplier — it's a
+// timestamp, a big-int-ish id, or garbage. Also the ceiling for accepting
+// string-encoded numbers.
+SQX.NUM_MAX = 1e12;
+
+/**
+ * Parse a raw payload value as a number: numbers pass through, numeric
+ * strings ("1.23", " 2 ") convert. Everything else returns NaN — including
+ * big-int-ish strings too long to represent exactly (those are ids, and
+ * Number() would silently corrupt them) and absurd magnitudes.
+ */
+SQX.parseNum = function parseNum(v) {
+  let n;
+  if (typeof v === 'number') n = v;
+  else if (typeof v === 'string') {
+    const t = v.trim();
+    if (!t || t.length > 24) return NaN;
+    n = Number(t);
+  } else return NaN;
+  return Number.isFinite(n) && Math.abs(n) < SQX.NUM_MAX ? n : NaN;
+};
+
 /** deepFind specialized to numbers ("12.5" counts). Returns undefined if absent. */
 SQX.deepNum = function deepNum(obj, keyRe) {
-  const raw = SQX.deepFind(obj, keyRe, (v) => {
-    if (typeof v === 'number') return Number.isFinite(v);
-    if (typeof v === 'string') return v !== '' && Number.isFinite(Number(v));
-    return false;
-  });
-  return raw === undefined ? undefined : Number(raw);
+  const raw = SQX.deepFind(obj, keyRe, (v) => !Number.isNaN(SQX.parseNum(v)));
+  return raw === undefined ? undefined : SQX.parseNum(raw);
 };
 
 /**
@@ -55,10 +73,27 @@ SQX.deepNum = function deepNum(obj, keyRe) {
  */
 SQX.deepMoney = function deepMoney(obj, keyRe) {
   const raw = SQX.deepFind(obj, keyRe, (v) => {
-    const n = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : NaN;
-    return Number.isFinite(n) && n >= 0;
+    const n = SQX.parseNum(v);
+    return !Number.isNaN(n) && n >= 0;
   });
-  return raw === undefined ? undefined : Number(raw);
+  return raw === undefined ? undefined : SQX.parseNum(raw);
+};
+
+/**
+ * deepMoney with a path veto: skips matches whose dotted path also matches
+ * `banRe`. Lets a bare `amount` count as the bet while `payout.amount` stays
+ * the payout's.
+ */
+SQX.deepMoneyAt = function deepMoneyAt(obj, keyRe, banRe) {
+  let found;
+  SQX.walk(obj, (key, value, path) => {
+    if (found !== undefined) return;
+    if (!keyRe.test(key)) return;
+    if (banRe && banRe.test(path)) return;
+    const n = SQX.parseNum(value);
+    if (!Number.isNaN(n) && n >= 0) found = n;
+  });
+  return found;
 };
 
 SQX.deepStr = function deepStr(obj, keyRe) {
@@ -73,9 +108,15 @@ SQX.hasKey = function hasKey(obj, keyRe) {
 /** Case-insensitive check that the URL or any key hints at a game name. */
 SQX.mentions = function mentions(evt, word) {
   const re = new RegExp(word, 'i');
-  if (re.test(evt.url)) return true;
-  return SQX.deepFind(evt.body, /^(game|type|gameName|game_type|kind|slug)$/i, (v) =>
-    typeof v === 'string' && re.test(v)
+  if (re.test(String(evt.url || ''))) return true;
+  const body = evt.body;
+  // socket.io-style frames arrive as ["event:name", {...}] — the event name
+  // is often the only place the game is spelled out.
+  if (Array.isArray(body) && typeof body[0] === 'string' && body[0].length < 200 && re.test(body[0])) {
+    return true;
+  }
+  return SQX.deepFind(body, /^(game|type|gameName|game_type|kind|slug|event|channel|topic)$/i, (v) =>
+    typeof v === 'string' && v.length < 200 && re.test(v)
   ) !== undefined;
 };
 

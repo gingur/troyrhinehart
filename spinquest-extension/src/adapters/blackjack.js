@@ -16,6 +16,14 @@ SQX.adapters.push({
     if (evt.direction !== 'in') return [];
     const body = evt.body;
 
+    // History payloads: a list of settled hands, one round per entry.
+    const list = SQX.roundsFromList(evt, (round, item) => {
+      const outcome = SQX.deepStr(item, /^(outcome|result|winner)$/i);
+      if (outcome && /push|tie|draw/i.test(outcome)) round.result = 'push';
+      round.detail = { outcome };
+    });
+    if (list) return list;
+
     const pickHand = (re) =>
       SQX.deepFind(body, re, (v) => Array.isArray(v) && v.length && v.length <= 12);
 

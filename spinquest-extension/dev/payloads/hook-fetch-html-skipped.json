@@ -1,0 +1,13 @@
+{
+  "game": "plinko",
+  "note": "declared non-JSON content types are never read",
+  "steps": [
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/page",
+      "contentType": "text/html",
+      "text": "{\"betId\":\"f-3\",\"bet\":1,\"payout\":2,\"state\":\"settled\"}"
+    }
+  ],
+  "expected": []
+}

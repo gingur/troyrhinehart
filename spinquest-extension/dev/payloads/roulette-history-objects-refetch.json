@@ -1,0 +1,71 @@
+{
+  "game": "roulette",
+  "note": "object-shaped spin history with snake_case keys; refetch dedupes on the strong ids",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/roulette/spins",
+      "ts": 1787000000000,
+      "body": {
+        "data": {
+          "spins": [
+            {
+              "roundId": "rs-1",
+              "winning_number": 0
+            },
+            {
+              "roundId": "rs-2",
+              "winning_number": 14
+            }
+          ]
+        }
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/roulette/spins",
+      "ts": 1787000003000,
+      "body": {
+        "seq": 2,
+        "data": {
+          "spins": [
+            {
+              "roundId": "rs-1",
+              "winning_number": 0
+            },
+            {
+              "roundId": "rs-2",
+              "winning_number": 14
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "number": 0,
+          "color": "green",
+          "id": "rs-1"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "number": 14,
+          "color": "red",
+          "id": "rs-2"
+        }
+      }
+    }
+  ]
+}

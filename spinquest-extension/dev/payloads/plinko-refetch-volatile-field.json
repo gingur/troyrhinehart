@@ -1,0 +1,47 @@
+{
+  "game": "plinko",
+  "note": "refetched bet whose body differs only by a server timestamp: strong id wins, no double count",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/plinko/bets",
+      "ts": 1787000000000,
+      "body": {
+        "betId": "pl-77",
+        "bet": 1,
+        "payout": 2,
+        "state": "settled",
+        "fetchedAt": 1787000000001
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/plinko/bets",
+      "ts": 1787000005000,
+      "body": {
+        "betId": "pl-77",
+        "bet": 1,
+        "payout": 2,
+        "state": "settled",
+        "fetchedAt": 1787000004999
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "pl-77",
+          "bet": 1,
+          "payout": 2,
+          "profit": 1,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}
