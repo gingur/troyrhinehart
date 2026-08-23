@@ -66,6 +66,27 @@
 
   const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+  const fmtClock = (ts) =>
+    new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  // Compact "time ago": 45s / 12m / 1h05.
+  const fmtAgo = (ms) => {
+    if (typeof ms !== 'number' || !(ms >= 0)) ms = 0;
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm';
+    return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0');
+  };
+
+  // Multiplier with precision that fits a narrow column: 110× / 12.4× / 2.01×.
+  const fmtMult = (m) => {
+    if (typeof m !== 'number') return '';
+    if (m >= 100) return Math.round(m) + '×';
+    if (m >= 10) return m.toFixed(1) + '×';
+    return m.toFixed(2) + '×';
+  };
+
   const fmtDur = (ms) => {
     if (typeof ms !== 'number' || ms < 0) return null;
     const m = Math.floor(ms / 60000);
@@ -646,34 +667,205 @@
     body.appendChild(box);
   }
 
+  // ---- history --------------------------------------------------------------
+  // DevTools-grade round log: every round reachable in a scrollable card
+  // (newest first, batched in as you scroll), 22px mono rows with a win/loss
+  // severity stripe, relative age, bet / mult / net, click-to-expand per-round
+  // detail, and a rolling "last N" net summary in the section label.
+
+  const HIST_INITIAL = 50;
+  const HIST_BATCH = 100;
+  let histSessionId = null;
+  let histExpandedKey = null;
+  let histScrollTop = 0;
+
+  const histKey = (r) => (r.id != null ? String(r.id) : 't' + r.ts);
+
+  // Severity stripe color: alpha scales with |profit| vs the session's biggest
+  // swing, so heavy hits/wins read at a glance while pushes stay quiet.
+  function histStripe(r, maxAbs) {
+    const stripe = h('span', 'sqx-stripe');
+    const rgb =
+      r.result === 'win' ? '63, 221, 139' : r.result === 'loss' ? '255, 93, 110' : '151, 163, 197';
+    const p = typeof r.profit === 'number' ? Math.abs(r.profit) : 0;
+    const a = r.result === 'win' || r.result === 'loss'
+      ? 0.3 + 0.7 * Math.sqrt(maxAbs > 0 ? Math.min(1, p / maxAbs) : 0)
+      : 0.25;
+    stripe.style.background = 'rgba(' + rgb + ', ' + a.toFixed(2) + ')';
+    return stripe;
+  }
+
+  // Tiny inline hand for blackjack detail rows: "K♥ 7♣" with red suits tinted.
+  function miniCards(arr) {
+    const s = h('span', 'sqx-rd-cards');
+    for (const c of arr) {
+      const p = parseCard(c);
+      const red = p && (p.suit === 'hearts' || p.suit === 'diamonds');
+      s.appendChild(h('span', red ? 'sqx-card-r' : null, p ? p.rank + (SUIT_GLYPH[p.suit] || '') : '?'));
+    }
+    return s;
+  }
+
+  // Expanded per-round detail line: exact time + payout + whatever the
+  // adapter mapped for this game (crash point, wheel number, cards, ...).
+  function histDetail(session, r) {
+    const d = r.detail || {};
+    const box = h('div', 'sqx-row-detail');
+    const pair = (label, val) => {
+      const g = h('span', 'sqx-rd');
+      g.appendChild(h('span', 'sqx-rd-l', label));
+      const v = h('span', 'sqx-rd-v');
+      if (val instanceof Node) v.appendChild(val);
+      else v.textContent = String(val);
+      g.appendChild(v);
+      box.appendChild(g);
+    };
+    if (typeof r.ts === 'number') pair('at', fmtClock(r.ts));
+    if (typeof r.payout === 'number') pair('paid', fmtAmount(r.payout));
+    const game = session.game;
+    if (game === 'crash') {
+      if (typeof d.crashPoint === 'number') pair('crash', d.crashPoint + '×');
+      pair('cashed', typeof d.cashedOutAt === 'number' ? d.cashedOutAt + '×' : 'rode it down');
+    } else if (game === 'roulette') {
+      if (d.number != null) pair('landed', wheelValue(d.color, d.number));
+      if (d.betType) pair('bet', d.betType);
+    } else if (game === 'mines') {
+      if (typeof d.mines === 'number') pair('mines', d.mines);
+      if (typeof d.revealedCount === 'number') pair('revealed', d.revealedCount);
+    } else if (game === 'plinko') {
+      if (d.slot != null) pair('slot', '#' + d.slot);
+      if (d.risk) pair('risk', d.risk);
+    } else if (game === 'blackjack') {
+      if (Array.isArray(d.player) && d.player.length) pair('you', miniCards(d.player));
+      if (Array.isArray(d.dealer) && d.dealer.length) pair('dealer', miniCards(d.dealer));
+      if (d.blackjack) box.appendChild(h('span', 'sqx-rd-flag', 'blackjack'));
+    }
+    if (r.result === 'push') box.appendChild(h('span', 'sqx-rd-flag sqx-dim', 'push'));
+    return box;
+  }
+
   function renderHistory(body, session) {
-    if (!session.rounds.length) return;
-    const list = h('div', 'sqx-history');
+    const rounds = session.rounds;
+    if (!rounds.length) return;
+    if (session.id !== histSessionId) {
+      histSessionId = session.id;
+      histExpandedKey = null;
+      histScrollTop = 0;
+    }
+
+    // Ages are measured against the snapshot, not the wall clock, so replayed
+    // and live snapshots render identically.
+    const nowRef = Math.max(
+      (latest && latest.generatedAt) || 0,
+      session.lastActivityAt || 0,
+      rounds[rounds.length - 1].ts || 0
+    ) || Date.now();
+
+    let maxAbs = 0;
+    for (const r of rounds) {
+      if (typeof r.profit === 'number' && Math.abs(r.profit) > maxAbs) maxAbs = Math.abs(r.profit);
+    }
+
+    const wrap = h('div', 'sqx-history');
     const lab = h('div', 'sqx-label');
     lab.appendChild(h('span', null, 'History'));
-    lab.appendChild(h('span', 'sqx-count', String(session.rounds.length)));
-    list.appendChild(lab);
+    lab.appendChild(h('span', 'sqx-count', String(rounds.length)));
+    // Rolling summary: net over the most recent N rounds.
+    const n = Math.min(20, rounds.length);
+    let lastNet = 0;
+    for (let i = rounds.length - n; i < rounds.length; i++) {
+      if (typeof rounds[i].profit === 'number') {
+        lastNet = Math.round((lastNet + rounds[i].profit) * 100) / 100;
+      }
+    }
+    const sum = h('span', 'sqx-hist-sum');
+    sum.appendChild(h('span', 'sqx-hist-sum-l', 'last ' + n));
+    sum.appendChild(num(fmtMoney(lastNet), posNegCls(lastNet)));
+    lab.appendChild(sum);
+    wrap.appendChild(lab);
 
-    const headRow = h('div', 'sqx-row sqx-row-head');
-    headRow.append(h('span', null, 'time'), h('span', null, 'bet'), h('span', null, 'mult'), h('span', null, 'net'));
-    list.appendChild(headRow);
+    const card = h('div', 'sqx-hist-card');
+    const headRow = h('div', 'sqx-hrow sqx-hrow-head');
+    headRow.append(
+      h('span', null, 'ago'),
+      h('span', 'sqx-r', 'bet'),
+      h('span', 'sqx-r', 'mult'),
+      h('span', 'sqx-r', 'net')
+    );
+    card.appendChild(headRow);
 
-    const shown = session.rounds.slice(-8).reverse();
-    for (const r of shown) {
-      const row = h('div', 'sqx-row');
-      row.appendChild(h('span', 'sqx-dim', fmtTime(r.ts)));
-      row.appendChild(h('span', null, typeof r.bet === 'number' ? r.bet.toFixed(2) : '—'));
-      row.appendChild(h('span', 'sqx-dim', typeof r.multiplier === 'number' ? r.multiplier.toFixed(2) + '×' : ''));
+    const scroll = h('div', 'sqx-hist-scroll');
+    const list = h('div');
+    scroll.appendChild(list);
+    card.appendChild(scroll);
+    wrap.appendChild(card);
+    body.appendChild(wrap);
+
+    const makeRow = (r) => {
+      const row = h('div', 'sqx-hrow');
+      row.appendChild(histStripe(r, maxAbs));
+      row.appendChild(h('span', 'sqx-dim', fmtAgo(nowRef - r.ts)));
+      row.appendChild(h('span', 'sqx-r', typeof r.bet === 'number' ? fmtAmount(r.bet) : '—'));
       row.appendChild(
-        h('span', r.result === 'win' ? 'sqx-pos' : r.result === 'loss' ? 'sqx-neg' : 'sqx-dim',
-          typeof r.profit === 'number' ? fmtMoney(r.profit) : r.result)
+        h('span', 'sqx-r ' + (typeof r.multiplier === 'number' && r.multiplier >= 10 ? 'sqx-hot' : 'sqx-dim'),
+          fmtMult(r.multiplier))
       );
-      list.appendChild(row);
-    }
-    if (session.rounds.length > shown.length) {
-      list.appendChild(h('div', 'sqx-more', 'showing last ' + shown.length + ' of ' + session.rounds.length));
-    }
-    body.appendChild(list);
+      row.appendChild(
+        h('span', 'sqx-r ' + (r.result === 'win' ? 'sqx-pos' : r.result === 'loss' ? 'sqx-neg' : 'sqx-dim'),
+          typeof r.profit === 'number' ? fmtMoney(r.profit) : (r.result || '—'))
+      );
+      row.onclick = () => {
+        const wasOpen = row.classList.contains('sqx-sel');
+        const oldDet = list.querySelector('.sqx-row-detail');
+        const oldSel = list.querySelector('.sqx-hrow.sqx-sel');
+        if (oldDet) oldDet.remove();
+        if (oldSel) oldSel.classList.remove('sqx-sel');
+        if (wasOpen) {
+          histExpandedKey = null;
+          return;
+        }
+        histExpandedKey = histKey(r);
+        row.classList.add('sqx-sel');
+        row.after(histDetail(session, r));
+      };
+      if (histKey(r) === histExpandedKey) {
+        row.classList.add('sqx-sel');
+        const frag = document.createDocumentFragment();
+        frag.append(row, histDetail(session, r));
+        return frag;
+      }
+      return row;
+    };
+
+    // Newest first, appended in batches so 300-round sessions stay light.
+    let shownCount = 0;
+    const moreRow = h('div', 'sqx-hist-more');
+    const appendBatch = (k) => {
+      const frag = document.createDocumentFragment();
+      const start = rounds.length - 1 - shownCount;
+      const end = Math.max(start - k + 1, 0);
+      for (let i = start; i >= end; i--) frag.appendChild(makeRow(rounds[i]));
+      shownCount += start - end + 1;
+      list.appendChild(frag);
+      const remaining = rounds.length - shownCount;
+      if (remaining > 0) {
+        moreRow.textContent = '↓ ' + remaining + ' earlier ' + (remaining === 1 ? 'round' : 'rounds');
+        if (!moreRow.parentNode) scroll.appendChild(moreRow);
+      } else {
+        moreRow.remove();
+      }
+    };
+    moreRow.onclick = () => appendBatch(HIST_BATCH);
+    scroll.addEventListener('scroll', () => {
+      histScrollTop = scroll.scrollTop;
+      if (scroll.scrollTop + scroll.clientHeight > scroll.scrollHeight - 44 &&
+          shownCount < rounds.length) {
+        appendBatch(HIST_BATCH);
+      }
+    });
+
+    appendBatch(Math.min(HIST_INITIAL, rounds.length));
+    if (histScrollTop) scroll.scrollTop = histScrollTop;
   }
 
   function renderRaw(body) {

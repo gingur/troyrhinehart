@@ -603,23 +603,67 @@
 #sqx-hud .sqx-chip.sqx-pos { color: var(--sqx-pos); }
 #sqx-hud .sqx-chip.sqx-neg { color: var(--sqx-neg); }
 
-/* ---- history table -------------------------------------------------------- */
+/* ---- history log ---------------------------------------------------------- */
 
-#sqx-hud .sqx-history .sqx-row {
+/* rolling "last N" net summary, right-aligned in the section label */
+#sqx-hud .sqx-hist-sum {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#sqx-hud .sqx-hist-sum-l {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-hist-sum .sqx-num {
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+#sqx-hud .sqx-hist-card {
+  background: var(--sqx-card);
+  border: 1px solid var(--sqx-line);
+  border-radius: var(--sqx-r-card);
+  overflow: hidden;
+}
+
+/* fixed column header stays put; rows scroll beneath it */
+#sqx-hud .sqx-hist-scroll {
+  max-height: 218px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sqx-line) transparent;
+}
+
+#sqx-hud .sqx-hrow {
+  position: relative;
   display: grid;
-  grid-template-columns: 42px 1fr 58px 62px;
+  grid-template-columns: 38px 1fr 54px 62px;
   gap: 6px;
-  padding: 3px 2px;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px 0 11px;
   border-top: 1px solid var(--sqx-hair);
   font-family: var(--sqx-mono);
   font-variant-numeric: tabular-nums;
   font-size: 11px;
+  cursor: pointer;
 }
 
-#sqx-hud .sqx-history .sqx-row-head {
+#sqx-hud .sqx-hrow .sqx-r { text-align: right; }
+
+#sqx-hud .sqx-hrow-head {
+  height: 20px;
   border-top: none;
-  padding-top: 0;
-  padding-bottom: 2px;
+  cursor: default;
   font-family: var(--sqx-sans);
   font-size: 8.5px;
   font-weight: 600;
@@ -628,13 +672,81 @@
   color: var(--sqx-faint);
 }
 
-#sqx-hud .sqx-row :nth-child(n + 2) { text-align: right; }
+#sqx-hud .sqx-hist-scroll .sqx-hrow:hover { background: rgba(151, 163, 197, 0.08); }
 
-#sqx-hud .sqx-history .sqx-more {
-  padding: 4px 2px 0;
-  font-size: 10px;
-  font-style: italic;
+#sqx-hud .sqx-hrow.sqx-sel { background: rgba(151, 163, 197, 0.12); }
+
+/* win/loss severity stripe on the left edge — alpha set inline per row */
+#sqx-hud .sqx-stripe {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+}
+
+/* 10×+ multipliers get the amber "big hit" tint */
+#sqx-hud .sqx-hot { color: var(--sqx-live); }
+
+/* expanded per-round detail */
+#sqx-hud .sqx-row-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 12px;
+  padding: 4px 10px 6px 11px;
+  background: var(--sqx-inset);
+  border-top: 1px solid var(--sqx-hair);
+}
+
+#sqx-hud .sqx-rd {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+#sqx-hud .sqx-rd-l {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-rd-v {
+  font-family: var(--sqx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--sqx-text);
+}
+
+#sqx-hud .sqx-rd-cards span { margin-right: 4px; }
+#sqx-hud .sqx-rd-cards span:last-child { margin-right: 0; }
+#sqx-hud .sqx-rd-cards .sqx-card-r { color: #ff8896; }
+
+#sqx-hud .sqx-rd-flag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sqx-live);
+}
+
+/* load-earlier sentinel at the bottom of the scroll region */
+#sqx-hud .sqx-hist-more {
+  padding: 4px 10px 5px;
+  border-top: 1px solid var(--sqx-hair);
+  font-family: var(--sqx-sans);
+  font-size: 10px;
+  color: var(--sqx-faint);
+  text-align: center;
+  cursor: pointer;
+}
+
+#sqx-hud .sqx-hist-more:hover {
+  color: var(--sqx-mute);
+  background: rgba(151, 163, 197, 0.06);
 }
 
 /* ---- footer --------------------------------------------------------------- */
