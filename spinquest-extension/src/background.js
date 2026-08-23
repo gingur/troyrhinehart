@@ -20,12 +20,25 @@ import {
   computeStats,
   createSession,
   hasData,
+  hasKnownRound,
   hasRound,
   makeSummary,
   refreshPace,
+  rememberRound,
+  sanitizeRound,
+  snapshotSession,
 } from './lib/stats.js';
 
-const SAVE_DEBOUNCE_MS = 1000; // coalesce storage writes under event storms
+// Coalesce storage writes under event storms: leading + trailing edge, at
+// most one write per second. The first event after a quiet period persists
+// IMMEDIATELY (a casual single bet is durable at once); an autobet storm
+// then folds into one trailing write per second. Known tradeoff: rounds are
+// acked {ok:true} from memory, so a hard worker kill (browser crash, forced
+// update mid-autobet) can still drop up to ~1s of storm tail. MV3 keeps the
+// worker alive ~30s past the last event so the trailing write normally
+// lands; onSuspend/onUpdateAvailable below flush best-effort on orderly
+// teardown.
+const SAVE_DEBOUNCE_MS = 1000;
 const BROADCAST_MIN_INTERVAL_MS = 100; // coalesce broadcasts (autobet ~10+/s)
 const IDLE_SWEEP_ALARM = 'sqx-idle-sweep';
 const IDLE_SWEEP_PERIOD_MIN = 5;
@@ -35,6 +48,9 @@ const IDLE_SWEEP_PERIOD_MIN = 5;
  *   active: { [game]: Session },
  *   archived: Session[],           // most recent first, each with .summary
  *   focusedGame: string|null,      // game page the user is currently on
+ *   knownRounds: { keys: [] },     // global `game:id` FIFO — replay dedupe
+ *                                  // across session rotations (lazy-created,
+ *                                  // absent in legacy stored states)
  * }
  * Session = { id, game, startedAt, lastActivityAt, rounds[], ticks[],
  *             current{}, carry?, stats?, summary? (archived only) }
@@ -61,15 +77,21 @@ function loadState() {
   return statePromise;
 }
 
-// --- persistence (debounced; at most one storage write per second) ----------
+// --- persistence (leading+trailing edge; at most one write per second) ------
 
 let saveTimer = null;
 let dirty = false;
+let lastSaveAt = 0;
 
 function scheduleSave() {
   dirty = true;
   if (saveTimer) return;
-  saveTimer = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
+  const wait = lastSaveAt + SAVE_DEBOUNCE_MS - Date.now();
+  if (wait <= 0) {
+    flushSave();
+  } else {
+    saveTimer = setTimeout(flushSave, wait);
+  }
 }
 
 function flushSave() {
@@ -79,6 +101,7 @@ function flushSave() {
   }
   if (!dirty || !state) return;
   dirty = false;
+  lastSaveAt = Date.now();
   chrome.storage.local.set({ sqxState: state }).catch(() => {});
 }
 
@@ -92,6 +115,10 @@ function getActiveSession(game, { rotateIfIdle = true } = {}) {
   }
   if (!session) {
     session = createSession(game);
+    // Fresh sessions carry stats from birth so a snapshot consumer never
+    // sees an active session without them (e.g. NEW_SESSION followed by a
+    // fully-deduped history replay: no event ever recomputes stats).
+    session.stats = computeStats(session);
     state.active[game] = session;
   }
   return session;
@@ -136,12 +163,17 @@ function applyGameEvent(game, event) {
       updatedAt: Date.now(),
     };
   } else if (event.type === 'round') {
-    // Dedupe: a re-injected content script (page reload) can replay history
-    // payloads whose rounds this session already holds — including rounds
-    // the cap has evicted (hasRound also checks carry.evictedIds, so a
-    // replayed evicted round is never counted twice).
-    if (hasRound(session, event.round.id)) return;
-    appendRound(session, event.round);
+    // Sanitize at the trust boundary, then dedupe two ways: a re-injected
+    // content script (page reload) can replay history payloads whose rounds
+    // (a) this session already holds — including rounds the cap has evicted
+    // (hasRound also checks carry.evictedIds) — or (b) a PREVIOUS session
+    // already counted before it rotated/archived. The global knownRounds
+    // memory catches (b): without it, 20 rounds → new session → reload →
+    // history replay would double-count all 20 into the fresh session.
+    const round = sanitizeRound(event.round);
+    if (hasRound(session, round.id) || hasKnownRound(state.knownRounds, game, round.id)) return;
+    appendRound(session, round);
+    state.knownRounds = rememberRound(state.knownRounds, game, round.id);
     session.current = null; // deal resolved
   } else if (event.type === 'tick') {
     appendTick(session, event.tick);
@@ -174,13 +206,20 @@ function snapshot(changedGame = null) {
   const now = Date.now();
   // Live sessions carry stats cached at the last event; duration and pace
   // drift with the clock, so refresh them per snapshot (cheap, no full pass).
-  for (const game of Object.keys(state.active)) refreshPace(state.active[game], now);
+  // Sessions go out through snapshotSession: rounds bounded to the newest
+  // SNAPSHOT_ROUNDS_TAIL (stats stay lifetime-exact), so an autobet-speed
+  // broadcast doesn't structured-clone 300 detail-bearing rounds per tab.
+  const active = {};
+  for (const game of Object.keys(state.active)) {
+    refreshPace(state.active[game], now);
+    active[game] = snapshotSession(state.active[game]);
+  }
   return {
     seq,
     generatedAt: now,
     changedGame, // which game's session changed, null = anything/everything
     focusedGame: state.focusedGame,
-    active: state.active,
+    active,
     archivedSummaries: state.archived.map((s) => s.summary || legacySummary(s)),
   };
 }
@@ -246,7 +285,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     } else if (msg.type === 'SQX_EXPORT') {
       sendResponse({ data: { exportedAt: new Date().toISOString(), ...state } });
     } else if (msg.type === 'SQX_CLEAR_ALL') {
-      state = { active: {}, archived: [], focusedGame: state.focusedGame };
+      // knownRounds survives the wipe on purpose: a page reload right after
+      // clearing replays the site's bet history, and without the id memory
+      // the cleared rounds would resurrect as a fresh session.
+      state = { active: {}, archived: [], focusedGame: state.focusedGame, knownRounds: state.knownRounds };
       dirty = false;
       await chrome.storage.local.set({ sqxState: state });
       requestBroadcast(null);
@@ -274,3 +316,12 @@ if (chrome.alarms) {
     flushSave(); // opportunistic: persist anything still debounced
   });
 }
+
+// --- teardown flush ---------------------------------------------------------
+// Best-effort close of the SAVE_DEBOUNCE_MS loss window on orderly shutdown:
+// onSuspend fires before MV3 terminates an idle worker, onUpdateAvailable
+// before an extension update restarts it. A hard kill can still lose the
+// in-flight debounce (documented at SAVE_DEBOUNCE_MS).
+
+if (chrome.runtime.onSuspend) chrome.runtime.onSuspend.addListener(flushSave);
+if (chrome.runtime.onUpdateAvailable) chrome.runtime.onUpdateAvailable.addListener(flushSave);

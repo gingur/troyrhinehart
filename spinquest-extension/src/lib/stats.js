@@ -13,6 +13,8 @@ export const LIMITS = {
   MAX_TICKS: 100, // shared-outcome feed (crash points, roulette numbers)
   MAX_ARCHIVED_SESSIONS: 30,
   MAX_EVICTED_IDS: 600, // dedupe memory for rounds already evicted by the cap
+  MAX_KNOWN_ROUND_IDS: 2000, // cross-session dedupe memory (survives rotation)
+  SNAPSHOT_ROUNDS_TAIL: 120, // rounds included per session in a broadcast snapshot
 };
 
 export const round2 = (n) => Math.round(n * 100) / 100;
@@ -69,6 +71,65 @@ export function hasRound(session, id) {
   if (session.rounds.some((r) => r.id === id)) return true;
   const c = session.carry;
   return Boolean(c && c.evictedIds && c.evictedIds.includes(id));
+}
+
+// --- cross-session round-id memory -------------------------------------------
+// Per-session dedupe (hasRound) stops at the session boundary: 20 rounds →
+// manual/idle rotation → page reload (content-script seenRounds resets) →
+// the site re-serves bet history, and every replayed round would land in the
+// fresh session, double-counting real bets (archived 20 + live 20). Replayed
+// history can't be caught by timestamps either — extractRound stamps capture
+// time, so a replay looks freshly timed. So the background keeps a global
+// capped FIFO of `game:id` keys for every round it has ever appended
+// (state.knownRounds, persisted with the rest of the state) and consults it
+// before appending, no matter which session the id first landed in.
+
+/**
+ * True when this game:id round was already appended to ANY session (current,
+ * archived, or evicted) still inside the id-memory window.
+ */
+export function hasKnownRound(log, game, id) {
+  if (id == null || !log || !Array.isArray(log.keys)) return false;
+  return log.keys.includes(game + ':' + id);
+}
+
+/**
+ * Record an appended round's game:id in the global memory, evicting the
+ * oldest past `max`. Returns the log (creating it when absent/legacy-shaped)
+ * so callers can assign it back: `state.knownRounds = rememberRound(...)`.
+ */
+export function rememberRound(log, game, id, max = LIMITS.MAX_KNOWN_ROUND_IDS) {
+  if (id == null) return log;
+  if (!log || !Array.isArray(log.keys)) log = { keys: [] };
+  log.keys.push(game + ':' + id);
+  while (log.keys.length > max) log.keys.shift();
+  return log;
+}
+
+// --- round sanitizing ---------------------------------------------------------
+
+/**
+ * Whitelist-copy a round at the trust boundary (content script → background).
+ * computeStats already guards every numeric read, but sanitizing on append
+ * makes the "no NaN/Infinity/garbage in persisted rounds" invariant local to
+ * one place instead of distributed across every consumer. Unknown fields are
+ * dropped; malformed known fields are dropped (money) or defaulted (ts,
+ * result) rather than poisoning storage.
+ */
+export function sanitizeRound(raw, now = Date.now()) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const round = {
+    id: typeof r.id === 'string' || (typeof r.id === 'number' && isNum(r.id)) ? r.id : null,
+    ts: isNum(r.ts) ? r.ts : now,
+    result: r.result === 'win' || r.result === 'loss' || r.result === 'push' ? r.result : 'unknown',
+  };
+  if (isNum(r.bet) && r.bet >= 0) round.bet = r.bet;
+  if (isNum(r.payout) && r.payout >= 0) round.payout = r.payout;
+  if (isNum(r.profit)) round.profit = r.profit;
+  if (isNum(r.multiplier) && r.multiplier >= 0) round.multiplier = r.multiplier;
+  if (typeof r.currency === 'string' && r.currency.length < 32) round.currency = r.currency;
+  if (r.detail && typeof r.detail === 'object' && !Array.isArray(r.detail)) round.detail = r.detail;
+  return round;
 }
 
 // Streak rule (shared by carry accumulation and computeStats): wins and
@@ -223,6 +284,26 @@ function applyPace(stats, session, now) {
  */
 export function refreshPace(session, now = Date.now()) {
   if (session.stats) applyPace(session.stats, session, now);
+}
+
+/**
+ * Snapshot view of a session for broadcasting: identical object shape, but
+ * `rounds` bounded to the newest SNAPSHOT_ROUNDS_TAIL. A full 300-round
+ * session with per-round detail serializes to tens of KiB, and broadcasts go
+ * to the popup plus every game tab up to 10×/s under autobet — the UI renders
+ * a bounded tail anyway, and every total in `stats` is already lifetime-exact.
+ * Sessions under the tail are passed through untouched (no copy). Trimmed
+ * copies gain `roundsHeld` (kept-window length) and `roundsTrimmed: true`;
+ * the internal session object is never mutated.
+ */
+export function snapshotSession(session, tail = LIMITS.SNAPSHOT_ROUNDS_TAIL) {
+  if (!session.rounds || session.rounds.length <= tail) return session;
+  return {
+    ...session,
+    rounds: session.rounds.slice(-tail),
+    roundsHeld: session.rounds.length,
+    roundsTrimmed: true,
+  };
 }
 
 // --- game-specific extras ----------------------------------------------------

@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 
@@ -20,10 +20,14 @@ const {
   createSession,
   gameExtras,
   hasData,
+  hasKnownRound,
   hasRound,
   makeSummary,
   refreshPace,
+  rememberRound,
   round2,
+  sanitizeRound,
+  snapshotSession,
 } = await import(join(devDir, '..', 'src', 'lib', 'stats.js'));
 
 // The normalize layer (util.js + normalize.js) is plain content-script code
@@ -377,6 +381,121 @@ test('evicted-id memory is capped at MAX_EVICTED_IDS', () => {
   assert.equal(hasRound(s, 'c5'), true); // oldest still remembered
 });
 
+// --- cross-session round-id memory (rotation replay) ------------------------
+
+test('rotation replay: archive -> replay same ids into fresh session leaves lifetime unchanged', () => {
+  let log; // background: state.knownRounds
+  const first = createSession('plinko', T0);
+  const replayed = [];
+  for (let i = 0; i < 20; i++) {
+    const r = { id: 'h' + i, ts: T0 + i * 1000, result: 'win', bet: 1, payout: 2, profit: 1 };
+    replayed.push({ ...r, ts: T0 + 5 * MIN + i }); // replays carry fresh capture ts
+    appendRound(first, r);
+    log = rememberRound(log, 'plinko', r.id);
+  }
+  first.endedAt = T0 + 2 * MIN;
+  const summary = makeSummary(first, computeStats(first, T0 + 2 * MIN));
+  assert.equal(summary.rounds, 20);
+
+  // Rotation (SQX_NEW_SESSION / idle sweep) + page reload: content-script
+  // seenRounds resets and the site re-serves history into the NEW session.
+  const fresh = createSession('plinko', T0 + 5 * MIN);
+  for (const r of replayed) {
+    if (hasRound(fresh, r.id) || hasKnownRound(log, 'plinko', r.id)) continue;
+    appendRound(fresh, r);
+    log = rememberRound(log, 'plinko', r.id);
+  }
+  assert.equal(fresh.rounds.length, 0); // every replay rejected
+  assert.equal(computeStats(fresh, T0 + 6 * MIN).net, 0);
+  assert.equal(summary.rounds, 20); // archived side untouched: 20 real bets stay 20
+  // A genuinely new bet still lands.
+  const live = { id: 'live-1', ts: T0 + 6 * MIN, result: 'loss', bet: 1, payout: 0, profit: -1 };
+  assert.equal(hasKnownRound(log, 'plinko', live.id), false);
+  appendRound(fresh, live);
+  log = rememberRound(log, 'plinko', live.id);
+  assert.equal(fresh.rounds.length, 1);
+});
+
+test('known-round memory is per game and survives a null/legacy log shape', () => {
+  let log;
+  assert.equal(hasKnownRound(undefined, 'crash', 'x'), false);
+  assert.equal(hasKnownRound({ bogus: true }, 'crash', 'x'), false);
+  log = rememberRound(log, 'crash', 'x');
+  assert.equal(hasKnownRound(log, 'crash', 'x'), true);
+  assert.equal(hasKnownRound(log, 'plinko', 'x'), false); // same id, other game
+  assert.equal(rememberRound(log, 'crash', null), log); // null id ignored
+  assert.equal(hasKnownRound(log, 'crash', null), false);
+});
+
+test('known-round memory: FIFO capped at MAX_KNOWN_ROUND_IDS', () => {
+  let log;
+  const n = LIMITS.MAX_KNOWN_ROUND_IDS + 7;
+  for (let i = 0; i < n; i++) log = rememberRound(log, 'mines', 'm' + i);
+  assert.equal(log.keys.length, LIMITS.MAX_KNOWN_ROUND_IDS);
+  assert.equal(hasKnownRound(log, 'mines', 'm0'), false); // oldest evicted
+  assert.equal(hasKnownRound(log, 'mines', 'm7'), true);
+  assert.equal(hasKnownRound(log, 'mines', 'm' + (n - 1)), true);
+});
+
+// --- sanitizeRound (trust boundary) -----------------------------------------
+
+test('sanitizeRound: NaN/Infinity/strings/negatives never reach a stored round', () => {
+  const r = sanitizeRound({
+    id: 'ok-1',
+    ts: NaN,
+    bet: NaN,
+    payout: Infinity,
+    profit: '5',
+    multiplier: -2,
+    result: 'WIN',
+    currency: 'x'.repeat(100),
+    detail: ['not', 'an', 'object'],
+    injected: 'field',
+  }, T0);
+  assert.equal(r.id, 'ok-1');
+  assert.equal(r.ts, T0); // defaulted to now
+  assert.equal(r.bet, undefined);
+  assert.equal(r.payout, undefined);
+  assert.equal(r.profit, undefined);
+  assert.equal(r.multiplier, undefined);
+  assert.equal(r.currency, undefined);
+  assert.equal(r.detail, undefined);
+  assert.equal(r.result, 'unknown'); // not in the win/loss/push whitelist
+  assert.equal('injected' in r, false);
+});
+
+test('sanitizeRound: well-formed rounds pass through intact', () => {
+  const good = { id: 42, ts: T0, bet: 1.5, payout: 3, profit: 1.5, multiplier: 2, result: 'win', currency: 'USD', detail: { crashPoint: 2 } };
+  const r = sanitizeRound({ ...good }, T0 + 1);
+  assert.deepEqual(r, good);
+  const bad = sanitizeRound({ id: { evil: true }, result: 'push' }, T0);
+  assert.equal(bad.id, null); // object id rejected -> null (dedupe skips nulls)
+  assert.equal(bad.result, 'push');
+  const none = sanitizeRound(null, T0);
+  assert.equal(none.result, 'unknown');
+  assert.equal(none.ts, T0);
+});
+
+// --- snapshot round-tail trimming -------------------------------------------
+
+test('snapshotSession: bounded round tail, lifetime stats intact, source untouched', () => {
+  const small = sessionWith('mines', [round('win', 1, 2)]);
+  assert.equal(snapshotSession(small), small); // under the tail: pass-through
+
+  const s = createSession('crash', T0);
+  const n = LIMITS.SNAPSHOT_ROUNDS_TAIL + 30;
+  for (let i = 0; i < n; i++) appendRound(s, { id: 's' + i, ts: T0 + i, result: 'win', bet: 1, payout: 2, profit: 1 });
+  s.stats = computeStats(s, T0 + MIN);
+  const snap = snapshotSession(s);
+  assert.equal(snap.rounds.length, LIMITS.SNAPSHOT_ROUNDS_TAIL);
+  assert.equal(snap.rounds.at(-1).id, 's' + (n - 1)); // newest kept
+  assert.equal(snap.roundsHeld, n);
+  assert.equal(snap.roundsTrimmed, true);
+  assert.equal(snap.stats.rounds, n); // totals still lifetime-exact
+  assert.equal(s.rounds.length, n); // internal session not mutated
+  assert.equal('roundsTrimmed' in s, false);
+});
+
 // --- live pace refresh (refreshPace) ----------------------------------------
 
 test('refreshPace: duration/bpm track the clock between events, archived stays fixed', () => {
@@ -476,6 +595,136 @@ test('multiplier-derived payout still works; division by zero bet stays guarded'
   const z = N.extractRound({ ts: T0, body: { bet: 0, payout: 0 } });
   assert.equal(z.multiplier, undefined); // no 0/0 NaN
   assert.equal(z.result, 'push');
+});
+
+// --- integration: the real background.js over a chrome stub ------------------
+// Fresh module instance per "worker" (?v=N) sharing one JSON-serializing
+// storage backend, exactly like chrome.storage.local behaves across MV3
+// service-worker restarts.
+
+async function atest(name, fn) {
+  try {
+    await fn();
+    passed++;
+    console.log('  ok  ' + name);
+  } catch (err) {
+    failed++;
+    console.error('FAIL  ' + name);
+    console.error(String(err.message || err).replace(/^/gm, '      '));
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const backend = new Map(); // key -> JSON string, shared across worker restarts
+
+function makeChrome() {
+  const runtime = {
+    _listener: null,
+    onMessage: { addListener: (fn) => { runtime._listener = fn; } },
+    sendMessage: async () => {},
+  };
+  return {
+    storage: {
+      local: {
+        get: async (key) => {
+          const out = {};
+          if (backend.has(key)) out[key] = JSON.parse(backend.get(key));
+          return out;
+        },
+        set: async (obj) => {
+          for (const [k, v] of Object.entries(obj)) backend.set(k, JSON.stringify(v));
+        },
+      },
+    },
+    runtime,
+    tabs: { query: (_q, cb) => cb([]), sendMessage: async () => {} },
+    alarms: null, // periodic sweep not under test here
+  };
+}
+
+const BG_URL = pathToFileURL(join(devDir, '..', 'src', 'background.js')).href;
+let workerN = 0;
+async function bootWorker() {
+  workerN++;
+  const chrome = makeChrome();
+  globalThis.chrome = chrome;
+  await import(BG_URL + '?worker=' + workerN);
+  const send = (msg) => new Promise((resolve) => chrome.runtime._listener(msg, {}, resolve));
+  return { chrome, send };
+}
+
+const roundEvent = (id, bet = 1, payout = 2) => ({
+  type: 'SQX_GAME_EVENT',
+  game: 'plinko',
+  event: {
+    type: 'round',
+    round: { id, ts: Date.now(), bet, payout, profit: round2(payout - bet), result: payout > bet ? 'win' : payout < bet ? 'loss' : 'push' },
+  },
+});
+
+await atest('message path: 20 rounds -> SQX_NEW_SESSION -> history replay is fully deduped', async () => {
+  const { send } = await bootWorker();
+  for (let i = 0; i < 20; i++) await send(roundEvent('hist-' + i));
+  let snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 20);
+  assert.equal(snap.active.plinko.stats.net, 20);
+
+  await send({ type: 'SQX_NEW_SESSION', game: 'plinko' });
+  // Page reload: content-script seenRounds resets, site re-serves history.
+  for (let i = 0; i < 20; i++) await send(roundEvent('hist-' + i));
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.rounds.length, 0); // nothing re-counted
+  assert.equal(snap.archivedSummaries.length, 1);
+  assert.equal(snap.archivedSummaries[0].rounds, 20); // lifetime: 20 real bets stay 20
+  assert.equal(snap.archivedSummaries[0].net, 20); // money counted once, not 2x
+  // A new live bet still lands in the fresh session.
+  await send(roundEvent('live-0', 1, 0));
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 1);
+  assert.equal(snap.active.plinko.stats.net, -1);
+});
+
+await atest('message path: replay after WORKER RESTART is still deduped (knownRounds persisted)', async () => {
+  await sleep(1200); // let the debounced save flush knownRounds to storage
+  const { send } = await bootWorker(); // fresh module, same storage backend
+  for (let i = 0; i < 20; i++) await send(roundEvent('hist-' + i));
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 1); // only live-0 from before
+  assert.equal(snap.archivedSummaries.length, 1);
+  assert.equal(snap.archivedSummaries[0].rounds, 20);
+});
+
+await atest('message path: hostile round fields are sanitized before persisting', async () => {
+  const { send } = await bootWorker();
+  await send({
+    type: 'SQX_GAME_EVENT',
+    game: 'plinko',
+    event: { type: 'round', round: { id: 'evil-1', ts: NaN, bet: NaN, payout: Infinity, profit: 3, result: 'win', extra: 'x' } },
+  });
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  const r = snap.active.plinko.rounds.find((x) => x.id === 'evil-1');
+  assert.ok(r, 'sanitized round still recorded');
+  assert.ok(Number.isFinite(r.ts));
+  assert.equal('bet' in r, false);
+  assert.equal('payout' in r, false);
+  assert.equal('extra' in r, false);
+  assert.equal(r.profit, 3);
+  assert.ok(Number.isFinite(snap.active.plinko.stats.net));
+});
+
+await atest('message path: broadcast/GET_STATE rounds bounded to SNAPSHOT_ROUNDS_TAIL', async () => {
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' });
+  const n = LIMITS.SNAPSHOT_ROUNDS_TAIL + 40;
+  for (let i = 0; i < n; i++) await send(roundEvent('bulk-' + i));
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  const s = snap.active.plinko;
+  assert.equal(s.rounds.length, LIMITS.SNAPSHOT_ROUNDS_TAIL);
+  assert.equal(s.roundsHeld, n);
+  assert.equal(s.roundsTrimmed, true);
+  assert.equal(s.stats.rounds, n); // lifetime totals unaffected by the trim
+  assert.equal(s.stats.net, n);
+  assert.equal(s.rounds.at(-1).id, 'bulk-' + (n - 1));
 });
 
 // ----------------------------------------------------------------------------
