@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SpinQuest popup (dev mock)</title>
+<link rel="stylesheet" href="../src/popup/popup.css" />
+<style>
+  /* Frame the 340px popup the way Chrome's toolbar dropdown does. */
+  html { background: #05060a; }
+  body { margin: 24px auto; box-shadow: 0 12px 40px rgba(0,0,0,0.6); border: 1px solid #2c3044; border-radius: 8px; overflow: hidden; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>SpinQuest Session HUD</h1>
+  </header>
+  <main id="content">
+    <p class="dim">Loading…</p>
+  </main>
+  <footer>
+    <button id="export">Export JSON</button>
+    <button id="clear" class="danger">Clear all data</button>
+  </footer>
+
+  <script src="chrome-stub.js"></script>
+  <script src="fixtures.js"></script>
+  <script>
+    // Seed the stub BEFORE popup.js runs, so its initial SQX_GET_STATE sees it.
+    (() => {
+      const fixtures = window.__SQX_FIXTURES || {};
+      const q = new URLSearchParams(location.search).get('fixture') || 'popup-busy';
+      const f = fixtures[q];
+      if (f) window.__SQX_INJECT(f.state, f.rawLog);
+    })();
+  </script>
+  <script src="../src/popup/popup.js"></script>
+</body>
+</html>

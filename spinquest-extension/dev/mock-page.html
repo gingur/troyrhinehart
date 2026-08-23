@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SpinQuest — Crash (dev mock)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* Fake casino page — backdrop only, so HUD screenshots have realistic context. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    background: #0b0d14;
+    color: #dfe3ee;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  .top {
+    display: flex; align-items: center; gap: 18px;
+    padding: 10px 20px;
+    background: linear-gradient(180deg, #141826, #10131e);
+    border-bottom: 1px solid #232840;
+  }
+  .logo { font-weight: 800; font-size: 18px; letter-spacing: 0.02em; }
+  .logo em { color: #7c5cff; font-style: normal; }
+  .nav { display: flex; gap: 14px; font-size: 13px; color: #8b93ad; }
+  .nav span { cursor: pointer; }
+  .nav .on { color: #fff; border-bottom: 2px solid #7c5cff; padding-bottom: 3px; }
+  .wallet {
+    margin-left: auto; display: flex; gap: 10px; align-items: center;
+    background: #1a1f31; border: 1px solid #2a3050; border-radius: 8px;
+    padding: 6px 12px; font-size: 13px;
+  }
+  .wallet b { color: #ffd75e; }
+  .btn-dep {
+    background: #7c5cff; color: #fff; border: 0; border-radius: 7px;
+    padding: 8px 16px; font-weight: 700; font-size: 13px; cursor: pointer;
+  }
+  .stage { flex: 1; display: flex; gap: 16px; padding: 16px 20px; }
+  .panel {
+    width: 280px; background: #141826; border: 1px solid #232840;
+    border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 12px;
+    align-self: flex-start;
+  }
+  .panel label { font-size: 11px; color: #8b93ad; letter-spacing: 0.06em; }
+  .amount {
+    display: flex; align-items: center; gap: 8px;
+    background: #0e1120; border: 1px solid #2a3050; border-radius: 8px; padding: 9px 12px;
+  }
+  .amount b { font-size: 15px; }
+  .amount .half { margin-left: auto; }
+  .chip-btn {
+    background: #1f2540; border: 1px solid #313a63; color: #aeb6d4;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+  }
+  .row2 { display: flex; gap: 8px; }
+  .row2 > div { flex: 1; }
+  .field {
+    background: #0e1120; border: 1px solid #2a3050; border-radius: 8px;
+    padding: 8px 12px; font-size: 13px;
+  }
+  .go {
+    background: linear-gradient(180deg, #37d67a, #23a85b); color: #04140a;
+    font-size: 16px; font-weight: 800; border: 0; border-radius: 10px;
+    padding: 14px; cursor: pointer; letter-spacing: 0.03em;
+  }
+  .game {
+    flex: 1; position: relative; background: radial-gradient(120% 90% at 30% 10%, #182036 0%, #0d101c 70%);
+    border: 1px solid #232840; border-radius: 12px; overflow: hidden; min-height: 480px;
+  }
+  .grid-bg {
+    position: absolute; inset: 0;
+    background-image: linear-gradient(#1c2338 1px, transparent 1px), linear-gradient(90deg, #1c2338 1px, transparent 1px);
+    background-size: 64px 64px; opacity: 0.35;
+  }
+  .mult-big {
+    position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%);
+    font-size: 84px; font-weight: 900; color: #37d67a;
+    text-shadow: 0 0 34px rgba(55, 214, 122, 0.45);
+    font-variant-numeric: tabular-nums;
+  }
+  .rocket-path {
+    position: absolute; left: 0; bottom: 0; width: 78%; height: 70%;
+    border-bottom-left-radius: 12px;
+  }
+  .recent {
+    position: absolute; left: 14px; top: 12px; display: flex; gap: 6px;
+  }
+  .recent span {
+    background: rgba(20, 24, 38, 0.85); border: 1px solid #2a3050;
+    border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 700;
+  }
+  .recent .lo { color: #ff6b6b; } .recent .hi { color: #37d67a; }
+  .players {
+    position: absolute; right: 14px; bottom: 12px; width: 220px;
+    background: rgba(14, 17, 32, 0.85); border: 1px solid #2a3050; border-radius: 10px;
+    padding: 8px 10px; font-size: 12px;
+  }
+  .players .p { display: flex; justify-content: space-between; padding: 2px 0; color: #aeb6d4; }
+  .players .p b { color: #ffd75e; font-weight: 600; }
+  .foot {
+    padding: 8px 20px 14px; font-size: 11px; color: #566;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  /* dev-only fixture picker, bottom-left so it never overlaps the HUD */
+  #fixture-picker {
+    background: #1a1f31; color: #dfe3ee; border: 1px solid #2a3050;
+    border-radius: 6px; padding: 4px 6px; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+  <header class="top">
+    <div class="logo">Spin<em>Quest</em></div>
+    <nav class="nav">
+      <span>Plinko</span><span>Mines</span><span class="on">Crash</span><span>Blackjack</span><span>Roulette</span>
+    </nav>
+    <div class="wallet">Balance <b>$1,284.55</b></div>
+    <button class="btn-dep">Deposit</button>
+  </header>
+
+  <main class="stage">
+    <aside class="panel">
+      <div>
+        <label>BET AMOUNT</label>
+        <div class="amount"><span>$</span><b>5.00</b>
+          <button class="chip-btn half">½</button><button class="chip-btn">2×</button><button class="chip-btn">Max</button>
+        </div>
+      </div>
+      <div class="row2">
+        <div><label>AUTO CASHOUT</label><div class="field">2.00×</div></div>
+        <div><label>PROFIT ON WIN</label><div class="field">$5.00</div></div>
+      </div>
+      <button class="go">PLACE BET</button>
+      <div><label>AUTO BET</label><div class="field" style="color:#8b93ad">Off</div></div>
+    </aside>
+
+    <section class="game">
+      <div class="grid-bg"></div>
+      <div class="recent">
+        <span class="lo">1.13×</span><span class="hi">4.20×</span><span class="lo">1.02×</span>
+        <span class="hi">2.61×</span><span class="hi">11.94×</span><span class="lo">1.45×</span>
+      </div>
+      <svg class="rocket-path" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <path d="M0,100 Q 55,96 78,52 T 96,8" fill="none" stroke="#37d67a" stroke-width="1.6" opacity="0.9"/>
+        <path d="M0,100 Q 55,96 78,52 T 96,8 L 96,100 Z" fill="rgba(55,214,122,0.10)"/>
+      </svg>
+      <div class="mult-big">1.87×</div>
+      <div class="players">
+        <div class="p"><span>lucky_lena</span><b>$25.00</b></div>
+        <div class="p"><span>gr4vity</span><b>$10.00</b></div>
+        <div class="p"><span>moonshot88</span><b>$5.00</b></div>
+        <div class="p"><span>tinybets</span><b>$0.50</b></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>SpinQuest dev mock — not a real site. Provably fair · RNG certified · 18+</span>
+    <select id="fixture-picker"><option value="">— inject fixture —</option></select>
+  </footer>
+
+  <!-- Dev harness: stub first, then fixtures, then the REAL overlay, unmodified. -->
+  <script src="chrome-stub.js"></script>
+  <script src="fixtures.js"></script>
+  <link rel="stylesheet" href="../src/overlay.css" />
+  <script src="../src/overlay.js"></script>
+  <script>
+    // Fixture picker + ?fixture=<name> support for manual browsing.
+    (() => {
+      const fixtures = window.__SQX_FIXTURES || {};
+      const sel = document.getElementById('fixture-picker');
+      for (const name of Object.keys(fixtures)) {
+        const o = document.createElement('option');
+        o.value = o.textContent = name;
+        sel.appendChild(o);
+      }
+      const apply = (name) => {
+        const f = fixtures[name];
+        if (f) window.__SQX_INJECT(f.state, f.rawLog);
+      };
+      sel.addEventListener('change', () => apply(sel.value));
+      const q = new URLSearchParams(location.search).get('fixture');
+      if (q && fixtures[q]) {
+        sel.value = q;
+        apply(q);
+      }
+    })();
+  </script>
+</body>
+</html>
