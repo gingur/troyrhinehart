@@ -183,11 +183,14 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 70vh;
+  max-height: 78vh;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--sqx-line) transparent;
 }
+
+/* Cards must never flex-squish to fit the max-height — scroll instead. */
+#sqx-hud .sqx-body > * { flex: none; }
 
 #sqx-hud .sqx-empty {
   padding: 18px 12px 20px;
@@ -298,6 +301,44 @@
   margin-top: 2px;
 }
 
+/* ---- profit graph card ---------------------------------------------------- */
+
+#sqx-hud .sqx-graph {
+  background: var(--sqx-card);
+  border: 1px solid var(--sqx-line);
+  border-radius: var(--sqx-r-card);
+  padding: 7px 10px 8px;
+}
+
+#sqx-hud .sqx-graph-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#sqx-hud .sqx-graph-l {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-graph-net {
+  margin-left: auto;
+  font-size: 14px;
+  font-weight: 700;
+  transition: color 200ms ease;
+}
+
+#sqx-hud .sqx-spark-wrap { margin-top: 5px; }
+
+#sqx-hud .sqx-spark {
+  display: block;
+  width: 100%;
+  height: 54px;
+}
+
 /* ---- stats card ----------------------------------------------------------- */
 
 #sqx-hud .sqx-stats {
@@ -310,7 +351,7 @@
 }
 
 #sqx-hud .sqx-stat {
-  padding: 6px 9px 7px;
+  padding: 5px 8px 6px;
   border-left: 1px solid var(--sqx-hair);
   min-width: 0;
 }

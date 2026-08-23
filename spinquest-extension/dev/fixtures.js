@@ -28,65 +28,106 @@
   const NOW = Date.parse('2026-08-23T20:05:00');
   const MIN = 60 * 1000;
 
-  // --- stats replica of background.js ---------------------------------------
-  function computeStats(session) {
+  // --- stats replica of src/lib/stats.js -------------------------------------
+  // Kept in sync with the canonical ES module (computeStats/gameExtras there):
+  // integer-cent money math, push-transparent streaks, cumulative-net series,
+  // duration/pace, best/worst streak runs. Fixture sessions never exceed the
+  // 300-round cap, so the carry/eviction branch is intentionally omitted.
+  const isNum = Number.isFinite;
+  const r1 = (n) => Math.round(n * 10) / 10;
+  const cents = (n) => Math.round(n * 100);
+
+  function stepStreak(run, result) {
+    if (result === 'win') return run > 0 ? run + 1 : 1;
+    if (result === 'loss') return run < 0 ? run - 1 : -1;
+    if (result === 'push') return run;
+    return 0;
+  }
+
+  function computeStats(session, now) {
     const rounds = session.rounds;
     const stats = {
       rounds: rounds.length, wins: 0, losses: 0, pushes: 0,
-      wagered: 0, returned: 0, net: 0, biggestWin: 0, biggestLoss: 0, streak: 0,
+      biggestWin: 0, biggestLoss: 0, streak: 0,
     };
+    let wageredC = 0, returnedC = 0, netC = 0;
+    const series = [];
+    let run = 0, bestWinStreak = 0, worstLossStreak = 0;
     for (const r of rounds) {
       if (r.result === 'win') stats.wins++;
       else if (r.result === 'loss') stats.losses++;
       else if (r.result === 'push') stats.pushes++;
-      if (typeof r.bet === 'number') stats.wagered += r.bet;
-      if (typeof r.payout === 'number') stats.returned += r.payout;
-      if (typeof r.profit === 'number') {
-        stats.net += r.profit;
+      if (isNum(r.bet)) wageredC += cents(r.bet);
+      if (isNum(r.payout)) returnedC += cents(r.payout);
+      if (isNum(r.profit)) {
+        netC += cents(r.profit);
         if (r.profit > stats.biggestWin) stats.biggestWin = r.profit;
         if (r.profit < stats.biggestLoss) stats.biggestLoss = r.profit;
       }
+      run = stepStreak(run, r.result);
+      if (run > bestWinStreak) bestWinStreak = run;
+      if (run < worstLossStreak) worstLossStreak = run;
+      series.push({ ts: isNum(r.ts) ? r.ts : null, net: netC / 100 });
     }
+    stats.wagered = wageredC / 100;
+    stats.returned = returnedC / 100;
+    stats.net = netC / 100;
+    stats.biggestWin = r2(stats.biggestWin);
+    stats.biggestLoss = r2(stats.biggestLoss);
     const decided = stats.wins + stats.losses;
     stats.winRate = decided ? Math.round((stats.wins / decided) * 100) : null;
-    for (const k of ['wagered', 'returned', 'net', 'biggestWin', 'biggestLoss']) stats[k] = r2(stats[k]);
+    stats.bestWinStreak = bestWinStreak;
+    stats.worstLossStreak = worstLossStreak;
+    stats.series = series;
     for (let i = rounds.length - 1; i >= 0; i--) {
       const res = rounds[i].result;
+      if (res === 'push') continue;
       if (res !== 'win' && res !== 'loss') break;
       const dir = res === 'win' ? 1 : -1;
       if (stats.streak === 0) stats.streak = dir;
       else if (Math.sign(stats.streak) === dir) stats.streak += dir;
       else break;
     }
+    const endAt = isNum(session.endedAt) ? session.endedAt : (now ?? NOW);
+    stats.durationMs = Math.max(0, endAt - (isNum(session.startedAt) ? session.startedAt : endAt));
+    stats.betsPerMinute =
+      stats.durationMs >= 1000 ? r1((stats.rounds * 60000) / stats.durationMs) : null;
     stats.extra = gameExtras(session);
     return stats;
+  }
+
+  function median(sorted) {
+    const n = sorted.length;
+    if (!n) return null;
+    const mid = n >> 1;
+    return n % 2 ? sorted[mid] : r2((sorted[mid - 1] + sorted[mid]) / 2);
   }
 
   function gameExtras(session) {
     const { game, rounds, ticks } = session;
     if (game === 'crash') {
-      const points = ticks.map((t) => t.crashPoint).filter((n) => typeof n === 'number');
+      const points = ticks.map((t) => t.crashPoint).filter(isNum);
       if (!points.length) return null;
       const sorted = [...points].sort((a, b) => a - b);
       return {
         label: 'crash points (all rounds seen)',
         count: points.length,
-        median: sorted[Math.floor(sorted.length / 2)],
+        median: median(sorted),
         under2x: Math.round((points.filter((p) => p < 2).length / points.length) * 100) + '%',
         last: points.slice(-15).reverse(),
       };
     }
     if (game === 'roulette') {
-      const nums = ticks.map((t) => t.number).filter((n) => typeof n === 'number');
+      const nums = ticks.map((t) => t.number).filter(isNum);
       if (!nums.length) return null;
       const freq = {};
       let red = 0, black = 0, green = 0;
       for (const t of ticks) {
-        if (typeof t.number !== 'number') continue;
+        if (!isNum(t.number)) continue;
         freq[t.number] = (freq[t.number] || 0) + 1;
         if (t.color === 'red') red++;
         else if (t.color === 'black') black++;
-        else green++;
+        else if (t.color === 'green') green++;
       }
       const byFreq = Object.entries(freq).sort((a, b) => b[1] - a[1]);
       return {
@@ -97,7 +138,7 @@
       };
     }
     if (game === 'plinko') {
-      const mults = rounds.map((r) => r.multiplier).filter((n) => typeof n === 'number');
+      const mults = rounds.map((r) => r.multiplier).filter(isNum);
       if (!mults.length) return null;
       return {
         label: 'drop multipliers', count: mults.length,
@@ -108,11 +149,12 @@
     }
     if (game === 'mines') {
       const cashed = rounds.filter((r) => r.result === 'win');
+      const cashedMults = cashed.map((r) => r.multiplier).filter(isNum);
       return {
         label: 'games', count: rounds.length,
         cashouts: cashed.length,
         busts: rounds.filter((r) => r.result === 'loss').length,
-        bestMultiplier: Math.max(0, ...cashed.map((r) => r.multiplier || 0)) || null,
+        bestMultiplier: cashedMults.length ? Math.max(...cashedMults) : null,
       };
     }
     if (game === 'blackjack') {

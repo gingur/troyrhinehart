@@ -54,10 +54,37 @@
   const fmtMoney = (n) => {
     if (typeof n !== 'number') return '—';
     const sign = n > 0 ? '+' : '';
+    if (Math.abs(n) >= 10000) return sign + (n / 1000).toFixed(1) + 'k';
     return sign + n.toFixed(2);
   };
 
+  const fmtAmount = (n) => {
+    if (typeof n !== 'number') return '—';
+    if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
+    return n.toFixed(2);
+  };
+
   const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const fmtDur = (ms) => {
+    if (typeof ms !== 'number' || ms < 0) return null;
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return '<1m';
+    if (m < 60) return m + 'm';
+    return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm';
+  };
+
+  const posNegCls = (n) => (n > 0 ? 'sqx-pos' : n < 0 ? 'sqx-neg' : 'sqx-dim');
+
+  // Duration/pace fallbacks for snapshots whose stats predate durationMs.
+  const sessionDurationMs = (session) => {
+    const s = session.stats || {};
+    if (typeof s.durationMs === 'number') return s.durationMs;
+    if (typeof session.startedAt === 'number' && typeof session.lastActivityAt === 'number') {
+      return Math.max(0, session.lastActivityAt - session.startedAt);
+    }
+    return null;
+  };
 
   function ensureRoot() {
     if (root && document.body.contains(root)) return root;
@@ -146,6 +173,7 @@
     }
 
     renderCurrent(body, session);
+    renderGraph(body, session);
     renderStats(body, session);
     renderExtras(body, session);
     renderHistory(body, session);
@@ -160,7 +188,13 @@
     newBtn.title = 'Archive this session and start fresh';
     newBtn.innerHTML = ICONS.reset + '<span>new session</span>';
     newBtn.onclick = () => chrome.runtime.sendMessage({ type: 'SQX_NEW_SESSION', game }).catch(() => {});
-    foot.append(h('span', 'sqx-foot-meta', 'since ' + fmtTime(session.startedAt)), newBtn);
+    const metaBits = ['since ' + fmtTime(session.startedAt)];
+    const dur = fmtDur(sessionDurationMs(session));
+    if (dur) metaBits.push(dur);
+    const stats = session.stats || {};
+    const pace = typeof stats.betsPerMinute === 'number' ? stats.betsPerMinute : null;
+    if (pace != null && pace > 0) metaBits.push(pace + '/min');
+    foot.append(h('span', 'sqx-foot-meta', metaBits.join(' · ')), newBtn);
     body.appendChild(foot);
   }
 
@@ -220,6 +254,86 @@
     return String(c);
   }
 
+  // Cumulative-profit values for the sparkline: prefer the background-computed
+  // stats.series, fall back to summing session.rounds. Always starts at 0.
+  function profitSeries(session) {
+    const s = session.stats;
+    const vals = [0];
+    if (s && Array.isArray(s.series) && s.series.length) {
+      for (const p of s.series) if (typeof p.net === 'number') vals.push(p.net);
+      return vals;
+    }
+    let cum = 0;
+    for (const r of session.rounds) {
+      if (typeof r.profit === 'number') {
+        cum = Math.round((cum + r.profit) * 100) / 100;
+        vals.push(cum);
+      }
+    }
+    return vals;
+  }
+
+  // Stake-style session profit chart: one point per bet, value-colored stroke
+  // + faint area fill (green at/above zero, red below), a dashed zero baseline
+  // with a tiny "0" label, and a dot on the latest point. No other furniture.
+  function renderGraph(body, session) {
+    const s = session.stats;
+    if (!s || !s.rounds) return;
+    const vals = profitSeries(session);
+
+    const box = h('div', 'sqx-graph');
+    const top = h('div', 'sqx-graph-top');
+    top.appendChild(h('span', 'sqx-graph-l', 'Profit'));
+    top.appendChild(h('span', 'sqx-count', s.rounds + (s.rounds === 1 ? ' bet' : ' bets')));
+    top.appendChild(num(fmtMoney(s.net), 'sqx-graph-net ' + posNegCls(s.net)));
+    box.appendChild(top);
+
+    if (vals.length >= 2) {
+      const W = 272, H = 54, PT = 5, PB = 5;
+      let min = 0, max = 0;
+      for (const v of vals) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      if (max - min < 1e-9) { max = 0.5; min = -0.5; }
+      const ih = H - PT - PB;
+      const y = (v) => PT + ((max - v) / (max - min)) * ih;
+      const x = (i) => (i / (vals.length - 1)) * W;
+      const y0 = y(0);
+      let line = '';
+      for (let i = 0; i < vals.length; i++) {
+        line += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(vals[i]).toFixed(1);
+      }
+      const area = line + 'L' + W + ' ' + y0.toFixed(1) + 'L0 ' + y0.toFixed(1) + 'Z';
+      const lx = x(vals.length - 1).toFixed(1);
+      const ly = y(vals[vals.length - 1]).toFixed(1);
+      const lastCol = vals[vals.length - 1] < 0 ? 'var(--sqx-neg)' : 'var(--sqx-pos)';
+      const zeroLabelY = y0 > 13 ? y0 - 3.5 : y0 + 9.5;
+      const svg =
+        '<svg class="sqx-spark" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+        '<defs>' +
+        '<clipPath id="sqx-clip-up"><rect x="-2" y="-2" width="' + (W + 4) + '" height="' + (y0 + 2).toFixed(1) + '"/></clipPath>' +
+        '<clipPath id="sqx-clip-dn"><rect x="-2" y="' + y0.toFixed(1) + '" width="' + (W + 4) + '" height="' + (H - y0 + 2).toFixed(1) + '"/></clipPath>' +
+        '</defs>' +
+        '<line x1="0" y1="' + y0.toFixed(1) + '" x2="' + W + '" y2="' + y0.toFixed(1) + '"' +
+        ' style="stroke:var(--sqx-hair);stroke-width:1;stroke-dasharray:3 3" vector-effect="non-scaling-stroke"/>' +
+        '<path d="' + area + '" clip-path="url(#sqx-clip-up)" style="fill:var(--sqx-pos);fill-opacity:0.12"/>' +
+        '<path d="' + area + '" clip-path="url(#sqx-clip-dn)" style="fill:var(--sqx-neg);fill-opacity:0.12"/>' +
+        '<path d="' + line + '" clip-path="url(#sqx-clip-up)"' +
+        ' style="fill:none;stroke:var(--sqx-pos);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round" vector-effect="non-scaling-stroke"/>' +
+        '<path d="' + line + '" clip-path="url(#sqx-clip-dn)"' +
+        ' style="fill:none;stroke:var(--sqx-neg);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round" vector-effect="non-scaling-stroke"/>' +
+        '<circle cx="' + lx + '" cy="' + ly + '" r="2.3" style="fill:' + lastCol + '"/>' +
+        '<text x="3" y="' + zeroLabelY.toFixed(1) + '"' +
+        ' style="fill:var(--sqx-faint);font-family:var(--sqx-mono);font-size:8px">0</text>' +
+        '</svg>';
+      const wrap = h('div', 'sqx-spark-wrap');
+      wrap.innerHTML = svg;
+      box.appendChild(wrap);
+    }
+    body.appendChild(box);
+  }
+
   function renderStats(body, session) {
     const s = session.stats;
     if (!s || !s.rounds) return;
@@ -233,18 +347,55 @@
       c.appendChild(v);
       return c;
     };
+    const pair = (a, aCls, b, bCls) => [
+      h('span', aCls, a),
+      h('span', 'sqx-dim', '/'),
+      h('span', bCls, b),
+    ];
+
+    // Derived stats with fallbacks so older snapshots (no series/duration/
+    // best-worst streaks) still fill every cell.
+    const durationMs = sessionDurationMs(session);
+    const avgBet = s.rounds ? s.wagered / s.rounds : null;
+    const rtp = s.wagered > 0 && typeof s.returned === 'number'
+      ? Math.round((s.returned / s.wagered) * 1000) / 10 : null;
+    const netHr = durationMs != null && durationMs >= 60000
+      ? Math.round((s.net * 3600000) / durationMs * 100) / 100 : null;
+    let bestRun = s.bestWinStreak;
+    let worstRun = s.worstLossStreak;
+    if (typeof bestRun !== 'number' || typeof worstRun !== 'number') {
+      bestRun = 0; worstRun = 0;
+      let run = 0;
+      for (const r of session.rounds) {
+        if (r.result === 'win') run = run > 0 ? run + 1 : 1;
+        else if (r.result === 'loss') run = run < 0 ? run - 1 : -1;
+        else if (r.result !== 'push') run = 0;
+        if (run > bestRun) bestRun = run;
+        if (run < worstRun) worstRun = run;
+      }
+    }
+
     grid.append(
-      cell('rounds', String(s.rounds)),
+      cell('w–l', [
+        h('span', s.wins ? 'sqx-pos' : 'sqx-dim', String(s.wins)),
+        h('span', 'sqx-dim', '–'),
+        h('span', s.losses ? 'sqx-neg' : 'sqx-dim', String(s.losses)),
+      ]),
       cell('win rate', s.winRate == null ? '—' : s.winRate + '%'),
-      cell('net', fmtMoney(s.net), s.net > 0 ? 'sqx-pos' : s.net < 0 ? 'sqx-neg' : ''),
       cell('streak', s.streak === 0 ? '—' : (s.streak > 0 ? 'W' : 'L') + Math.abs(s.streak),
-        s.streak > 0 ? 'sqx-pos' : s.streak < 0 ? 'sqx-neg' : ''),
-      cell('wagered', s.wagered.toFixed(2)),
-      cell('best / worst', [
-        h('span', s.biggestWin > 0 ? 'sqx-pos' : '', fmtMoney(s.biggestWin)),
-        h('span', 'sqx-dim', '/'),
-        h('span', s.biggestLoss < 0 ? 'sqx-neg' : '', fmtMoney(s.biggestLoss)),
-      ], '', true)
+        posNegCls(s.streak)),
+      cell('wagered', fmtAmount(s.wagered)),
+      cell('avg bet', avgBet == null ? '—' : fmtAmount(avgBet)),
+      cell('rtp', rtp == null ? '—' : rtp + '%', rtp == null ? '' : rtp >= 100 ? 'sqx-pos' : ''),
+      cell('best / worst', pair(
+        fmtMoney(s.biggestWin), s.biggestWin > 0 ? 'sqx-pos' : '',
+        fmtMoney(s.biggestLoss), s.biggestLoss < 0 ? 'sqx-neg' : ''
+      ), '', true),
+      cell('runs', pair(
+        'W' + bestRun, bestRun > 0 ? 'sqx-pos' : 'sqx-dim',
+        'L' + Math.abs(worstRun), worstRun < 0 ? 'sqx-neg' : 'sqx-dim'
+      ), '', true),
+      cell('net / hr', netHr == null ? '—' : fmtMoney(netHr), posNegCls(netHr == null ? 0 : netHr), true)
     );
     body.appendChild(grid);
   }
