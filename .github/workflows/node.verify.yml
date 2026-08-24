@@ -4,4 +4,4 @@ on: [pull_request]
 
 jobs:
   verify:
-    uses: gingur/devkit/.github/workflows/node.verify.yml@main
+    uses: gingur/devkit/.github/workflows/toolchain.verify.yml@feat/node-verify-build-bun
