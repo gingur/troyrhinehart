@@ -1,0 +1,38 @@
+{
+  "game": "roulette",
+  "note": "deep namespace + ack id + trailing null ack slot parses; a 21-digit ack id (beyond the prefix regex) is dropped, not misparsed.",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42/casino/eu-west-2,17[\"roulette:spin\",{\"roundId\":\"ax-1\",\"winningNumber\":0},null]"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42/casino,123456789012345678901[\"roulette:spin\",{\"roundId\":\"ax-2\",\"winningNumber\":5}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "roulette",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "ax-1",
+          "number": 0,
+          "color": "green"
+        }
+      }
+    },
+    {
+      "game": "roulette",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "result"
+        }
+      }
+    }
+  ]
+}

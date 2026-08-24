@@ -27,6 +27,7 @@ import {
   rememberRound,
   sanitizeRound,
   snapshotSession,
+  upgradeRound,
 } from './lib/stats.js';
 
 // Coalesce storage writes under event storms: leading + trailing edge, at
@@ -171,9 +172,14 @@ function applyGameEvent(game, event) {
     // memory catches (b): without it, 20 rounds → new session → reload →
     // history replay would double-count all 20 into the fresh session.
     const round = sanitizeRound(event.round);
-    if (hasRound(session, round.id) || hasKnownRound(state.knownRounds, game, round.id)) return;
-    appendRound(session, round);
-    state.knownRounds = rememberRound(state.knownRounds, game, round.id);
+    // `event.upgrade` (set by content.js) marks a payout-bearing settle for a
+    // round already forwarded WITHOUT a payout (ack-then-push APIs): replace
+    // the stored round in place instead of deduping the real outcome away.
+    if (!(event.upgrade === true && upgradeRound(session, round))) {
+      if (hasRound(session, round.id) || hasKnownRound(state.knownRounds, game, round.id)) return;
+      appendRound(session, round);
+      state.knownRounds = rememberRound(state.knownRounds, game, round.id);
+    }
     session.current = null; // deal resolved
   } else if (event.type === 'tick') {
     appendTick(session, event.tick);

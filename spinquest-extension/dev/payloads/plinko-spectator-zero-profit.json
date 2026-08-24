@@ -1,0 +1,20 @@
+{
+  "game": "plinko",
+  "note": "round-end broadcast to a NON-participant: status finished, profit 0, no bet, no payout, no id. Recording a 'push' the player never played corrupts win-rate denominators. Correct: ignored.",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787001600000,
+      "body": {
+        "type": "round_end",
+        "status": "finished",
+        "profit": 0,
+        "multiplier": 1.24
+      },
+      "repeat": 3
+    }
+  ],
+  "expected": []
+}

@@ -1,0 +1,18 @@
+{
+  "game": "blackjack",
+  "note": "bet-placement ack on a hand-based game: {betId, bet, state pending} carries no cards and no settle evidence — no round, no state patch; the deal frames that follow carry the hand",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/blackjack/bet",
+      "ts": 1787002200000,
+      "body": {
+        "betId": "bja-1",
+        "bet": 10,
+        "state": "pending"
+      }
+    }
+  ],
+  "expected": []
+}

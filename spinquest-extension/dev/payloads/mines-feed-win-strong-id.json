@@ -1,0 +1,21 @@
+{
+  "game": "mines",
+  "note": "sitewide win-feed pushes ONE bet at a time, and real feeds (e.g. Stake's) carry the bet's id per entry. A lone broadcast with username AND betId is still another player's bet. Correct: ignored.",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787001200000,
+      "body": {
+        "event": "feed:win",
+        "username": "whale42",
+        "game": "mines",
+        "betId": "fw-1",
+        "bet": 100,
+        "payout": 5000
+      }
+    }
+  ],
+  "expected": []
+}

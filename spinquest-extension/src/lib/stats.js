@@ -132,6 +132,23 @@ export function sanitizeRound(raw, now = Date.now()) {
   return round;
 }
 
+/**
+ * Replace a previously appended payout-LESS round with a payout-bearing one
+ * carrying the same id (the ack-then-push API shape: a placement ack that
+ * slipped through as a result-unknown round, followed by the real settle).
+ * Only an upgrade — same id, stored round lacks a payout, new round has one —
+ * qualifies; returns false otherwise so the caller falls back to normal
+ * dedupe. Only the kept window is searched: an evicted round's totals are
+ * already folded into carry and can't be unwound.
+ */
+export function upgradeRound(session, round) {
+  if (round.id == null || !isNum(round.payout)) return false;
+  const i = session.rounds.findIndex((r) => r.id === round.id);
+  if (i < 0 || isNum(session.rounds[i].payout)) return false;
+  session.rounds[i] = round;
+  return true;
+}
+
 // Streak rule (shared by carry accumulation and computeStats): wins and
 // losses extend or flip the run, pushes are transparent (a push does not end
 // a blackjack streak), anything else ('unknown') resets it.

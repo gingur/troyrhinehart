@@ -1,0 +1,51 @@
+{
+  "game": "blackjack",
+  "note": "split produces TWO money legs in a hands array (win one, lose one: total bet 10, total payout 10, push). Taking only hands[0] halves the stake and misreports a win. Correct: totals.",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/blackjack/settle",
+      "ts": 1787001300000,
+      "body": {
+        "betId": "bj-7",
+        "state": "settled",
+        "hands": [
+          {
+            "bet": 5,
+            "payout": 10,
+            "cards": [
+              "8H",
+              "3D",
+              "9S"
+            ]
+          },
+          {
+            "bet": 5,
+            "payout": 0,
+            "cards": [
+              "8C",
+              "7D",
+              "KH"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "blackjack",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "bj-7",
+          "bet": 10,
+          "payout": 10,
+          "profit": 0,
+          "result": "push"
+        }
+      }
+    }
+  ]
+}

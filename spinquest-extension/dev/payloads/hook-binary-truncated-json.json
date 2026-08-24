@@ -1,0 +1,45 @@
+{
+  "game": "crash",
+  "note": "truncated JSON inside binary frames (blob ws frame, xhr blob) with a lone-surrogate mid-cut \u2014 dropped; a VALID JSON body arriving as an xhr arraybuffer still extracts.",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "binary": "blob",
+      "frame": "42[\"crash:round_end\",{\"roundId\":\"tb-1\",\"crashPoint\":2.5,\"emoji\":\"\ud83d"
+    },
+    {
+      "transport": "xhr",
+      "url": "https://spinquest.com/api/crash/state",
+      "responseType": "blob",
+      "text": "{\"roundId\":\"tb-2\",\"crashPo"
+    },
+    {
+      "transport": "xhr",
+      "url": "https://spinquest.com/api/crash/state",
+      "responseType": "arraybuffer",
+      "text": "{\"roundId\":\"tb-9\",\"crashPoint\":1.98}"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "tb-9",
+          "crashPoint": 1.98
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    }
+  ]
+}

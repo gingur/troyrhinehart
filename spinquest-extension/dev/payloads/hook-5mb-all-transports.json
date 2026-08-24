@@ -1,0 +1,52 @@
+{
+  "game": "crash",
+  "note": "~5MB bodies over every transport (ws text frame, fetch without content-length and without a body stream, xhr text) must be dropped by the 64KB cap without hashing or forwarding; a normal frame afterwards still works.",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "fill": 5000000,
+      "frame": "42[\"crash:history\",[{\"roundId\":\"h1\",\"crashPoint\":2.1,\"pad\":\"@FILL@\"}]]"
+    },
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/api/crash/history",
+      "contentType": "application/json",
+      "fill": 5242880,
+      "text": "{\"roundId\":\"big-1\",\"crashPoint\":2.5,\"pad\":\"@FILL@\"}"
+    },
+    {
+      "transport": "xhr",
+      "url": "https://spinquest.com/api/crash/history",
+      "responseType": "text",
+      "fill": 5000000,
+      "responseText": "{\"roundId\":\"big-2\",\"crashPoint\":9.9,\"pad\":\"@FILL@\"}"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"crash:round_end\",{\"roundId\":\"big-3\",\"crashPoint\":3.2}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "big-3",
+          "crashPoint": 3.2
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    }
+  ]
+}

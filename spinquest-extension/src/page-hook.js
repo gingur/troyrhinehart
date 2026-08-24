@@ -212,8 +212,10 @@
 
           const promise = origFetch.apply(this, args);
           if (promise && typeof promise.then === 'function') {
-            // Observe on a derived promise; the page's own promise (and its
-            // rejection path) is returned untouched.
+            // The page gets its own promise back untouched. Observing it does
+            // attach a no-op rejection handler, so a fire-and-forget fetch
+            // failure no longer surfaces as an `unhandledrejection` event —
+            // inherent to observing; awaited/`.catch`ed fetches see no change.
             promise.then((res) => tapResponse(res, url), () => {});
           }
           return promise;
@@ -245,11 +247,16 @@
 
       XHR.prototype.send = function (body) {
         try {
-          const url = this.__sqxUrl || '';
-          if (typeof body === 'string') capture('xhr', url, 'out', body);
+          if (typeof body === 'string') capture('xhr', this.__sqxUrl || '', 'out', body);
 
+          // Long-polling pages recycle ONE XHR object across many send()
+          // calls — tap it once (own-property flag) or the load listeners
+          // pile up unboundedly and every response is captured N times.
+          if (this.__sqxTapped) return origSend.call(this, body);
+          this.__sqxTapped = true;
           this.addEventListener('load', () => {
             try {
+              const url = this.__sqxUrl || ''; // re-read: open() may have re-run
               const rt = this.responseType;
               if (rt === '' || rt === 'text') {
                 let text;
@@ -260,12 +267,24 @@
                 }
                 if (typeof text === 'string') capture('xhr', url, 'in', text);
               } else if (rt === 'json') {
+                // Pre-gate on content-length when the server declares it, so
+                // a 50MB JSON response is skipped WITHOUT paying a 50MB
+                // stringify on the page's main thread first.
+                try {
+                  if (typeof this.getResponseHeader === 'function') {
+                    const len = Number(this.getResponseHeader('content-length'));
+                    if (Number.isFinite(len) && len > MAX_BODY_BYTES) return;
+                  }
+                } catch {
+                  /* hostile headers — fall through to the stringify gate */
+                }
                 const res = this.response;
                 if (res !== null && typeof res === 'object') {
                   // Same size gate as every other path: a multi-MB JSON
                   // response must not be structured-cloned across the bridge
                   // and hashed in the content script. Measuring costs one
-                  // stringify, but only up to here — oversized bodies stop.
+                  // stringify (chunked/undeclared lengths only reach here),
+                  // but only up to here — oversized bodies stop.
                   let raw;
                   try {
                     raw = JSON.stringify(res);

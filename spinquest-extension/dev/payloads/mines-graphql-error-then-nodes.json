@@ -1,0 +1,50 @@
+{
+  "game": "mines",
+  "note": "GraphQL error envelope (data:null) ignored; a Relay-style connection (edges/cursor/node, string numbers, epoch-seconds settledAt, __typename noise) yields one round per node with scaled timestamps.",
+  "steps": [
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/graphql",
+      "contentType": "application/json",
+      "text": "{\"errors\":[{\"message\":\"Internal server error\",\"path\":[\"minesGames\"]}],\"data\":null}"
+    },
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/graphql",
+      "contentType": "application/json",
+      "text": "{\"data\":{\"minesGames\":{\"pageInfo\":{\"hasNextPage\":false},\"edges\":[{\"cursor\":\"YXJyYXk=\",\"node\":{\"__typename\":\"MinesGame\",\"nonce\":481123,\"betAmount\":\"0.25\",\"payout\":\"0.75\",\"settledAt\":1787000200}},{\"cursor\":\"YXJyYXk2\",\"node\":{\"__typename\":\"MinesGame\",\"nonce\":481124,\"betAmount\":\"0.25\",\"payout\":\"0\",\"settledAt\":1787000260}}]}}}"
+    }
+  ],
+  "expected": [
+    {
+      "game": "mines",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "481123",
+          "ts": 1787000200000,
+          "bet": 0.25,
+          "payout": 0.75,
+          "profit": 0.5,
+          "multiplier": 3,
+          "result": "win"
+        }
+      }
+    },
+    {
+      "game": "mines",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "481124",
+          "ts": 1787000260000,
+          "bet": 0.25,
+          "payout": 0,
+          "profit": -0.25,
+          "multiplier": 0,
+          "result": "loss"
+        }
+      }
+    }
+  ]
+}

@@ -135,13 +135,34 @@ payload degrades to "not captured", never to a broken game):
   as money; absurd magnitudes (≥1e12) are rejected; multiplayer bet boards
   (arrays whose entries carry usernames) are stripped so another player's bet
   can't become yours — and so is a LONE namey object (a "bigwin by whale42"
-  broadcast) unless it carries a per-bet strong id; wallet-shaped envelopes
+  broadcast) unless it carries a per-bet strong id AND the payload names no
+  feed/broadcast channel (win feeds push one id-bearing entry at a time, so
+  the channel word outranks the id); wallet-shaped envelopes
   (`balance`/`wallet`/`account`/`user` paths) are banned from every money-leg
   walk, so a balance push never fabricates a bet; a payout/net-only payload
   with no bet is refused unless corroborated by a strong id or an explicit
-  settled status.
+  settled status — and `profit: 0` alone (the round-end broadcast every
+  spectator receives) additionally requires a per-bet id; American roulette's
+  `"00"` pocket is skipped rather than coerced into a single zero; blackjack
+  split settles (`hands: [...]`, one bet/payout pair per hand) are summed,
+  not read off `hands[0]`.
+- **Ack-then-push APIs**: a bet-placement ack (`{betId, bet, state:
+  "placed"}`) never becomes a round — placement status words
+  (`placed|pending|accepted|open|...`) veto every settled heuristic, and the
+  per-game adapters gate single-payload round emission on settle evidence (a
+  payout/net leg or a settled status), emitting a betting-phase state patch
+  (or, for instant games like plinko, nothing) instead. Belt-and-braces: if a
+  payout-less round DOES get recorded, a payout-bearing round with the same
+  id later *upgrades* it in place (`event.upgrade`) rather than being thrown
+  away as a duplicate.
+- **Cross-game frames**: adapter matching runs a content-evidence pass first
+  (URL / socket.io event name / `game:`-style keys) before falling back to
+  the on-screen game, so a shared user socket delivering your crash settle
+  while the tab shows plinko books it under crash.
 - **Dedupe**: byte-identical bodies within 400 ms (double listeners,
-  fetch+XHR mirrors) collapse to one event; rounds dedupe on per-bet ids
+  fetch+XHR mirrors) collapse to one event; bodies whose JSON exceeds 256 KB
+  are dropped outright (the hook caps at 64 KB — anything bigger is a spoofed
+  flood posted by page JS); rounds dedupe on per-bet ids
   (trusted strong keys like `betId`; payload-constant weak ids like `gameId`
   get deterministic synthetic ids); shared-outcome ticks dedupe by per-round
   id when present — preferring `roundId` over `betId`, so a personal settle
@@ -150,7 +171,7 @@ payload degrades to "not captured", never to a broken game):
   Known limitation: id-less single rounds with identical bodies more than
   400 ms apart are counted separately — indistinguishable from real repeats.
 
-`dev/payloads/` holds an adversarial corpus (60 payload files, per game and
+`dev/payloads/` holds an adversarial corpus (79 payload files, per game and
 generic, each with its expected normalized output), and `dev/replay.mjs`
 feeds every one through the real hook + adapter + normalize pipeline in plain
 node:

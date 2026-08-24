@@ -28,6 +28,14 @@ SQX.adapters.push({
 
     const round = SQX.extractRound(evt);
     if (!round) return [];
+    // A drop settles instantly, so a real plinko round always carries settle
+    // evidence (a payout/net leg or a settled status). A money-bearing
+    // payload WITHOUT it is a bet-placement ack ({betId, bet, state:
+    // "placed"}) — recording it as a round would make the dedupe layers drop
+    // the real settle pushed seconds later under the same betId. There is no
+    // meaningful in-flight phase for an instant game: emit nothing and let
+    // the settle frame carry the round.
+    if (!SQX.hasSettledEvidence(evt)) return [];
     round.detail = SQX_PLINKO_DETAIL(evt.body);
     return [{ type: 'round', round }];
   },

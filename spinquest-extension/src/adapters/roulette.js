@@ -10,6 +10,28 @@ const SQX_ROULETTE_NUM = /^(winningNumber|winning_number|pocket|wheelResult|whee
 const SQX_ROULETTE_COLOR = (n) =>
   n === 0 ? 'green' : SQX_ROULETTE_RED.has(n) ? 'red' : 'black';
 
+// A pocket value as a European wheel number. American "00" (a string — there
+// is no numeric 00) must NOT coerce to 0: the pipeline has no double-zero
+// representation, and recording a green single-zero that never happened is
+// worse than skipping the spin.
+const SQX_ROULETTE_POCKET = (v) => {
+  if (typeof v === 'string' && /^\s*0\d/.test(v)) return undefined; // "00", "000"
+  const n = SQX.parseNum(v);
+  return Number.isInteger(n) && n >= 0 && n <= 36 ? n : undefined;
+};
+
+/** First pocket-valued number under a winning-number key, "00"-safe. */
+const SQX_ROULETTE_FIND_NUM = (obj) => {
+  let found;
+  SQX.walk(obj, (key, value) => {
+    if (found !== undefined) return;
+    if (!SQX_ROULETTE_NUM.test(key)) return;
+    const n = SQX_ROULETTE_POCKET(value);
+    if (n !== undefined) found = n;
+  });
+  return found;
+};
+
 SQX.adapters.push({
   game: 'roulette',
 
@@ -44,7 +66,7 @@ SQX.adapters.push({
     if (hist) {
       for (const item of hist.slice(0, 60)) {
         const isObj = item !== null && typeof item === 'object';
-        const n = isObj ? SQX.deepNum(item, SQX_ROULETTE_NUM) : item;
+        const n = isObj ? SQX_ROULETTE_FIND_NUM(item) : item;
         if (!Number.isInteger(n) || n < 0 || n > 36) continue;
         const tick = {
           ts: (isObj ? SQX.itemTs(item) : undefined) ?? evt.ts,
@@ -65,9 +87,9 @@ SQX.adapters.push({
       return out;
     }
 
-    const number = SQX.deepNum(body, SQX_ROULETTE_NUM);
+    const number = SQX_ROULETTE_FIND_NUM(body);
 
-    if (number !== undefined && Number.isInteger(number) && number >= 0 && number <= 36) {
+    if (number !== undefined) {
       const color = SQX_ROULETTE_COLOR(number);
       const tick = { ts: evt.ts, number, color };
       const tid = SQX.findTickId(SQX.stripPublicBoards(body));
@@ -89,8 +111,11 @@ SQX.adapters.push({
       return out;
     }
 
+    // Fall-through without a winning number: settle evidence (payout/net leg
+    // or settled status) gates round emission — a bet-placement ack is a
+    // betting patch, never a round.
     const round = SQX.extractRound(evt);
-    if (round && SQX.looksSettled(evt)) {
+    if (round && SQX.hasSettledEvidence(evt)) {
       out.push({ type: 'round', round });
     } else if (round) {
       out.push({ type: 'state', patch: { phase: 'betting', bet: round.bet } });

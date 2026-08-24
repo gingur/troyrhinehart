@@ -1,0 +1,71 @@
+{
+  "game": "plinko",
+  "note": "belt-and-braces for the ack-then-push shape: a settled-WORD payload without a payout leg still becomes a (payout-less) round, and the payout-bearing settle 2s later must UPGRADE it (event.upgrade) instead of being deduped away by the same-id memory",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/plinko/bet",
+      "ts": 1787002100000,
+      "body": {
+        "betId": "up-1",
+        "bet": 5,
+        "state": "settled"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787002102000,
+      "body": {
+        "betId": "up-1",
+        "bet": 5,
+        "payout": 12.5,
+        "state": "settled"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787002104000,
+      "body": {
+        "betId": "up-1",
+        "bet": 5,
+        "payout": 12.5,
+        "state": "settled",
+        "seq": 2
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "upgrade": "__absent__",
+        "round": {
+          "id": "up-1",
+          "bet": 5,
+          "payout": "__absent__",
+          "result": "unknown"
+        }
+      }
+    },
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "upgrade": true,
+        "round": {
+          "id": "up-1",
+          "bet": 5,
+          "payout": 12.5,
+          "profit": 7.5,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}

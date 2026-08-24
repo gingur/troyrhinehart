@@ -1,0 +1,26 @@
+{
+  "game": "plinko",
+  "note": "shared user channel delivers the player's CRASH settle while the tab shows plinko. The payload names its game explicitly; recording it as a plinko round corrupts per-game stats. Correct: attributed to crash.",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"user:bet_settled\",{\"game\":\"crash\",\"betId\":\"cg-1\",\"bet\":2,\"payout\":4.4,\"state\":\"settled\"}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "cg-1",
+          "bet": 2,
+          "payout": 4.4,
+          "profit": 2.4,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}

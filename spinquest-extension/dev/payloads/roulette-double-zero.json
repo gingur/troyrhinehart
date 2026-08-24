@@ -1,0 +1,17 @@
+{
+  "game": "roulette",
+  "note": "American roulette pockets '00' as a string. Coercing '00' to the number 0 records a green single-zero that never happened. Correct: no tick (the pipeline has no 00 representation).",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/roulette/spin",
+      "ts": 1787001000000,
+      "body": {
+        "roundId": "rz-1",
+        "winningNumber": "00"
+      }
+    }
+  ],
+  "expected": []
+}

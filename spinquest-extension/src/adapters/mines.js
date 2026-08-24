@@ -42,17 +42,19 @@ SQX.adapters.push({
     if (!settled) {
       // In-progress reveal: update the current deal with running multiplier.
       // A null-riddled body ({tiles:null, bet:null, ...}) yields no signal at
-      // all — emit nothing rather than an empty "revealing" patch.
+      // all — emit nothing rather than an empty "revealing" patch. A bet
+      // WITHOUT any board signal is a placement ack ({betId, bet, state:
+      // "placed"}) — that's the betting phase, no tiles are revealed yet.
       const multiplier = SQX.deepNum(body, SQX.KEYS.multiplier);
       const bet = SQX.deepNum(body, SQX.KEYS.bet);
-      const hasSignal =
+      const boardSignal =
         detail.mines !== undefined || detail.revealedCount !== undefined ||
         detail.revealed !== undefined || detail.gridSize !== undefined ||
-        multiplier !== undefined || bet !== undefined;
-      if (!hasSignal) return [];
+        multiplier !== undefined;
+      if (!boardSignal && bet === undefined) return [];
       return [{
         type: 'state',
-        patch: { phase: 'revealing', detail, multiplier, bet },
+        patch: { phase: boardSignal ? 'revealing' : 'betting', detail, multiplier, bet },
       }];
     }
 

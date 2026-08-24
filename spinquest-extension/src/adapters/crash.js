@@ -85,8 +85,12 @@ SQX.adapters.push({
       return [{ type: 'state', patch: { phase: 'flying', multiplier: liveMult } }];
     }
 
+    // Fall-through: no crash point, no live multiplier. Settle evidence (a
+    // payout/net leg or settled status — vetoed by placement words) gates
+    // round emission; a bet-placement ack becomes a betting patch instead,
+    // so the real settle isn't deduped away later under the same betId.
     const round = SQX.extractRound(evt);
-    if (round && SQX.looksSettled(evt)) {
+    if (round && SQX.hasSettledEvidence(evt)) {
       round.detail = { cashedOutAt: round.multiplier };
       return [{ type: 'round', round }];
     }

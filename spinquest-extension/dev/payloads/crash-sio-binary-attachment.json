@@ -1,0 +1,43 @@
+{
+  "game": "crash",
+  "note": "socket.io binary events \u2014 '451-' placeholder frame plus the msgpack attachment frame \u2014 must be cleanly ignored; the following plain text frame still parses.",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "451-[\"crash:round_end\",{\"_placeholder\":true,\"num\":0}]"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "binary": "arraybuffer",
+      "frame": "\u0083\u00a7roundId\u00a4cr-1\u00aacrashPoint\u00cb"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"crash:round_end\",{\"roundId\":\"ba-1\",\"crashPoint\":1.07}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "ba-1",
+          "crashPoint": 1.07
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    }
+  ]
+}

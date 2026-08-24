@@ -167,6 +167,19 @@ SQX.sioPayload = function sioPayload(body) {
   };
 })();
 
+// Sitewide win feeds push ONE bet at a time, and real feeds (Stake et al.)
+// carry per-entry bet ids — so "has a strong id" is not proof a namey object
+// is OUR settle echo. When the payload names a feed/broadcast channel
+// anywhere (event:"feed:win", channel:"bigwin", ...), namey objects are
+// dropped even when id-bearing.
+const SQX_FEED_CHAN_KEY = /^(event|channel|topic|room|type|name)$/i;
+const SQX_FEED_WORD = /(feed|broadcast|bigwin|big[-_]win|highroller|high[-_]roller|leaderboard|top[-_]?win|luckywin|lucky[-_]win)/i;
+const SQX_IS_FEEDISH = (body) =>
+  SQX.deepFind(body, SQX_FEED_CHAN_KEY, (v) =>
+    typeof v === 'string' && v.length < 200 && SQX_FEED_WORD.test(v)
+  ) !== undefined ||
+  (Array.isArray(body) && typeof body[0] === 'string' && body[0].length < 200 && SQX_FEED_WORD.test(body[0]));
+
 /**
  * Deep-clone a payload with public multiplayer content removed, so
  * extractRound never mistakes another player's bet for ours:
@@ -174,12 +187,15 @@ SQX.sioPayload = function sioPayload(body) {
  *    ...) are the whole table's bets — dropped wholesale;
  *  - a LONE object with a display-identity own key is a broadcast about some
  *    player ("bigwin by whale42") — dropped too, unless it also carries a
- *    per-bet strong id (a personal settle echoing our own username is keyed).
+ *    per-bet strong id (a personal settle echoing our own username is keyed)
+ *    AND the payload doesn't name a feed/broadcast channel (win feeds carry
+ *    per-entry bet ids too — the channel word outranks the id).
  * Plain-data payloads only (everything here came out of JSON.parse /
  * structuredClone), so the clone is cheap and cycle-free.
  */
-SQX.stripPublicBoards = function stripPublicBoards(node, depth = 0) {
+SQX.stripPublicBoards = function stripPublicBoards(node, depth = 0, feedish) {
   if (node === null || typeof node !== 'object' || depth > 6) return node;
+  if (feedish === undefined) feedish = SQX_IS_FEEDISH(node);
   if (Array.isArray(node)) {
     const objs = node.filter((el) => el && typeof el === 'object' && !Array.isArray(el));
     if (objs.length) {
@@ -188,18 +204,19 @@ SQX.stripPublicBoards = function stripPublicBoards(node, depth = 0) {
     }
     const out = [];
     for (const el of node) {
-      const v = SQX.stripPublicBoards(el, depth + 1);
+      const v = SQX.stripPublicBoards(el, depth + 1, feedish);
       if (v !== undefined) out.push(v);
     }
     return out;
   }
   const keys = Object.keys(node);
-  if (keys.some((k) => SQX.KEYS.playerName.test(k)) && SQX.findStrongId(node) === undefined) {
+  if (keys.some((k) => SQX.KEYS.playerName.test(k)) &&
+      (feedish || SQX.findStrongId(node) === undefined)) {
     return undefined; // somebody's broadcast, not our bet
   }
   const out = {};
   for (const key of keys) {
-    const v = SQX.stripPublicBoards(node[key], depth + 1);
+    const v = SQX.stripPublicBoards(node[key], depth + 1, feedish);
     if (v !== undefined) out[key] = v;
   }
   return out;
@@ -251,6 +268,35 @@ const SQX_BET_LEG = (body) => {
 // state/status/phase field.
 const SQX_SETTLED_STATUS = /^(complete|completed|settled|finished|resolved|cashout|cashed_out|busted|lost|won|ended)$/i;
 
+// Status words that mean "this bet is NOT finished": the bet-placement ack
+// (`{betId, bet, state:"placed"}`) of every ack-then-push API. These veto all
+// settled heuristics — an ack must never become a round, or the real settle
+// arriving seconds later on the same betId gets deduped away.
+const SQX_PLACED_STATUS = /^(placed|pending|accepted|open|created|queued|awaiting)$/i;
+
+// Multi-leg settles: a blackjack split (or multi-seat) payload carries its
+// money in a `hands` array — one bet/payout pair per hand. The round is the
+// SUM of the legs; taking hands[0] alone halves the stake and misreports the
+// outcome (win 10 on one hand + lose 5 on the other is a push, not a win).
+const SQX_HANDS_KEY = /^(hands|splitHands|split_hands|seats)$/i;
+const SQX_MULTI_HAND = (v) =>
+  Array.isArray(v) && v.length >= 2 && v.length <= 8 &&
+  v.every((el) => el && typeof el === 'object' && !Array.isArray(el) &&
+    SQX_MONEY_LEG(el, SQX.KEYS.betCore) !== undefined);
+
+const SQX_HAND_LEGS = (body) => {
+  const hands = SQX.deepFind(body, SQX_HANDS_KEY, SQX_MULTI_HAND);
+  if (!hands) return null;
+  let bet = 0;
+  let payout;
+  for (const el of hands) {
+    bet += SQX_MONEY_LEG(el, SQX.KEYS.betCore);
+    const p = SQX_MONEY_LEG(el, SQX.KEYS.payout);
+    if (p !== undefined) payout = (payout ?? 0) + p;
+  }
+  return { bet: SQX.round2(bet), payout: payout === undefined ? undefined : SQX.round2(payout) };
+};
+
 /**
  * Extract the shared skeleton of a completed round from a payload.
  * Returns null when the payload doesn't look like a bet/round at all.
@@ -265,10 +311,12 @@ SQX.extractRound = function extractRound(evt) {
 
 SQX._extractRound = function _extractRound(evt) {
   const body = SQX.stripPublicBoards(evt.body);
-  const bet = SQX_BET_LEG(body);
-  let payout = SQX_MONEY_LEG(body, SQX.KEYS.payout);
+  const legs = SQX_HAND_LEGS(body); // split/multi-seat payloads: sum the hands
+  const bet = legs ? legs.bet : SQX_BET_LEG(body);
+  let payout = legs && legs.payout !== undefined ? legs.payout : SQX_MONEY_LEG(body, SQX.KEYS.payout);
   const net = SQX.deepNumAt(body, SQX.KEYS.net, SQX_WALLET_BAN); // signed: profit-shaped keys are net of the bet
-  const multiplier = SQX.deepMoney(body, SQX.KEYS.multiplier);
+  // Per-hand multipliers don't describe the summed round — derive instead.
+  const multiplier = legs ? undefined : SQX.deepMoney(body, SQX.KEYS.multiplier);
 
   // A round needs at least one money leg to be meaningful.
   if (bet === undefined && payout === undefined && net === undefined) return null;
@@ -279,7 +327,12 @@ SQX._extractRound = function _extractRound(evt) {
   if (bet === undefined) {
     const status = SQX.deepStr(body, SQX.KEYS.state);
     const settledWord = status !== undefined && SQX_SETTLED_STATUS.test(status);
-    if (!settledWord && SQX.findStrongId(body) === undefined) return null;
+    const strong = SQX.findStrongId(body) !== undefined;
+    if (!settledWord && !strong) return null;
+    // profit:0 as the ONLY money evidence is the shape of a round-end
+    // broadcast to spectators ({status:"finished", profit:0}) — settled
+    // status is broadcast to everyone, so it needs a per-bet id on top.
+    if (payout === undefined && net === 0 && !strong) return null;
   }
 
   const round = {
@@ -321,8 +374,9 @@ SQX._extractRound = function _extractRound(evt) {
 SQX.looksSettled = function looksSettled(evt) {
   try {
     const status = SQX.deepStr(evt.body, SQX.KEYS.state);
-    if (status && SQX_SETTLED_STATUS.test(status)) {
-      return true;
+    if (status) {
+      if (SQX_PLACED_STATUS.test(status)) return false; // explicit "not settled yet"
+      if (SQX_SETTLED_STATUS.test(status)) return true;
     }
     // A payout (or net profit) figure alongside a bet is a strong settled
     // signal. Same wallet-path vetoes as extractRound: a balance push with a
@@ -331,6 +385,32 @@ SQX.looksSettled = function looksSettled(evt) {
     if (bet === undefined) return false;
     return SQX_MONEY_LEG(evt.body, SQX.KEYS.payout) !== undefined ||
       SQX.deepNumAt(evt.body, SQX.KEYS.net, SQX_WALLET_BAN) !== undefined;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Weaker settle gate for adapters whose fall-through would otherwise emit a
+ * round from ANY money-bearing payload: is there positive evidence the bet is
+ * finished — a settled status word, or a payout/net leg (outside wallet
+ * envelopes)? A bet-placement ack ({betId, bet, state:"placed"}) has neither
+ * and must become a state patch, not a round: emitting the ack as a
+ * result-unknown round makes the dedupe layers drop the REAL settle that
+ * arrives seconds later under the same betId.
+ */
+SQX.hasSettledEvidence = function hasSettledEvidence(evt) {
+  try {
+    const status = SQX.deepStr(evt.body, SQX.KEYS.state);
+    if (status) {
+      if (SQX_PLACED_STATUS.test(status)) return false;
+      if (SQX_SETTLED_STATUS.test(status)) return true;
+    }
+    const body = SQX.stripPublicBoards(evt.body);
+    const legs = SQX_HAND_LEGS(body);
+    if (legs && legs.payout !== undefined) return true;
+    return SQX_MONEY_LEG(body, SQX.KEYS.payout) !== undefined ||
+      SQX.deepNumAt(body, SQX.KEYS.net, SQX_WALLET_BAN) !== undefined;
   } catch {
     return false;
   }

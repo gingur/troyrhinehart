@@ -20,8 +20,15 @@
   const recentBodies = new Map(); // body hash -> last capture ts
   const RECENT_BODY_MS = 400;
   const RECENT_BODIES_MAX = 64;
-  const seenRounds = new Set(); // `game:id`
+  // `game:id` -> whether the forwarded round carried a payout leg. A round
+  // WITH a payout may upgrade (re-forward, flagged) one previously sent
+  // WITHOUT one — the ack-then-push shape: should a payout-less round ever
+  // slip through the adapter gates, the real settle must still win.
+  const seenRounds = new Map();
   const SEEN_ROUNDS_MAX = 500;
+  // page-hook.js caps bodies at 64KB; anything much larger on the channel is
+  // a spoofed flood from page JS — drop before hashing/walking it.
+  const MAX_BODY_JSON = 256 * 1024;
   const seenTickIds = new Set(); // `game:id`
   const SEEN_TICK_IDS_MAX = 800;
   const lastTickByGame = new Map(); // game -> { sig, ts }
@@ -79,11 +86,14 @@
     return h >>> 0;
   };
 
-  /** True when this exact body was already captured a moment ago. */
+  /** True when this exact body was already captured a moment ago (or is an
+   *  oversized spoof not worth processing at all). */
   const isTransportDuplicate = (evt) => {
     let sig;
     try {
-      sig = fnv(evt.kind + '|' + evt.direction + '|' + (JSON.stringify(evt.body) || ''));
+      const raw = JSON.stringify(evt.body) || '';
+      if (raw.length > MAX_BODY_JSON) return true; // spoofed flood — drop
+      sig = fnv(evt.kind + '|' + evt.direction + '|' + raw);
     } catch {
       return false; // unhashable — let it through
     }
@@ -117,13 +127,21 @@
 
     if (isTransportDuplicate(evt)) return;
 
-    const adapter = SQX.adapters.find((a) => {
+    // Two-pass adapter selection. Pass 1 offers NO active game, so an adapter
+    // can only claim the event on content evidence (URL / event-name / body
+    // mentions) — a shared user socket delivering the player's CRASH settle
+    // while the tab shows plinko is attributed to crash, not to whatever page
+    // is on screen. Pass 2 falls back to the on-screen game as before.
+    const tryMatch = (a, game) => {
       try {
-        return a.match(evt, activeGame);
+        return a.match(evt, game);
       } catch {
         return false; // a throwing matcher never blocks the others
       }
-    });
+    };
+    const adapter =
+      SQX.adapters.find((a) => tryMatch(a, null)) ||
+      SQX.adapters.find((a) => tryMatch(a, activeGame));
     if (!adapter) return;
     const game = adapter.game || activeGame;
     if (!game) return;
@@ -142,8 +160,19 @@
       if (e.type === 'round') {
         if (!e.round || typeof e.round !== 'object') continue;
         const key = game + ':' + String(e.round.id);
-        if (seenRounds.has(key)) continue;
-        remember(seenRounds, key, SEEN_ROUNDS_MAX);
+        const hasPayout = typeof e.round.payout === 'number' && Number.isFinite(e.round.payout);
+        const prev = seenRounds.get(key);
+        if (prev !== undefined) {
+          // Upgrade path: a payout-bearing round may replace a previously
+          // forwarded payout-LESS round with the same key (ack-then-push).
+          // Everything else with a seen key is a duplicate.
+          if (prev || !hasPayout) continue;
+          e.upgrade = true; // background replaces instead of deduping
+        }
+        seenRounds.set(key, prev === true || hasPayout);
+        if (seenRounds.size > SEEN_ROUNDS_MAX) {
+          seenRounds.delete(seenRounds.keys().next().value);
+        }
       } else if (e.type === 'tick') {
         const tick = e.tick;
         if (!tick || typeof tick !== 'object') continue;

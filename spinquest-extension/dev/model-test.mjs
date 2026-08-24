@@ -28,6 +28,7 @@ const {
   round2,
   sanitizeRound,
   snapshotSession,
+  upgradeRound,
 } = await import(join(devDir, '..', 'src', 'lib', 'stats.js'));
 
 // The normalize layer (util.js + normalize.js) is plain content-script code
@@ -664,6 +665,90 @@ test('multiplier-derived payout still works; division by zero bet stays guarded'
   assert.equal(z.result, 'push');
 });
 
+test('placement-status ack never reads as settled; settled words still do', () => {
+  const ack = { ts: T0, body: { betId: 'pa-1', bet: 5, state: 'placed' } };
+  assert.equal(N.looksSettled(ack), false);
+  assert.equal(N.hasSettledEvidence(ack), false);
+  const pend = { ts: T0, body: { betId: 'pa-2', amount: 5, status: 'pending' } };
+  assert.equal(N.hasSettledEvidence(pend), false);
+  const settle = { ts: T0, body: { betId: 'pa-1', bet: 5, payout: 12.5, state: 'settled' } };
+  assert.equal(N.looksSettled(settle), true);
+  assert.equal(N.hasSettledEvidence(settle), true);
+  // Payout-only evidence (cashout push without a bet echo) still counts.
+  assert.equal(N.hasSettledEvidence({ ts: T0, body: { betId: 'co-1', win: 7.5 } }), true);
+});
+
+test('blackjack split: money legs summed across the hands array', () => {
+  N._resetRoundIds();
+  const r = N.extractRound({
+    ts: T0,
+    body: {
+      betId: 'bj-split',
+      state: 'settled',
+      hands: [
+        { bet: 5, payout: 10, cards: ['8H', '3D', '9S'] },
+        { bet: 5, payout: 0, cards: ['8C', '7D', 'KH'] },
+      ],
+    },
+  });
+  assert.equal(r.bet, 10);
+  assert.equal(r.payout, 10);
+  assert.equal(r.profit, 0);
+  assert.equal(r.result, 'push');
+  // A single-hand array is NOT a multi-leg settle — normal extraction.
+  N._resetRoundIds();
+  const one = N.extractRound({
+    ts: T0,
+    body: { betId: 'bj-one', state: 'settled', hands: [{ bet: 5, payout: 10 }] },
+  });
+  assert.equal(one.bet, 5);
+  assert.equal(one.payout, 10);
+});
+
+test('feed-channel word strips namey objects even when they carry a strong id', () => {
+  N._resetRoundIds();
+  const feed = N.extractRound({
+    ts: T0,
+    body: { event: 'feed:win', username: 'whale42', betId: 'fw-1', bet: 100, payout: 5000 },
+  });
+  assert.equal(feed, null);
+  // Our own settle echo (no feed channel named) keeps working.
+  const own = N.extractRound({
+    ts: T0,
+    body: { username: 'me_player', betId: 'own-9', bet: 5, payout: 10, state: 'settled' },
+  });
+  assert.equal(own.payout, 10);
+});
+
+test('zero-profit round-end broadcast (no bet, no payout, no id) is not a round', () => {
+  assert.equal(
+    N.extractRound({ ts: T0, body: { type: 'round_end', status: 'finished', profit: 0, multiplier: 1.24 } }),
+    null
+  );
+  // With a per-bet id it IS our push settle.
+  N._resetRoundIds();
+  const push = N.extractRound({ ts: T0, body: { betId: 'z-1', status: 'finished', profit: 0 } });
+  assert.equal(push.profit, 0);
+  assert.equal(push.result, 'push');
+});
+
+test('upgradeRound: payout-bearing settle replaces a payout-less ack round in place', () => {
+  const s = createSession('plinko', T0);
+  appendRound(s, { id: 'up-1', ts: T0, bet: 5, result: 'unknown' });
+  // Not an upgrade: no payout on the incoming round.
+  assert.equal(upgradeRound(s, { id: 'up-1', ts: T0, bet: 5, result: 'unknown' }), false);
+  // Not an upgrade: unknown id.
+  assert.equal(upgradeRound(s, { id: 'up-9', ts: T0, bet: 5, payout: 12.5, result: 'win' }), false);
+  // The real settle upgrades.
+  assert.equal(upgradeRound(s, { id: 'up-1', ts: T0 + 2000, bet: 5, payout: 12.5, profit: 7.5, result: 'win' }), true);
+  assert.equal(s.rounds.length, 1);
+  assert.equal(s.rounds[0].payout, 12.5);
+  assert.equal(computeStats(s, T0 + 3000).net, 7.5);
+  // Already payout-bearing rounds never get overwritten.
+  assert.equal(upgradeRound(s, { id: 'up-1', ts: T0 + 9000, bet: 5, payout: 0, result: 'loss' }), false);
+  assert.equal(s.rounds[0].payout, 12.5);
+});
+
 // --- integration: the real background.js over a chrome stub ------------------
 // Fresh module instance per "worker" (?v=N) sharing one JSON-serializing
 // storage backend, exactly like chrome.storage.local behaves across MV3
@@ -777,6 +862,37 @@ await atest('message path: hostile round fields are sanitized before persisting'
   assert.equal('extra' in r, false);
   assert.equal(r.profit, 3);
   assert.ok(Number.isFinite(snap.active.plinko.stats.net));
+});
+
+await atest('message path: event.upgrade replaces the ack round instead of deduping the settle', async () => {
+  const { send } = await bootWorker();
+  await send({
+    type: 'SQX_GAME_EVENT',
+    game: 'plinko',
+    event: { type: 'round', round: { id: 'ack-1', ts: Date.now(), bet: 5, result: 'unknown' } },
+  });
+  await send({
+    type: 'SQX_GAME_EVENT',
+    game: 'plinko',
+    event: {
+      type: 'round',
+      upgrade: true,
+      round: { id: 'ack-1', ts: Date.now(), bet: 5, payout: 12.5, profit: 7.5, result: 'win' },
+    },
+  });
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  const rounds = snap.active.plinko.rounds.filter((r) => r.id === 'ack-1');
+  assert.equal(rounds.length, 1); // replaced in place, not appended twice
+  assert.equal(rounds[0].payout, 12.5);
+  assert.equal(rounds[0].result, 'win');
+  // A spoofed upgrade flag on an already-payout-bearing round is a plain dupe.
+  await send({
+    type: 'SQX_GAME_EVENT',
+    game: 'plinko',
+    event: { type: 'round', upgrade: true, round: { id: 'ack-1', ts: Date.now(), bet: 5, payout: 99, result: 'win' } },
+  });
+  const snap2 = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap2.active.plinko.rounds.find((r) => r.id === 'ack-1').payout, 12.5);
 });
 
 await atest('message path: broadcast/GET_STATE rounds bounded to SNAPSHOT_ROUNDS_TAIL', async () => {

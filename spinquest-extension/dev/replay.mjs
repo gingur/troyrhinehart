@@ -291,8 +291,10 @@ function expandFill(step) {
   for (const k of ['text', 'frame', 'responseText']) {
     if (typeof out[k] === 'string') out[k] = out[k].split('@FILL@').join(pad);
   }
-  if (out.response !== undefined) {
-    out.response = JSON.parse(JSON.stringify(out.response).split('@FILL@').join(pad));
+  for (const k of ['response', 'data']) {
+    if (out[k] !== undefined) {
+      out[k] = JSON.parse(JSON.stringify(out[k]).split('@FILL@').join(pad));
+    }
   }
   return out;
 }
