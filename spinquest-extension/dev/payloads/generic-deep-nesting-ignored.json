@@ -1,0 +1,18 @@
+{
+  "game": "plinko",
+  "note": "money legs buried past the depth cap (6) are unreachable by design — deep bombs extract nothing and throw nothing",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/deep",
+      "ts": 1787001000000,
+      "body": {
+        "l1": { "l2": { "l3": { "l4": { "l5": { "l6": { "l7": { "l8": {
+          "betId": "deep-1", "bet": 5, "payout": 10, "state": "settled"
+        } } } } } } } }
+      }
+    }
+  ],
+  "expected": []
+}

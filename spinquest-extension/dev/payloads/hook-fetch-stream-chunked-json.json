@@ -1,0 +1,28 @@
+{
+  "game": "plinko",
+  "note": "chunked response with NO content-length: the hook must stream-read (never .text()) and still capture a small JSON body",
+  "steps": [
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/api/plinko/bet",
+      "contentType": "application/json",
+      "stream": true,
+      "text": "{\"betId\":\"st-1\",\"bet\":2,\"payout\":4.4,\"state\":\"settled\"}"
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "st-1",
+          "bet": 2,
+          "payout": 4.4,
+          "profit": 2.4,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}

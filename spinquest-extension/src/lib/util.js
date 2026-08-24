@@ -96,6 +96,23 @@ SQX.deepMoneyAt = function deepMoneyAt(obj, keyRe, banRe) {
   return found;
 };
 
+/**
+ * deepNum with a path veto: like deepMoneyAt but signed, for net-profit
+ * legs. Skips matches whose dotted path also matches `banRe` (a `profit`
+ * inside a wallet/balance envelope is an account delta, not a round's).
+ */
+SQX.deepNumAt = function deepNumAt(obj, keyRe, banRe) {
+  let found;
+  SQX.walk(obj, (key, value, path) => {
+    if (found !== undefined) return;
+    if (!keyRe.test(key)) return;
+    if (banRe && banRe.test(path)) return;
+    const n = SQX.parseNum(value);
+    if (!Number.isNaN(n)) found = n;
+  });
+  return found;
+};
+
 SQX.deepStr = function deepStr(obj, keyRe) {
   return SQX.deepFind(obj, keyRe, (v) => typeof v === 'string' && v.length < 200);
 };

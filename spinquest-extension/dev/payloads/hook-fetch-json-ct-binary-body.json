@@ -1,0 +1,13 @@
+{
+  "game": "plinko",
+  "note": "content-type lies: gzip magic bytes under application/json",
+  "steps": [
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/api/bets",
+      "contentType": "application/json",
+      "text": "\u001f\b\u0000\u0000\u0000\u0000\u0000\u0000\u0003{{{"
+    }
+  ],
+  "expected": []
+}

@@ -1,0 +1,31 @@
+{
+  "game": "plinko",
+  "note": "positive control for the payout-only refusal: a strong id + settled status IS enough corroboration",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000700000,
+      "body": {
+        "betId": "co-9",
+        "win": 7.5,
+        "status": "cashed_out"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "co-9",
+          "payout": 7.5,
+          "bet": "__absent__",
+          "result": "unknown"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "game": "crash",
+  "note": "connection-dropped mid-frame truncations: parse fails, nothing emitted",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"crash:tick\",{\"multiplier\":1.5"
+    },
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/api/bets",
+      "contentType": "application/json",
+      "text": "{\"roundId\":\"t-1\",\"bet\":5,\"payout\""
+    },
+    {
+      "transport": "xhr",
+      "url": "https://spinquest.com/api/history",
+      "responseType": "text",
+      "responseText": "[{\"betId\":\"q-1\",\"bet\":2,"
+    }
+  ],
+  "expected": []
+}

@@ -1,0 +1,45 @@
+{
+  "game": "mines",
+  "note": "null-riddled payloads: no state, no round, no crash",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000300000,
+      "body": {
+        "tiles": null,
+        "bet": null,
+        "payout": null,
+        "win": null,
+        "multiplier": null,
+        "state": null,
+        "roundId": null
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/x",
+      "ts": 1787000300001,
+      "body": {
+        "rounds": [
+          null,
+          {
+            "bet": null,
+            "payout": null
+          },
+          "x"
+        ]
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/y",
+      "ts": 1787000300002,
+      "body": null
+    }
+  ],
+  "expected": []
+}

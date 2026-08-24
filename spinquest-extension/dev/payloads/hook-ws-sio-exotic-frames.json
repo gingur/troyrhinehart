@@ -1,0 +1,37 @@
+{
+  "game": "crash",
+  "note": "engine.io OPEN JSON, 451- binary attachment header, b4 base64 marker: all ignored",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "0{\"sid\":\"abc123\",\"upgrades\":[\"websocket\"],\"pingInterval\":25000,\"pingTimeout\":20000}"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "451-[\"bet\",{\"_placeholder\":true,\"num\":0}]"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "b4AAAA/w=="
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "42"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "40/game,"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/socket.io/",
+      "frame": "6"
+    }
+  ],
+  "expected": []
+}

@@ -1,0 +1,20 @@
+{
+  "game": "plinko",
+  "note": "responseType:'json' with a ~80KB parsed object: the json path is size-gated like every other path — nothing crosses the bridge",
+  "steps": [
+    {
+      "transport": "xhr",
+      "url": "https://spinquest.com/api/plinko/huge",
+      "responseType": "json",
+      "fill": 80000,
+      "response": {
+        "betId": "xj-1",
+        "bet": 1,
+        "payout": 9,
+        "state": "settled",
+        "pad": "@FILL@"
+      }
+    }
+  ],
+  "expected": []
+}

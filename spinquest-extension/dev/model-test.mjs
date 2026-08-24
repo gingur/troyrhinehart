@@ -579,12 +579,79 @@ test('profit-shaped field is net, not gross: {bet:10, profit:5} is a +5 win', ()
 
 test('negative bet/payout garbage is not recorded as money', () => {
   N._resetRoundIds();
+  // Negative bet rejected; the payout-only remainder has no strong id and no
+  // settled status, so the whole payload is refused rather than recorded as
+  // a betless "round".
   const r = N.extractRound({ ts: T0, body: { bet: -5, payout: 0 } });
-  assert.equal(r.bet, undefined); // negative bet rejected
-  assert.notEqual(r.result, 'win'); // and certainly not a +5 win
+  assert.equal(r, null);
   const skip = N.extractRound({ ts: T0, body: { amount: -3, betAmount: 2, payout: 4 } });
   assert.equal(skip.bet, 2); // walk skips the negative match, finds the real one
   assert.equal(skip.profit, 2);
+});
+
+test('wallet/balance/user envelopes never feed money legs', () => {
+  N._resetRoundIds();
+  // {balance:{amount}} is account state — not a bet, not settled.
+  const wallet = { balance: { amount: 500.25, currency: 'usd' }, seq: 1 };
+  assert.equal(N.extractRound({ ts: T0, body: wallet }), null);
+  assert.equal(N.looksSettled({ ts: T0, body: wallet }), false);
+  // ... even with a profit delta alongside: that's a ledger push, not a round.
+  const delta = { balance: { amount: 502.75 }, profit: 2.5, seq: 2 };
+  assert.equal(N.extractRound({ ts: T0, body: delta }), null);
+  assert.equal(N.looksSettled({ ts: T0, body: delta }), false);
+  // A real bet next to a balance snapshot still extracts from the bet leg.
+  const both = { betId: 'w-1', bet: 2, payout: 5, balance: { amount: 100 } };
+  const r = N.extractRound({ ts: T0, body: both });
+  assert.equal(r.bet, 2);
+  assert.equal(r.payout, 5);
+});
+
+test('lone namey object (bigwin broadcast) is stripped unless it has a strong id', () => {
+  N._resetRoundIds();
+  const bcast = { event: 'bigwin', username: 'whale42', win: 1250.5, betId: null };
+  assert.equal(N.extractRound({ ts: T0, body: bcast }), null);
+  // Our own settle echoes our username but carries a per-bet id — kept.
+  const own = { username: 'me', betId: 'own-1', bet: 5, payout: 10 };
+  const r = N.extractRound({ ts: T0, body: own });
+  assert.equal(r.id, 'own-1');
+  assert.equal(r.profit, 5);
+});
+
+test('payout-only rounds need corroboration (strong id or settled status)', () => {
+  N._resetRoundIds();
+  assert.equal(N.extractRound({ ts: T0, body: { win: 3.75 } }), null);
+  const ok = N.extractRound({ ts: T0, body: { betId: 'co-9', win: 7.5, status: 'cashed_out' } });
+  assert.equal(ok.payout, 7.5);
+});
+
+test('integer minor-unit money with scale/decimals is divided down', () => {
+  N._resetRoundIds();
+  const r = N.extractRound({
+    ts: T0,
+    body: {
+      betId: 'sc-1',
+      state: 'settled',
+      bet: { amount: 121000000, currency: 'btc', scale: 8 },
+      payout: { amount: 242000000, currency: 'btc', scale: 8 },
+    },
+  });
+  assert.equal(r.bet, 1.21);
+  assert.equal(r.payout, 2.42);
+  // Float amounts are already major units — scale-shaped siblings ignored.
+  const f = N.extractRound({
+    ts: T0,
+    body: { betId: 'sc-2', bet: { amount: 12.5, decimals: 2 }, payout: 0 },
+  });
+  assert.equal(f.bet, 12.5);
+});
+
+test('findTickId prefers roundId over betId; sioPayload unwraps bare arrays', () => {
+  assert.equal(N.findTickId(['crash:bet_result', { betId: 'b-7', roundId: 'c-1' }]), 'c-1');
+  assert.equal(N.findTickId({ betId: 'b-7' }), 'b-7');
+  const arr = [{ roundId: 'h-1' }];
+  assert.equal(N.sioPayload(['crash:history', arr]), arr);
+  assert.equal(N.sioPayload(['lonely']), undefined);
+  assert.equal(N.sioPayload({ a: 1 }), undefined);
 });
 
 test('multiplier-derived payout still works; division by zero bet stays guarded', () => {

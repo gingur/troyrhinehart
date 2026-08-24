@@ -1,0 +1,43 @@
+{
+  "game": "crash",
+  "note": "[\"crash:history\",[...]] — the array has no key; every entry should tick",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"crash:history\",[{\"roundId\":\"h-1\",\"crashPoint\":2.1},{\"roundId\":\"h-2\",\"crashPoint\":1.05},{\"roundId\":\"h-3\",\"crashPoint\":9.83}]]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "h-1",
+          "crashPoint": 2.1
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "h-2",
+          "crashPoint": 1.05
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "h-3",
+          "crashPoint": 9.83
+        }
+      }
+    }
+  ]
+}

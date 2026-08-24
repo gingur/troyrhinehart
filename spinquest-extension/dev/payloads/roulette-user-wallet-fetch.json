@@ -1,0 +1,20 @@
+{
+  "game": "roulette",
+  "note": "user/balance envelope over fetch: an account snapshot with a signed profit delta is not a bet",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/wallet",
+      "ts": 1787000500000,
+      "body": {
+        "user": {
+          "balance": { "amount": 950.1, "currency": "usd" }
+        },
+        "profit": -4.9,
+        "seq": 12
+      }
+    }
+  ],
+  "expected": []
+}

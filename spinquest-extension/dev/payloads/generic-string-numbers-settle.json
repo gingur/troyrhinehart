@@ -1,0 +1,35 @@
+{
+  "game": "mines",
+  "note": "every numeric field is a string; \" 2.50 \" bet, \"0\" payout must settle as loss",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/mines/settle",
+      "ts": 1787000100000,
+      "body": {
+        "status": "finished",
+        "bet": " 2.50 ",
+        "winAmount": "0",
+        "mineCount": "3",
+        "roundId": "r-77"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "mines",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "r-77",
+          "bet": 2.5,
+          "payout": 0,
+          "profit": -2.5,
+          "multiplier": 0,
+          "result": "loss"
+        }
+      }
+    }
+  ]
+}

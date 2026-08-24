@@ -1,0 +1,68 @@
+{
+  "game": "blackjack",
+  "note": "GraphQL connection shape: data.player.bets.edges[].node — one round per edge",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/graphql?op=blackjackBetHistory",
+      "ts": 1787000800000,
+      "body": {
+        "data": {
+          "player": {
+            "bets": {
+              "edges": [
+                {
+                  "node": {
+                    "ticketId": "e-1",
+                    "wager": 10,
+                    "payout": 0,
+                    "outcome": "dealer_wins"
+                  }
+                },
+                {
+                  "node": {
+                    "ticketId": "e-2",
+                    "wager": 10,
+                    "payout": 25,
+                    "outcome": "player_blackjack"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "blackjack",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "e-1",
+          "bet": 10,
+          "payout": 0,
+          "profit": -10,
+          "result": "loss",
+          "detail": { "outcome": "dealer_wins" }
+        }
+      }
+    },
+    {
+      "game": "blackjack",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "e-2",
+          "bet": 10,
+          "payout": 25,
+          "profit": 15,
+          "result": "win",
+          "detail": { "outcome": "player_blackjack" }
+        }
+      }
+    }
+  ]
+}

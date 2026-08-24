@@ -1,0 +1,55 @@
+{
+  "game": "plinko",
+  "note": "locale \"1,250.00\" ignored; \"5e2\" parses; \"Infinity\"/\"NaN\" ignored",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/a",
+      "ts": 1787000600000,
+      "body": {
+        "betId": "s1",
+        "bet": "1,250.00",
+        "payout": "2 500,00"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/b",
+      "ts": 1787000600001,
+      "body": {
+        "betId": "s2",
+        "bet": "5e2",
+        "payout": "1e3"
+      }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/c",
+      "ts": 1787000600002,
+      "body": {
+        "betId": "s4",
+        "bet": "Infinity",
+        "payout": "NaN"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "s2",
+          "bet": 500,
+          "payout": 1000,
+          "profit": 500,
+          "multiplier": 2,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "game": "roulette",
+  "note": "[\"roulette:history\", [17,32,0,5]] — the bare array payload has no key; every number must tick",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"roulette:history\",[17,32,0,5]]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "roulette",
+      "event": { "type": "tick", "tick": { "number": 17, "color": "black" } }
+    },
+    {
+      "game": "roulette",
+      "event": { "type": "tick", "tick": { "number": 32, "color": "red" } }
+    },
+    {
+      "game": "roulette",
+      "event": { "type": "tick", "tick": { "number": 0, "color": "green" } }
+    },
+    {
+      "game": "roulette",
+      "event": { "type": "tick", "tick": { "number": 5, "color": "red" } }
+    }
+  ]
+}

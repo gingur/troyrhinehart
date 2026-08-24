@@ -1,0 +1,14 @@
+{
+  "game": "plinko",
+  "note": "a lone {win: N} with no bet, no id, no status is somebody's/something's payout figure — never a round",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000600000,
+      "body": { "win": 3.75 }
+    }
+  ],
+  "expected": []
+}

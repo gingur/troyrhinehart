@@ -23,18 +23,25 @@ SQX.adapters.push({
     const out = [];
 
     // History/batch payloads: a list of past rounds, each with its own crash
-    // point and sometimes the player's own bet on it.
-    const hist = SQX.deepFind(body, SQX.LIST_KEYS, (v) =>
+    // point and sometimes the player's own bet on it. The list is usually a
+    // keyed value ({history: [...]}) but socket.io frames also ship it as a
+    // BARE array payload (["crash:history", [...]]), which key-driven walks
+    // can't see — probe the unwrapped payload too.
+    const histQualifies = (v) =>
       Array.isArray(v) && v.length > 0 && v.length <= 500 &&
       v.every((x) => x && typeof x === 'object' && !Array.isArray(x)) &&
-      v.filter((x) => SQX.hasKey(x, SQX_CRASH_POINT)).length * 2 >= v.length
-    );
+      v.filter((x) => SQX.hasKey(x, SQX_CRASH_POINT)).length * 2 >= v.length;
+    let hist = SQX.deepFind(body, SQX.LIST_KEYS, histQualifies);
+    if (!hist) {
+      const sio = SQX.sioPayload(body);
+      if (sio !== undefined && histQualifies(sio)) hist = sio;
+    }
     if (hist) {
       for (const item of hist.slice(0, 60)) {
         const cp = SQX.deepNum(item, SQX_CRASH_POINT);
         if (cp === undefined) continue;
         const tick = { ts: SQX.itemTs(item) ?? evt.ts, crashPoint: cp };
-        const tid = SQX.findStrongId(item);
+        const tid = SQX.findTickId(item);
         if (tid !== undefined) tick.id = tid;
         out.push({ type: 'tick', tick });
         if (SQX._roundish(item)) {
@@ -57,7 +64,9 @@ SQX.adapters.push({
       const endPoint = crashPoint ?? liveMult;
       if (endPoint !== undefined) {
         const tick = { ts: evt.ts, crashPoint: endPoint };
-        const tid = SQX.findStrongId(SQX.stripPublicBoards(body));
+        // findTickId prefers roundId over betId: a personal settle frame
+        // carries both, and its tick must dedupe against the broadcast's.
+        const tid = SQX.findTickId(SQX.stripPublicBoards(body));
         if (tid !== undefined) tick.id = tid;
         out.push({ type: 'tick', tick });
       }

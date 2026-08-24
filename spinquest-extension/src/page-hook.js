@@ -97,6 +97,48 @@
 
   // --- fetch ---------------------------------------------------------------
 
+  // Read a CLONED Request/Response body as text with a hard byte cap. When
+  // content-length is absent (chunked/streaming bodies), .text() would buffer
+  // the whole thing — stream instead and cancel the moment the cap is
+  // exceeded, so a multi-MB upload or SSE-ish response costs at most 64KB in
+  // the tee branch. Resolves undefined for oversized/unreadable bodies.
+  const readTextCapped = (cloned) => {
+    try {
+      const stream = cloned.body;
+      if (stream && typeof stream.getReader === 'function' && typeof TextDecoder === 'function') {
+        const reader = stream.getReader();
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        let text = '';
+        const pump = () =>
+          reader.read().then(({ done, value }) => {
+            if (done) return text + decoder.decode();
+            text += decoder.decode(value, { stream: true });
+            if (text.length > MAX_BODY_BYTES) {
+              try {
+                const p = reader.cancel();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+              } catch {
+                /* ignore */
+              }
+              return undefined;
+            }
+            return pump();
+          });
+        return pump().catch(() => undefined);
+      }
+    } catch {
+      /* fall through to .text() */
+    }
+    try {
+      return cloned
+        .text()
+        .then((t) => (typeof t === 'string' && t.length <= MAX_BODY_BYTES ? t : undefined))
+        .catch(() => undefined);
+    } catch {
+      return Promise.resolve(undefined);
+    }
+  };
+
   const tapResponse = (res, reqUrl) => {
     try {
       if (!res || typeof res.clone !== 'function') return;
@@ -121,10 +163,14 @@
       } catch {
         return; // never touch the original body
       }
-      clone
-        .text()
-        .then((text) => capture('fetch', (res && res.url) || reqUrl, 'in', text))
-        .catch(() => {});
+      const read = readTextCapped(clone);
+      if (read && typeof read.then === 'function') {
+        read
+          .then((text) => {
+            if (text !== undefined) capture('fetch', (res && res.url) || reqUrl, 'in', text);
+          })
+          .catch(() => {});
+      }
     } catch {
       /* never break the page's own fetch */
     }
@@ -151,11 +197,14 @@
             typeof req.clone === 'function'
           ) {
             try {
-              req
-                .clone()
-                .text()
-                .then((t) => capture('fetch', url, 'out', t))
-                .catch(() => {});
+              const read = readTextCapped(req.clone());
+              if (read && typeof read.then === 'function') {
+                read
+                  .then((t) => {
+                    if (t !== undefined) capture('fetch', url, 'out', t);
+                  })
+                  .catch(() => {});
+              }
             } catch {
               /* body already used — skip */
             }
@@ -212,7 +261,21 @@
                 if (typeof text === 'string') capture('xhr', url, 'in', text);
               } else if (rt === 'json') {
                 const res = this.response;
-                if (res !== null && typeof res === 'object') post('xhr', url, 'in', res);
+                if (res !== null && typeof res === 'object') {
+                  // Same size gate as every other path: a multi-MB JSON
+                  // response must not be structured-cloned across the bridge
+                  // and hashed in the content script. Measuring costs one
+                  // stringify, but only up to here — oversized bodies stop.
+                  let raw;
+                  try {
+                    raw = JSON.stringify(res);
+                  } catch {
+                    raw = undefined; // circular/hostile — not postable anyway
+                  }
+                  if (typeof raw === 'string' && raw.length <= MAX_BODY_BYTES) {
+                    post('xhr', url, 'in', res);
+                  }
+                }
               } else if (rt === 'arraybuffer' || rt === 'blob') {
                 capture('xhr', url, 'in', this.response);
               }
@@ -236,9 +299,7 @@
   try {
     const OrigWebSocket = window.WebSocket;
     if (typeof OrigWebSocket === 'function') {
-      const HookedWebSocket = function (url, protocols) {
-        const ws =
-          protocols === undefined ? new OrigWebSocket(url) : new OrigWebSocket(url, protocols);
+      const tapSocket = (ws, url) => {
         try {
           ws.addEventListener('message', (evt) => {
             try {
@@ -259,14 +320,27 @@
         } catch {
           /* socket still works uncaptured */
         }
-        return ws;
       };
-      HookedWebSocket.prototype = OrigWebSocket.prototype;
-      try {
-        Object.setPrototypeOf(HookedWebSocket, OrigWebSocket); // statics: CONNECTING, OPEN, ...
-      } catch {
-        /* ignore */
-      }
+      // A Proxy keeps everything a constructor replacement tends to break:
+      // statics (CONNECTING, OPEN, ...), instanceof, and — via new.target
+      // forwarding — `class MyWS extends WebSocket` subclasses, whose
+      // instances must get MyWS.prototype, not the base one.
+      const HookedWebSocket = new Proxy(OrigWebSocket, {
+        construct(target, args, newTarget) {
+          // `new WebSocket(url, undefined)` must behave like the 1-arg form.
+          if (args.length > 1 && args[args.length - 1] === undefined) {
+            args = args.slice(0, -1);
+          }
+          const nt = newTarget === HookedWebSocket ? target : newTarget;
+          const ws = Reflect.construct(target, args, nt);
+          try {
+            tapSocket(ws, args[0]);
+          } catch {
+            /* uncaptured, never broken */
+          }
+          return ws;
+        },
+      });
       window.WebSocket = HookedWebSocket;
     }
   } catch {

@@ -118,27 +118,39 @@ throwing into the page (the MAIN-world hook is fully guarded — a hostile
 payload degrades to "not captured", never to a broken game):
 
 - **Transports**: fetch (response clones, locked bodies, missing/`text/plain`
-  content types sniffed), XHR (`''`/`text`/`json`/`arraybuffer`/`blob`
-  responseTypes, throwing getters), WebSocket (text frames, socket.io-style
-  prefixed frames like `42["event",{...}]` / `42/ns,17[...]`, binary
-  ArrayBuffer/Blob frames).
-- **Shapes**: GraphQL envelopes (`{data:{...}}`), nested money objects
-  (`{bet:{amount,currency}}`), snake_case/camelCase, string-encoded numbers
-  (`"1.23"`), arrays of results (history endpoints, autobet batches — one
-  round per entry), epoch-seconds vs -ms timestamps.
+  content types sniffed; chunked bodies with no content-length are STREAMED
+  with a hard 64 KB cap and cancelled early, never buffered whole), XHR
+  (`''`/`text`/`json`/`arraybuffer`/`blob` responseTypes, throwing getters;
+  the parsed-`json` path is size-gated like every other path), WebSocket
+  (text frames, socket.io-style prefixed frames like `42["event",{...}]` /
+  `42/ns,17[...]`, bare-array payloads `42["game:history",[...]]`, binary
+  ArrayBuffer/Blob frames; the hook is a Proxy that forwards `new.target`,
+  so `class GameWS extends WebSocket` subclasses keep their prototypes).
+- **Shapes**: GraphQL envelopes (`{data:{...}}`, `edges[].node` connections),
+  nested money objects (`{bet:{amount,currency}}`), integer minor-unit money
+  (`{amount:121000000, scale:8}` → 1.21), snake_case/camelCase,
+  string-encoded numbers (`"1.23"`), arrays of results (history endpoints,
+  autobet batches — one round per entry), epoch-seconds vs -ms timestamps.
 - **Garbage guards**: big-int-ish strings stay exact ids and are never read
   as money; absurd magnitudes (≥1e12) are rejected; multiplayer bet boards
   (arrays whose entries carry usernames) are stripped so another player's bet
-  can't become yours.
+  can't become yours — and so is a LONE namey object (a "bigwin by whale42"
+  broadcast) unless it carries a per-bet strong id; wallet-shaped envelopes
+  (`balance`/`wallet`/`account`/`user` paths) are banned from every money-leg
+  walk, so a balance push never fabricates a bet; a payout/net-only payload
+  with no bet is refused unless corroborated by a strong id or an explicit
+  settled status.
 - **Dedupe**: byte-identical bodies within 400 ms (double listeners,
   fetch+XHR mirrors) collapse to one event; rounds dedupe on per-bet ids
   (trusted strong keys like `betId`; payload-constant weak ids like `gameId`
   get deterministic synthetic ids); shared-outcome ticks dedupe by per-round
-  id when present, else "same content within 10 s is a rebroadcast".
+  id when present — preferring `roundId` over `betId`, so a personal settle
+  frame doesn't re-tick the broadcast's crash point — else "same content
+  within 10 s is a rebroadcast".
   Known limitation: id-less single rounds with identical bodies more than
   400 ms apart are counted separately — indistinguishable from real repeats.
 
-`dev/payloads/` holds an adversarial corpus (35 payload files, per game and
+`dev/payloads/` holds an adversarial corpus (60 payload files, per game and
 generic, each with its expected normalized output), and `dev/replay.mjs`
 feeds every one through the real hook + adapter + normalize pipeline in plain
 node:

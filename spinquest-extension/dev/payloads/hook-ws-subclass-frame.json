@@ -1,0 +1,33 @@
+{
+  "game": "crash",
+  "note": "class GameWS extends WebSocket: the hook must forward new.target (subclass methods survive — asserted by the harness) and still capture frames",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "subclass": true,
+      "frame": "42[\"crash:round_end\",{\"roundId\":\"sub-1\",\"crashPoint\":3.21}]"
+    }
+  ],
+  "expected": [
+    {
+      "game": "crash",
+      "event": {
+        "type": "tick",
+        "tick": {
+          "id": "sub-1",
+          "crashPoint": 3.21
+        }
+      }
+    },
+    {
+      "game": "crash",
+      "event": {
+        "type": "state",
+        "patch": {
+          "phase": "crashed"
+        }
+      }
+    }
+  ]
+}

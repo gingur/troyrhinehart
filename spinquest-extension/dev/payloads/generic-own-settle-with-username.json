@@ -1,0 +1,34 @@
+{
+  "game": "plinko",
+  "note": "our OWN settle frame echoes our username — kept, because it also carries a per-bet strong id (contrast: bigwin broadcasts have no betId)",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000900000,
+      "body": {
+        "username": "me_player",
+        "betId": "own-1",
+        "bet": 5,
+        "payout": 10,
+        "state": "settled"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "own-1",
+          "bet": 5,
+          "payout": 10,
+          "profit": 5,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}

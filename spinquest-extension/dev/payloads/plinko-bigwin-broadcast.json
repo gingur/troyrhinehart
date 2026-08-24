@@ -1,0 +1,20 @@
+{
+  "game": "plinko",
+  "note": "another player's win broadcast as a single object must not become a round",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/ws",
+      "ts": 1787000200000,
+      "body": {
+        "event": "bigwin",
+        "username": "whale42",
+        "gameName": "plinko",
+        "win": 1250.5,
+        "betId": null
+      }
+    }
+  ],
+  "expected": []
+}

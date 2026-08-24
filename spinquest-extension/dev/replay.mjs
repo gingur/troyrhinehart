@@ -14,12 +14,18 @@
 //       { "transport": "direct", "kind": "fetch", "url": "...", "direction": "in",
 //         "body": {...}, "ts": 1000 },
 //       { "transport": "ws",    "url": "...", "frame": "42[...]",
-//         "binary": "arraybuffer" | "blob" (optional) },
+//         "binary": "arraybuffer" | "blob" (optional),
+//         "subclass": true (optional — construct via `class X extends WebSocket`) },
 //       { "transport": "xhr",   "url": "...", "responseType": "json"|"text"|"arraybuffer"|"blob",
 //         "response": {...} | "responseText": "..." | "text": "...",
 //         "responseTextThrows": true (optional) },
 //       { "transport": "fetch", "url": "...", "contentType": "application/json"|null,
-//         "text": "...", "cloneThrows": true (optional) },
+//         "text": "...", "cloneThrows": true (optional),
+//         "stream": true (optional — serve text as a chunked body stream with
+//         NO content-length, exercising the hook's capped streaming reader) },
+//       any step: "fill": N replaces every "@FILL@" in its text/frame/
+//         responseText/response with N repeated 'a's (oversize tests without
+//         megabyte fixture files),
 //       { "transport": "spoof", "data": <raw window message, hostile page sim> }
 //     ],
 //     "expected": [                 // SQX_GAME_EVENT messages, in order
@@ -65,7 +71,7 @@ function baseSandbox() {
     Math, JSON, Date, Number, Array, Object, String, Boolean, RegExp, Set, Map,
     Promise, Error, TypeError, isFinite, isNaN, parseFloat, parseInt, console,
     TextDecoder, ArrayBuffer, Uint8Array, Blob, setTimeout, clearTimeout,
-    structuredClone,
+    structuredClone, Proxy, Reflect,
   };
   sb.window = sb;
   sb.globalThis = sb;
@@ -162,6 +168,30 @@ function makeHook(onPost) {
         },
         text: async () => step.text,
       };
+      if (step.stream) {
+        // Chunked body, no content-length: the hook must stream with a cap
+        // instead of buffering via .text().
+        const enc = new TextEncoder();
+        const CHUNK = 16 * 1024;
+        let off = 0;
+        let cancelled = false;
+        res.body = {
+          getReader: () => ({
+            read: async () => {
+              if (cancelled || off >= (step.text || '').length) return { done: true, value: undefined };
+              const piece = step.text.slice(off, off + CHUNK);
+              off += CHUNK;
+              return { done: false, value: enc.encode(piece) };
+            },
+            cancel: async () => {
+              cancelled = true;
+            },
+          }),
+        };
+        res.text = async () => {
+          throw new Error('streamed fixture: .text() must not be used');
+        };
+      }
       pendingResponse = res;
       await sb.window.fetch(url);
       await tick();
@@ -194,7 +224,21 @@ function makeHook(onPost) {
       let data = step.frame;
       if (step.binary === 'arraybuffer') data = new TextEncoder().encode(step.frame).buffer;
       else if (step.binary === 'blob') data = new Blob([step.frame]);
-      const ws = new sb.WebSocket(url);
+      let ws;
+      if (step.subclass) {
+        // Games wrap the socket: `class GameWS extends WebSocket`. The hook
+        // must preserve new.target so subclass prototypes survive.
+        const Sub = vm.runInContext(
+          '(class SQXReplayWS extends window.WebSocket { sqxTag() { return "sub"; } })',
+          sb
+        );
+        ws = new Sub(url);
+        if (typeof ws.sqxTag !== 'function' || ws.sqxTag() !== 'sub') {
+          throw new Error('WebSocket subclass prototype lost through the hook');
+        }
+      } else {
+        ws = new sb.WebSocket(url);
+      }
       for (const fn of ws._ls.message || []) fn({ data });
       await tick();
     },
@@ -238,7 +282,23 @@ function subsetMatch(actual, expected, path) {
 
 // --- runner ------------------------------------------------------------------
 
-async function runStep(pipeline, hook, step) {
+/** Expand "@FILL@" markers to `step.fill` repeated 'a's — oversize-payload
+ *  tests without committing megabytes of literal fixture. */
+function expandFill(step) {
+  if (typeof step.fill !== 'number' || step.fill <= 0) return step;
+  const pad = 'a'.repeat(step.fill);
+  const out = { ...step };
+  for (const k of ['text', 'frame', 'responseText']) {
+    if (typeof out[k] === 'string') out[k] = out[k].split('@FILL@').join(pad);
+  }
+  if (out.response !== undefined) {
+    out.response = JSON.parse(JSON.stringify(out.response).split('@FILL@').join(pad));
+  }
+  return out;
+}
+
+async function runStep(pipeline, hook, rawStep) {
+  const step = expandFill(rawStep);
   const transport = step.transport || 'direct';
   if (transport === 'direct') {
     pipeline.deliver({

@@ -41,14 +41,18 @@ SQX.adapters.push({
 
     if (!settled) {
       // In-progress reveal: update the current deal with running multiplier.
+      // A null-riddled body ({tiles:null, bet:null, ...}) yields no signal at
+      // all — emit nothing rather than an empty "revealing" patch.
+      const multiplier = SQX.deepNum(body, SQX.KEYS.multiplier);
+      const bet = SQX.deepNum(body, SQX.KEYS.bet);
+      const hasSignal =
+        detail.mines !== undefined || detail.revealedCount !== undefined ||
+        detail.revealed !== undefined || detail.gridSize !== undefined ||
+        multiplier !== undefined || bet !== undefined;
+      if (!hasSignal) return [];
       return [{
         type: 'state',
-        patch: {
-          phase: 'revealing',
-          detail,
-          multiplier: SQX.deepNum(body, SQX.KEYS.multiplier),
-          bet: SQX.deepNum(body, SQX.KEYS.bet),
-        },
+        patch: { phase: 'revealing', detail, multiplier, bet },
       }];
     }
 

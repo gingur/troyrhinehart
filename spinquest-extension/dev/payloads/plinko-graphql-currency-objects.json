@@ -1,0 +1,29 @@
+{
+  "game": "plinko",
+  "note": "GraphQL envelope, {amount:\"5.00\",currency} objects for bet and payout",
+  "steps": [
+    {
+      "transport": "fetch",
+      "url": "https://spinquest.com/graphql",
+      "contentType": "application/json",
+      "text": "{\"data\":{\"placeBet\":{\"bet\":{\"amount\":\"5.00\",\"currency\":\"USD\"},\"payout\":{\"amount\":\"12.50\",\"currency\":\"USD\"},\"betId\":\"gq-1\",\"state\":\"SETTLED\"}}}"
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "gq-1",
+          "bet": 5,
+          "payout": 12.5,
+          "multiplier": 2.5,
+          "profit": 7.5,
+          "result": "win",
+          "currency": "USD"
+        }
+      }
+    }
+  ]
+}

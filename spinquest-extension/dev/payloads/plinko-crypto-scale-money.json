@@ -1,0 +1,40 @@
+{
+  "game": "plinko",
+  "note": "integer amounts with scale:8 — correct values are 1.21/2.42, not 121000000",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/bet",
+      "ts": 1787000400000,
+      "body": {
+        "betId": "sc-1",
+        "state": "settled",
+        "bet": {
+          "amount": 121000000,
+          "currency": "btc",
+          "scale": 8
+        },
+        "payout": {
+          "amount": 242000000,
+          "currency": "btc",
+          "scale": 8
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": {
+          "id": "sc-1",
+          "bet": 1.21,
+          "payout": 2.42,
+          "result": "win"
+        }
+      }
+    }
+  ]
+}

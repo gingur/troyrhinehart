@@ -1,0 +1,17 @@
+{
+  "game": "crash",
+  "note": "balance pushes: {balance:{amount}} on a crash-path socket, and with a profit delta; neither is a bet",
+  "steps": [
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/crash/feed",
+      "frame": "42[\"wallet:update\",{\"balance\":{\"amount\":500.25,\"currency\":\"usd\"},\"seq\":9912}]"
+    },
+    {
+      "transport": "ws",
+      "url": "wss://spinquest.com/ws",
+      "frame": "42[\"wallet:update\",{\"balance\":{\"amount\":500.25,\"currency\":\"usd\"},\"profit\":2.5,\"seq\":9913}]"
+    }
+  ],
+  "expected": []
+}

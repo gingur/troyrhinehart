@@ -25,15 +25,22 @@ SQX.adapters.push({
     const out = [];
 
     // Spin history: an array of past winning numbers — plain integers
-    // ({history:[32,0,15]}) or objects each carrying a number key.
-    const hist = SQX.deepFind(body, /^(history|results?|spins?|numbers|past|recent|last)$/i, (v) => {
+    // ({history:[32,0,15]}) or objects each carrying a number key. Also
+    // probed on the unwrapped socket.io payload (["roulette:history", [...]])
+    // since a bare array element is invisible to key-driven walks.
+    const histQualifies = (v) => {
       if (!Array.isArray(v) || !v.length || v.length > 500) return false;
       if (v.length >= 3 && v.every((x) => Number.isInteger(x) && x >= 0 && x <= 36)) return true;
       return (
         v.every((x) => x && typeof x === 'object' && !Array.isArray(x)) &&
         v.filter((x) => SQX.hasKey(x, SQX_ROULETTE_NUM)).length * 2 >= v.length
       );
-    });
+    };
+    let hist = SQX.deepFind(body, /^(history|results?|spins?|numbers|past|recent|last)$/i, histQualifies);
+    if (!hist) {
+      const sio = SQX.sioPayload(body);
+      if (sio !== undefined && histQualifies(sio)) hist = sio;
+    }
     if (hist) {
       for (const item of hist.slice(0, 60)) {
         const isObj = item !== null && typeof item === 'object';
@@ -44,7 +51,7 @@ SQX.adapters.push({
           number: n,
           color: SQX_ROULETTE_COLOR(n),
         };
-        const tid = isObj ? SQX.findStrongId(item) : undefined;
+        const tid = isObj ? SQX.findTickId(item) : undefined;
         if (tid !== undefined) tick.id = tid;
         out.push({ type: 'tick', tick });
         if (isObj && SQX._roundish(item)) {
@@ -63,7 +70,7 @@ SQX.adapters.push({
     if (number !== undefined && Number.isInteger(number) && number >= 0 && number <= 36) {
       const color = SQX_ROULETTE_COLOR(number);
       const tick = { ts: evt.ts, number, color };
-      const tid = SQX.findStrongId(SQX.stripPublicBoards(body));
+      const tid = SQX.findTickId(SQX.stripPublicBoards(body));
       if (tid !== undefined) tick.id = tid;
       out.push({ type: 'tick', tick });
 
