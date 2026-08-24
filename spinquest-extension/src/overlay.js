@@ -165,6 +165,7 @@
     const el = ensureRoot();
     el.textContent = '';
     el.classList.toggle('sqx-collapsed', collapsed);
+    el.classList.remove('sqx-tight');
 
     const game = latest && latest.focusedGame;
     const session = game && latest.active ? latest.active[game] : null;
@@ -231,6 +232,8 @@
       body.appendChild(emptyState('Session open', 'No rounds recorded yet — play a round.'));
     }
 
+    // Footer lives outside the scrollable body so "since / pace / new session"
+    // stays visible even when a tall session makes the body scroll.
     const foot = h('div', 'sqx-foot');
     const newBtn = h('button', 'sqx-reset');
     newBtn.type = 'button';
@@ -244,7 +247,30 @@
     const pace = typeof stats.betsPerMinute === 'number' ? stats.betsPerMinute : null;
     if (pace != null && pace > 0) metaBits.push(pace + '/min');
     foot.append(h('span', 'sqx-foot-meta', metaBits.join(' · ')), newBtn);
-    body.appendChild(foot);
+    el.appendChild(foot);
+
+    // Fit pass: if the body would scroll, reclaim height — first from the
+    // history card (its rows stay reachable via its own scroll, floor ~4
+    // rows), then by collapsing the recent-outcome chip strips (.sqx-clip) —
+    // so history rows and the footer stay on screen. Done in JS because a
+    // max-height-only flex container won't shrink its items in Chromium.
+    const ROW = 22; // .sqx-hrow height — fitted heights snap to whole rows
+    const HIST_MIN = 4 * ROW; // never fewer than ~4 visible rows
+    const snap = (px) => Math.max(HIST_MIN, px - (px % ROW));
+    const scroll = body.querySelector('.sqx-hist-scroll');
+    const overflow = () => body.scrollHeight - body.clientHeight;
+    if (scroll && overflow() > 0) {
+      const target = snap(scroll.clientHeight - overflow());
+      if (target < scroll.clientHeight) scroll.style.maxHeight = target + 'px';
+    }
+    if (overflow() > 0) {
+      el.classList.add('sqx-tight');
+      // The collapsed strips may free more than was needed — hand the slack
+      // back to history rows, up to the default cap.
+      if (scroll && overflow() < 0) {
+        scroll.style.maxHeight = snap(Math.min(218, scroll.clientHeight - overflow())) + 'px';
+      }
+    }
   }
 
   function emptyState(title, sub) {
@@ -275,12 +301,14 @@
     top.appendChild(h('span', 'sqx-live-dot'));
     top.appendChild(h('span', 'sqx-phase', cur.phase || 'deal'));
     // Roulette/plinko show the bet as the hero number — no duplicate up top.
+    // Elsewhere the live stake is the whole downside (mine hit, bust, crash),
+    // so it reads as RISK in loss red, not as a dim footnote.
     const betIsHero = (game === 'roulette' || game === 'plinko') && typeof cur.bet === 'number';
     if (typeof cur.bet === 'number' && !betIsHero) {
-      const bet = h('span', 'sqx-current-bet');
-      bet.appendChild(document.createTextNode('bet '));
-      bet.appendChild(num(cur.bet.toFixed(2)));
-      top.appendChild(bet);
+      const risk = h('span', 'sqx-current-risk');
+      risk.appendChild(h('span', 'sqx-current-risk-l', 'risk'));
+      risk.appendChild(num(fmtMoney(-cur.bet), 'sqx-neg'));
+      top.appendChild(risk);
     }
     box.appendChild(top);
 
@@ -351,32 +379,56 @@
     if (typeof cur.multiplier === 'number') {
       box.appendChild(heroRow(null, cur.multiplier.toFixed(2), '×', 'sqx-hero-live', cashOutRight(cur)));
     }
+    const live = d.crashPoint == null;
     const minis = [];
     if (typeof d.autoCashout === 'number') {
       minis.push(['auto cash', d.autoCashout.toFixed(2) + '×']);
-      if (typeof cur.bet === 'number') {
+      if (typeof cur.bet === 'number' && live) {
         const w = Math.round(cur.bet * (d.autoCashout - 1) * 100) / 100;
         minis.push(['win @ auto', fmtMoney(w), posNegCls(w)]);
       }
     }
+    // The other side of the trade: a crash before cash-out forfeits the stake.
+    if (typeof cur.bet === 'number' && live) minis.push(['if crash', fmtMoney(-cur.bet), 'sqx-neg']);
     if (d.crashPoint != null) minis.push(['crashed at', d.crashPoint + '×', 'sqx-neg']);
     if (minis.length) box.appendChild(miniRow(minis));
   }
 
   function renderMinesDeal(box, cur, d) {
-    if (typeof cur.multiplier === 'number') {
-      box.appendChild(heroRow(null, cur.multiplier.toFixed(2), '×', 'sqx-hero-live', cashOutRight(cur)));
-    }
     const total = typeof d.tilesTotal === 'number' ? d.tilesTotal : 25;
     const mines = typeof d.mines === 'number' ? d.mines : null;
     const picked = typeof d.revealedCount === 'number' ? d.revealedCount : null;
-    const minis = [];
-    if (mines != null && picked != null && picked + mines <= total) {
-      const left = total - picked; // unrevealed tiles
-      const safeLeft = left - mines; // safe tiles among them
-      if (safeLeft > 0 && typeof cur.multiplier === 'number') {
-        minis.push(['next tile', ((cur.multiplier * left) / safeLeft).toFixed(2) + '×']);
+    const known = mines != null && picked != null && picked + mines <= total;
+    const left = known ? total - picked : 0; // unrevealed tiles
+    const safeLeft = known ? left - mines : 0; // safe tiles among them
+    // Next-pick multiplier: the game's own paytable value when the adapter
+    // mapped one, else derived from the current multiplier at fair odds.
+    const nextMult = known && safeLeft > 0
+      ? (isNum(d.nextMultiplier)
+        ? d.nextMultiplier
+        : typeof cur.multiplier === 'number' ? (cur.multiplier * left) / safeLeft : null)
+      : null;
+
+    if (typeof cur.multiplier === 'number') {
+      const right = cashOutRight(cur);
+      // The computed trade: EV of one more pick = safe odds × next multiplier
+      // × bet, shown against the cash-out value so continue-vs-bank is a
+      // read, not mental math. Green = continuing is +EV, red = banking wins.
+      if (right && nextMult != null && left > 0 && typeof cur.bet === 'number') {
+        const ev = (safeLeft / left) * nextMult * cur.bet;
+        const delta = Math.round((ev - cur.bet * cur.multiplier) * 100) / 100;
+        const cls = delta > 0 ? 'sqx-pos' : delta < 0 ? 'sqx-neg' : 'sqx-dim';
+        const row = h('div', 'sqx-ev');
+        row.appendChild(h('span', 'sqx-ev-l', 'ev next pick'));
+        row.appendChild(num(fmtAmount(ev), 'sqx-ev-v ' + cls));
+        row.appendChild(num(delta === 0 ? '±0.00' : fmtMoney(delta), 'sqx-ev-d ' + cls));
+        right.appendChild(row);
       }
+      box.appendChild(heroRow(null, cur.multiplier.toFixed(2), '×', 'sqx-hero-live', right));
+    }
+    const minis = [];
+    if (known) {
+      if (nextMult != null) minis.push(['next tile', nextMult.toFixed(2) + '×']);
       if (left > 0) minis.push(['safe odds', Math.round((safeLeft / left) * 100) + '%']);
       minis.push(['picked', picked + '/' + (total - mines)]);
       minis.push(['mines', String(mines)]);
@@ -493,6 +545,52 @@
     return el;
   }
 
+  // Multi-deck basic-strategy action for a live hand vs the dealer up-card
+  // value (2-11). Pure chart lookup — pairs, then soft, then hard totals.
+  // Returns 'hit' | 'stand' | 'double' | 'split', or null when unknowable.
+  function bjAdvice(cards, up) {
+    if (!Array.isArray(cards) || cards.length < 2 || !isNum(up) || up < 2 || up > 11) return null;
+    const parsed = cards.map(parseCard);
+    if (parsed.some((p) => !p)) return null;
+    const vals = parsed.map((p) => BJ_FACE_VAL[p.rank] || parseInt(p.rank, 10));
+    if (vals.some((v) => !isNum(v))) return null;
+    let total = 0, aces = 0;
+    for (let i = 0; i < vals.length; i++) {
+      total += vals[i];
+      if (parsed[i].rank === 'A') aces++;
+    }
+    while (total > 21 && aces) { total -= 10; aces--; }
+    if (total >= 21) return null; // bust or 21: nothing left to decide
+    const two = parsed.length === 2; // double/split only on the first decision
+    if (two && vals[0] === vals[1] && vals[0] !== 5) {
+      const v = vals[0];
+      if (v === 11 || v === 8) return 'split';
+      if (v === 10) return 'stand';
+      if (v === 9) return up === 7 || up >= 10 ? 'stand' : 'split';
+      if (v === 7) return up <= 7 ? 'split' : 'hit';
+      if (v === 6) return up <= 6 ? 'split' : 'hit';
+      if (v === 4) return up === 5 || up === 6 ? 'split' : 'hit';
+      return up <= 7 ? 'split' : 'hit'; // 2,2 / 3,3
+    }
+    if (aces > 0) { // soft total (an ace still counts as 11)
+      if (total >= 19) return two && total === 19 && up === 6 ? 'double' : 'stand';
+      if (total === 18) {
+        if (up <= 6) return two ? 'double' : 'stand';
+        return up <= 8 ? 'stand' : 'hit';
+      }
+      if (total === 17) return two && up >= 3 && up <= 6 ? 'double' : 'hit';
+      if (total >= 15) return two && up >= 4 && up <= 6 ? 'double' : 'hit';
+      return two && (up === 5 || up === 6) ? 'double' : 'hit';
+    }
+    if (total >= 17) return 'stand';
+    if (total >= 13) return up <= 6 ? 'stand' : 'hit';
+    if (total === 12) return up >= 4 && up <= 6 ? 'stand' : 'hit';
+    if (total === 11) return two ? 'double' : 'hit';
+    if (total === 10) return two && up <= 9 ? 'double' : 'hit';
+    if (total === 9) return two && up >= 3 && up <= 6 ? 'double' : 'hit';
+    return 'hit';
+  }
+
   function renderBlackjackDeal(box, d) {
     const duel = h('div', 'sqx-duel');
 
@@ -519,6 +617,20 @@
     }
     duel.appendChild(dealer);
     box.appendChild(duel);
+
+    // While the hole card is down the hand is still yours to play: show the
+    // basic-strategy book answer, styled advisory (dim, lowercase).
+    if (hidden) {
+      const up = dealerCards.map(parseCard).find(Boolean);
+      const upVal = up ? BJ_FACE_VAL[up.rank] || parseInt(up.rank, 10) : null;
+      const advice = bjAdvice(d.player, upVal);
+      if (advice) {
+        const hint = h('div', 'sqx-bj-hint');
+        hint.appendChild(h('span', 'sqx-bj-hint-l', 'basic strategy'));
+        hint.appendChild(h('span', 'sqx-bj-hint-v', advice));
+        box.appendChild(hint);
+      }
+    }
   }
 
   // Cumulative-profit values for the sparkline: prefer the background-computed
@@ -727,6 +839,14 @@
 
   const xCap = (text) => h('div', 'sqx-xcap', text);
 
+  // Marks an element collapsible by the fit pass (render() adds .sqx-tight
+  // when the panel would overflow the viewport): the recent-outcome strips
+  // are the first thing sacrificed, before history rows or the footer.
+  const clip = (node) => {
+    node.classList.add('sqx-clip');
+    return node;
+  };
+
   // Fixed-column chip grid so values ring up in even columns.
   function chipStrip(cols, chips) {
     const grid = h('div', 'sqx-xchips');
@@ -812,11 +932,11 @@
       ['10× drought', String(maxDry), '', 'now ' + nowDry],
     ]));
     const k = Math.min(15, n);
-    card.appendChild(xCap('last ' + k + ' rounds · newest first'));
-    card.appendChild(chipStrip(5, points.slice(-k).reverse().map((v) => ({
+    card.appendChild(clip(xCap('last ' + k + ' rounds · newest first')));
+    card.appendChild(clip(chipStrip(5, points.slice(-k).reverse().map((v) => ({
       text: fmtPoint(v),
       cls: v >= 10 ? 'sqx-xchip-hot' : v < 2 ? 'sqx-xchip-neg' : 'sqx-xchip-pos',
-    }))));
+    })))));
     return wrap;
   }
 
@@ -885,12 +1005,12 @@
     card.appendChild(wrow('cold', cold));
 
     const k = Math.min(12, n);
-    card.appendChild(xCap('last ' + k + ' spins · newest first'));
+    card.appendChild(clip(xCap('last ' + k + ' spins · newest first')));
     const strip = h('div', 'sqx-wstrip');
     for (const t of ticks.slice(-k).reverse()) {
       strip.appendChild(h('span', 'sqx-wchip sqx-wchip-' + (t.color || wheelColorOf(t.number)), String(t.number)));
     }
-    card.appendChild(strip);
+    card.appendChild(clip(strip));
     return wrap;
   }
 
@@ -936,14 +1056,14 @@
     }
 
     const k = Math.min(12, done.length);
-    card.appendChild(xCap('last ' + k + ' games · newest first'));
-    card.appendChild(chipStrip(6, done.slice(-k).reverse().map((r) => {
+    card.appendChild(clip(xCap('last ' + k + ' games · newest first')));
+    card.appendChild(clip(chipStrip(6, done.slice(-k).reverse().map((r) => {
       if (r.result === 'win') {
         return { text: isNum(r.multiplier) ? fmtMult(r.multiplier) : '✓', cls: 'sqx-xchip-pos' };
       }
       const d = depthOf(r);
       return { text: '✗' + (d != null ? d : ''), cls: 'sqx-xchip-neg', title: d != null ? 'bomb on pick ' + (d + 1) : 'bust' };
-    })));
+    }))));
     return wrap;
   }
 
@@ -977,11 +1097,11 @@
     }))));
 
     const k = Math.min(16, n);
-    card.appendChild(xCap('last ' + k + ' drops · newest first'));
-    card.appendChild(chipStrip(8, mults.slice(-k).reverse().map((v) => ({
+    card.appendChild(clip(xCap('last ' + k + ' drops · newest first')));
+    card.appendChild(clip(chipStrip(8, mults.slice(-k).reverse().map((v) => ({
       text: fmtSlotMult(v),
       cls: multChipCls(v),
-    }))));
+    })))));
     return wrap;
   }
 
@@ -1046,13 +1166,13 @@
     ]));
 
     const k = Math.min(12, hands.length);
-    card.appendChild(xCap('last ' + k + ' hands · your total · newest first'));
-    card.appendChild(chipStrip(6, hands.slice(-k).reverse().map((hd) => ({
+    card.appendChild(clip(xCap('last ' + k + ' hands · your total · newest first')));
+    card.appendChild(clip(chipStrip(6, hands.slice(-k).reverse().map((hd) => ({
       text: hd.bj ? 'BJ' : hd.pt != null ? String(hd.pt) : hd.result === 'win' ? 'W' : hd.result === 'loss' ? 'L' : 'P',
       cls: hd.bj ? 'sqx-xchip-hot'
         : hd.result === 'win' ? 'sqx-xchip-pos'
         : hd.result === 'loss' ? 'sqx-xchip-neg' : 'sqx-xchip-dim',
-    }))));
+    })))));
     return wrap;
   }
 

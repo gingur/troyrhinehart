@@ -183,13 +183,18 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 78vh;
+  /* Header (34px) + body + footer (~28px) must clear the viewport bottom
+     with the HUD's default 72px top offset — hence the 140px reservation. */
+  max-height: calc(100vh - 140px);
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--sqx-line) transparent;
 }
 
-/* Cards must never flex-squish to fit the max-height — scroll instead. */
+/* Cards never flex-squish to fit the max-height. When the body would
+   scroll, the fit pass in overlay.js reclaims height from the history
+   card (its rows scroll internally) and then from the recent-outcome
+   chip strips, so the footer always stays on screen. */
 #sqx-hud .sqx-body > * { flex: none; }
 
 #sqx-hud .sqx-empty {
@@ -301,6 +306,27 @@
 
 #sqx-hud .sqx-current-bet .sqx-num { color: var(--sqx-text); }
 
+/* live stake shown as the downside — loss red, delta-sized, not a footnote */
+#sqx-hud .sqx-current-risk {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+#sqx-hud .sqx-current-risk-l {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-current-risk .sqx-num {
+  font-size: 11px;
+  font-weight: 650;
+}
+
 /* hero row: the one number you act on, as big as the card allows */
 #sqx-hud .sqx-hero {
   display: flex;
@@ -364,6 +390,35 @@
 #sqx-hud .sqx-cash-sub {
   margin-left: 5px;
   font-size: 11px;
+  font-weight: 600;
+}
+
+/* computed trade under the cash-out value: EV of the next pick + delta */
+#sqx-hud .sqx-ev {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--sqx-hair);
+}
+
+#sqx-hud .sqx-ev-l {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-ev-v {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#sqx-hud .sqx-ev-d {
+  font-size: 10.5px;
   font-weight: 600;
 }
 
@@ -508,6 +563,31 @@
   color: var(--sqx-faint);
 }
 
+/* basic-strategy book answer — deliberately advisory: dim, lowercase */
+#sqx-hud .sqx-bj-hint {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--sqx-hair);
+}
+
+#sqx-hud .sqx-bj-hint-l {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sqx-faint);
+}
+
+#sqx-hud .sqx-bj-hint-v {
+  font-family: var(--sqx-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sqx-mute);
+}
+
 #sqx-hud .sqx-detail {
   color: var(--sqx-mute);
   font-family: var(--sqx-mono);
@@ -647,6 +727,10 @@
   margin-top: 0;
   white-space: nowrap;
 }
+
+/* Tight mode (set by the fit pass in overlay.js): the recent-outcome chip
+   strips collapse so history rows and the footer stay on screen. */
+#sqx-hud.sqx-tight .sqx-clip { display: none; }
 
 /* micro caption above a strip / histogram */
 #sqx-hud .sqx-xcap {
@@ -875,6 +959,9 @@
   font-weight: 650;
 }
 
+/* History is the only card allowed to give up height: it shrinks (rows stay
+   reachable through its own scroll) so the cards above it and the footer
+   below always fit the viewport without the body scrolling. */
 #sqx-hud .sqx-hist-card {
   background: var(--sqx-card);
   border: 1px solid var(--sqx-line);
@@ -882,7 +969,9 @@
   overflow: hidden;
 }
 
-/* fixed column header stays put; rows scroll beneath it */
+/* fixed column header stays put; rows scroll beneath it. max-height is the
+   default cap; the fit pass lowers it inline (floor ~4 rows) when the panel
+   would otherwise overflow the viewport. */
 #sqx-hud .sqx-hist-scroll {
   max-height: 218px;
   overflow-y: auto;
@@ -999,11 +1088,12 @@
 
 /* ---- footer --------------------------------------------------------------- */
 
+/* Pinned below the scrollable body — always on screen. */
 #sqx-hud .sqx-foot {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 2px 0;
+  padding: 5px 6px 5px 10px;
   border-top: 1px solid var(--sqx-hair);
 }
 

@@ -490,7 +490,9 @@
   // MINES — mid-deal: 6 tiles revealed, running multiplier.
   {
     const s = makeMinesSession(405, 23, 31);
-    s.current = { phase: 'picking', bet: 2.5, multiplier: 2.14, updatedAt: NOW, detail: { mines: 5, revealedCount: 6, tilesTotal: 25 } };
+    // nextMultiplier is the game's own paytable value for pick 7 (per-pick
+    // house edge, so slightly under the fair 2.90 the HUD would derive).
+    s.current = { phase: 'picking', bet: 2.5, multiplier: 2.14, updatedAt: NOW, detail: { mines: 5, revealedCount: 6, tilesTotal: 25, nextMultiplier: 2.87 } };
     fixtures['mines-mid-deal'] = { state: snap('mines', { mines: s }, archivedSummaries(10, 2)), rawLog: makeRawLog('mines') };
   }
   // MINES — between games.
