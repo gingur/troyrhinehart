@@ -20,13 +20,17 @@ const {
   createSession,
   gameExtras,
   hasData,
+  compactSession,
   hasKnownRound,
   hasRound,
+  liveRepeatId,
   makeSummary,
   refreshPace,
   rememberRound,
   round2,
+  sanitizePatch,
   sanitizeRound,
+  sanitizeTick,
   snapshotSession,
   upgradeRound,
 } = await import(join(devDir, '..', 'src', 'lib', 'stats.js'));
@@ -869,6 +873,82 @@ test('upgradeRound: payout-bearing settle replaces a payout-less ack round in pl
   assert.equal(s.rounds[0].payout, 12.5);
 });
 
+test('constant-id discovery on a live transport registers the occurrence (no round lost per discovery)', () => {
+  // The round-4 sibling bug: the badIds-discovery branch returned 'sqx-'+sig
+  // WITHOUT counting the live occurrence, so the next genuine repeat of that
+  // exact content collided and dedupe ate one real round per discovery.
+  N._resetRoundIds();
+  const live = (body) => N.extractRound({ ts: T0, kind: 'ws', url: 'wss://spinquest.com/s', body: JSON.parse(JSON.stringify(body)) });
+  const a = live({ gameId: 'g1', bet: 1, payout: 2 }); // first: weak id kept
+  const b = live({ gameId: 'g1', bet: 1, payout: 0.5 }); // discovery: switches to synthetic
+  const c = live({ gameId: 'g1', bet: 1, payout: 0.5 }); // genuine repeat of b's outcome
+  const d = live({ gameId: 'g1', bet: 1, payout: 0.5 }); // and again
+  assert.equal(new Set([a.id, b.id, c.id, d.id]).size, 4); // every real bet keeps a distinct id
+  // Weak-id live rounds carry the transient `live` flag so the background can
+  // pair page-local uniqueness with its persisted counter...
+  assert.equal(a.live, true);
+  assert.equal(b.live, true);
+  // ...but strong ids and replay-shaped/bare captures never do.
+  assert.equal(live({ betId: 'st-1', bet: 1, payout: 2 }).live, undefined);
+  N._resetRoundIds();
+  assert.equal(N.extractRound({ ts: T0, body: { gameId: 'g1', bet: 1, payout: 2 } }).live, undefined);
+  // ...and sanitizeRound strips it before anything persists.
+  assert.equal('live' in sanitizeRound({ id: 'x', ts: T0, result: 'win', live: true }, T0), false);
+});
+
+test('liveRepeatId: persisted per-game counter allocates collision-free ids across storage round-trips', () => {
+  let log = rememberRound(undefined, 'plinko', 'sqx-abc');
+  const a = liveRepeatId(log, 'plinko', 'sqx-abc');
+  assert.notEqual(a.id, 'sqx-abc');
+  log = rememberRound(a.log, 'plinko', a.id);
+  const b = liveRepeatId(log, 'plinko', 'sqx-abc');
+  log = rememberRound(b.log, 'plinko', b.id);
+  assert.notEqual(b.id, a.id);
+  // The counter lives IN the shard: a fresh worker rehydrating from storage
+  // must not reissue an id an earlier worker already allocated.
+  const revived = JSON.parse(JSON.stringify(log));
+  const c = liveRepeatId(revived, 'plinko', 'sqx-abc');
+  assert.notEqual(c.id, a.id);
+  assert.notEqual(c.id, b.id);
+  assert.equal(hasKnownRound(c.log, 'plinko', c.id), false);
+  // An oversized base id still fits under the id length cap after suffixing.
+  const big = liveRepeatId(c.log, 'plinko', 'x'.repeat(500));
+  assert.ok(big.id.length <= LIMITS.MAX_ID_LEN);
+});
+
+test('compactSession: archive tail trimmed + detail stripped, lifetime totals stay exact', () => {
+  const s = createSession('plinko', T0);
+  for (let i = 0; i < 120; i++) {
+    appendRound(s, { id: 'cp' + i, ts: T0 + i, result: 'win', bet: 1, payout: 2, profit: 1, detail: { path: [i, i + 1] } });
+  }
+  const before = computeStats(s, T0 + MIN);
+  compactSession(s);
+  assert.equal(s.rounds.length, LIMITS.MAX_ARCHIVED_ROUNDS);
+  assert.equal(s.compacted, true);
+  for (const r of s.rounds) assert.equal('detail' in r, false);
+  const after = computeStats(s, T0 + MIN);
+  for (const k of ['rounds', 'wins', 'losses', 'pushes', 'net', 'wagered', 'returned', 'streak', 'bestWinStreak', 'biggestWin']) {
+    assert.equal(after[k], before[k], k + ' must survive compaction');
+  }
+  assert.equal(after.series.length, LIMITS.MAX_ARCHIVED_ROUNDS); // cached series shrinks with the window
+  assert.equal(hasRound(s, 'cp0'), true); // compacted-away ids stay in the dedupe memory (carry.evictedIds)
+});
+
+test('sanitizePatch/sanitizeTick: size-bounded plain objects only (trust boundary for non-round events)', () => {
+  const ok = { phase: 'betting', bet: 1, detail: { mines: 3 } };
+  assert.equal(sanitizePatch(ok), ok);
+  assert.equal(sanitizePatch(null), null);
+  assert.equal(sanitizePatch([1, 2, 3]), null);
+  assert.equal(sanitizePatch('phase'), null);
+  assert.equal(sanitizePatch({ blob: 'x'.repeat(LIMITS.MAX_PATCH_JSON + 1) }), null);
+  const cyc = {};
+  cyc.self = cyc;
+  assert.equal(sanitizePatch(cyc), null);
+  const tick = { ts: T0, crashPoint: 2.1 };
+  assert.equal(sanitizeTick(tick), tick);
+  assert.equal(sanitizeTick({ blob: 'x'.repeat(LIMITS.MAX_TICK_JSON + 1) }), null);
+});
+
 // --- integration: the real background.js over a chrome stub ------------------
 // Fresh module instance per "worker" (?v=N) sharing one JSON-serializing
 // storage backend, exactly like chrome.storage.local behaves across MV3
@@ -1102,6 +1182,170 @@ await atest('message path: failed storage writes surface persistFailing, then re
   const ids = snap2.active.plinko.rounds.map((r) => r.id);
   assert.ok(ids.includes('pf-1'), 'pf-1 persisted after recovery');
   assert.ok(ids.includes('pf-2'), 'pf-2 persisted after recovery');
+});
+
+await atest('message path: identical-outcome live autobet keeps counting across PAGE RELOADS', async () => {
+  // The round-4 headline: normalize.js's live-repeat counter is page-local
+  // while knownRounds is persistent, so after a reload the regenerated
+  // synthetic-id sequence collided with remembered ids and every acked
+  // genuine bet was silently dropped (200/200 lost). Real normalize.js per
+  // "page load" (fresh vm sandbox) driving the real background listener.
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' });
+  const mults = [0.5, 1, 2, 5];
+  const mkBody = (m) => ({ gameId: 'plinko-live', betAmount: 1, payoutMultiplier: m, payout: m });
+  const runDrops = async (page, n) => {
+    for (let i = 0; i < n; i++) {
+      const r = page.extractRound({ ts: Date.now(), kind: 'ws', url: 'wss://spinquest.com/game', body: mkBody(mults[i % 4]) });
+      await send({ type: 'SQX_GAME_EVENT', game: 'plinko', event: { type: 'round', round: r } });
+    }
+  };
+  let page = loadNormalize(); // page load 1
+  await runDrops(page, 30);
+  let snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 30); // constant-id discovery loses nothing within one load
+  page = loadNormalize(); // reload: page-local id memory resets, knownRounds doesn't
+  await runDrops(page, 30);
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 60); // every genuine repeat re-suffixed and counted
+  page = loadNormalize(); // third reload, shorter run
+  await runDrops(page, 10);
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 70);
+  assert.equal(snap.active.plinko.stats.wagered, 70); // each bet's money counted exactly once
+  // Replay-shaped events keep DROP semantics: the same content re-fetched via
+  // a history URL resolves deterministically and stays dead.
+  const hist = page.extractRound({ ts: Date.now(), kind: 'fetch', url: 'https://spinquest.com/api/plinko/history', body: mkBody(0.5) });
+  assert.equal(hist.live, undefined);
+  await send({ type: 'SQX_GAME_EVENT', game: 'plinko', event: { type: 'round', round: hist } });
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 70); // history replay did not double-count
+});
+
+await atest('message path: live-repeat counter survives a WORKER RESTART (persisted in the shard)', async () => {
+  await sleep(1200); // flush knownRounds (incl. the shard counter) to storage
+  const { send } = await bootWorker(); // fresh module, same storage backend
+  const page = loadNormalize(); // and a fresh page load
+  const mults = [0.5, 1, 2, 5];
+  for (let i = 0; i < 8; i++) {
+    const r = page.extractRound({
+      ts: Date.now(),
+      kind: 'ws',
+      url: 'wss://spinquest.com/game',
+      body: { gameId: 'plinko-live', betAmount: 1, payoutMultiplier: mults[i % 4], payout: mults[i % 4] },
+    });
+    await send({ type: 'SQX_GAME_EVENT', game: 'plinko', event: { type: 'round', round: r } });
+  }
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.plinko.stats.rounds, 78); // 70 + all 8 genuine repeats
+});
+
+await atest('message path: ack -> NEW_SESSION -> settle upgrade repairs the ARCHIVED round', async () => {
+  // Round-4 S7: a payout-less ack round rotated into the archive, then the
+  // real settle (upgrade:true) missed the fresh session, fell through to
+  // knownRounds and was dropped — archived wagered 25, net 0 forever.
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' });
+  await send({
+    type: 'SQX_GAME_EVENT',
+    game: 'mines',
+    event: { type: 'round', round: { id: 'uar-1', ts: Date.now(), bet: 25, result: 'unknown' } },
+  });
+  await send({ type: 'SQX_NEW_SESSION', game: 'mines' });
+  await send({
+    type: 'SQX_GAME_EVENT',
+    game: 'mines',
+    event: { type: 'round', upgrade: true, round: { id: 'uar-1', ts: Date.now(), bet: 25, payout: 50, profit: 25, result: 'win' } },
+  });
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.mines.stats.rounds, 0); // settle patched the archive, not the live session
+  const arch = snap.archivedSummaries.filter((s) => s.game === 'mines');
+  assert.equal(arch.length, 1);
+  assert.equal(arch[0].rounds, 1);
+  assert.equal(arch[0].net, 25); // wagered 25, returned 50 — the real outcome landed
+  assert.equal(arch[0].wins, 1);
+});
+
+await atest('message path: oversized state patches and ticks are dropped at the boundary', async () => {
+  // Round-4 S4: event.patch / event.tick bypassed the sanitizer — one hostile
+  // 400KiB patch persisted straight into the storage quota rounds protect.
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' });
+  await send({ type: 'SQX_GAME_EVENT', game: 'crash', event: { type: 'state', patch: { phase: 'flying', multiplier: 1.5 } } });
+  let snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.crash.current.phase, 'flying'); // sane patch lands
+  await send({ type: 'SQX_GAME_EVENT', game: 'crash', event: { type: 'state', patch: { phase: 'evil', blob: 'x'.repeat(400 * 1024) } } });
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.crash.current.phase, 'flying'); // oversized patch dropped whole
+  assert.equal('blob' in snap.active.crash.current, false);
+  await send({ type: 'SQX_GAME_EVENT', game: 'crash', event: { type: 'tick', tick: { ts: Date.now(), crashPoint: 2.1, blob: 'x'.repeat(64 * 1024) } } });
+  await send({ type: 'SQX_GAME_EVENT', game: 'crash', event: { type: 'tick', tick: { ts: Date.now(), crashPoint: 3.5 } } });
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.crash.ticks.length, 1); // oversized tick dropped, sane one kept
+  assert.equal(snap.active.crash.ticks[0].crashPoint, 3.5);
+  // Merged session.current is bounded too: distinct-keyed patches can't accrete without limit.
+  for (let i = 0; i < 40; i++) {
+    await send({ type: 'SQX_GAME_EVENT', game: 'crash', event: { type: 'state', patch: { ['k' + i]: 'y'.repeat(1000) } } });
+  }
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.ok(JSON.stringify(snap.active.crash.current).length <= LIMITS.MAX_CURRENT_JSON + 2048, 'merged current stays bounded');
+});
+
+await atest('message path: unknown game names are refused loudly — no proto pollution, no shard churn', async () => {
+  // Round-4 S5/S6: game '__proto__' acked {ok:true} while the round vanished
+  // into prototype assignment, and 16 junk names churned real games' shards
+  // out of the knownRounds cap. The boundary now allowlists KNOWN_GAMES and
+  // answers {ok:false} — never a silent drop behind an {ok:true}.
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' });
+  await send(roundEvent('gv-1', 1, 2, 'roulette'));
+  const evil = await send({
+    type: 'SQX_GAME_EVENT',
+    game: '__proto__',
+    event: { type: 'round', round: { id: 'gv-p', ts: Date.now(), bet: 5, payout: 10, profit: 5, result: 'win' } },
+  });
+  assert.equal(evil.ok, false);
+  assert.equal(Object.getPrototypeOf({}).rounds, undefined); // no pollution
+  for (let g = 0; g < 20; g++) {
+    assert.equal((await send(roundEvent('j' + g, 1, 0, 'junkgame' + g))).ok, false);
+  }
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.deepEqual(Object.keys(snap.active), ['roulette']); // junk never opened a session
+  await send(roundEvent('gv-1', 1, 2, 'roulette')); // replay after the junk flood
+  const snap2 = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap2.active.roulette.stats.rounds, 1); // replay protection intact — no shard churn
+  assert.equal((await send({ type: 'SQX_NEW_SESSION', game: '__proto__' })).ok, false);
+  assert.equal((await send({ type: 'SQX_GAME_EVENT', game: 'roulette', event: null })).ok, false); // event must be an object
+});
+
+await atest('message path: archived sessions compact to a bounded round tail, lifetime totals intact', async () => {
+  // Round-4 S9: 30 archived max-detail sessions projected to 3.7x the storage
+  // quota, eventually pinning the extension in memory-only mode.
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' });
+  const n = 120;
+  for (let i = 0; i < n; i++) {
+    await send({
+      type: 'SQX_GAME_EVENT',
+      game: 'blackjack',
+      event: { type: 'round', round: { id: 'cmp-' + i, ts: Date.now(), bet: 1, payout: 2, profit: 1, result: 'win', detail: { hand: ['AS', 'KD'], actions: ['hit', 'stand'] } } },
+    });
+  }
+  await send({ type: 'SQX_NEW_SESSION', game: 'blackjack' });
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  const sum = snap.archivedSummaries.find((s) => s.game === 'blackjack');
+  assert.equal(sum.rounds, n); // lifetime totals exact through compaction
+  assert.equal(sum.net, n);
+  const { data } = await send({ type: 'SQX_EXPORT' });
+  const arch = data.archived.find((s) => s.game === 'blackjack');
+  assert.equal(arch.compacted, true);
+  assert.equal(arch.rounds.length, LIMITS.MAX_ARCHIVED_ROUNDS);
+  assert.ok(arch.rounds.every((r) => !('detail' in r)), 'archived rounds carry no detail blobs');
+  assert.equal(arch.stats.rounds, n); // stats recomputed over the compacted shape, still lifetime-exact
+  // A compacted-away round replayed after reload still dedupes.
+  await send({ type: 'SQX_GAME_EVENT', game: 'blackjack', event: { type: 'round', round: { id: 'cmp-0', ts: Date.now(), bet: 1, payout: 2, profit: 1, result: 'win' } } });
+  const snap2 = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap2.active.blackjack.stats.rounds, 0);
 });
 
 // ----------------------------------------------------------------------------

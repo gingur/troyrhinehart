@@ -22,7 +22,28 @@ export const LIMITS = {
   MAX_ABS_MONEY: 1e12,
   MAX_ID_LEN: 128, // round ids longer than this are truncated (still deterministic)
   MAX_DETAIL_JSON: 4096, // detail blobs serializing past this are dropped whole
+  // The other trust-boundary payloads, bounded like round.detail is: a state
+  // patch or tick serializing past its cap is a hostile/buggy flood, not game
+  // state — one 400KiB patch would burn the storage quota rounds are capped
+  // to protect. MAX_CURRENT_JSON bounds the MERGED session.current, so many
+  // small distinct-keyed patches can't accrete without bound either.
+  MAX_PATCH_JSON: 8192,
+  MAX_CURRENT_JSON: 16384,
+  MAX_TICK_JSON: 1024,
+  // Archived sessions are compacted to this round tail (detail stripped, the
+  // rest folded into carry — totals stay exact). Uncompacted worst case is
+  // ~4.75MB per 4 max-detail sessions: 30 archived + active would project to
+  // ~3.7x the 10MB chrome.storage.local quota and pin the extension in
+  // permanent memory-only mode once writes start failing.
+  MAX_ARCHIVED_ROUNDS: 40,
 };
+
+// Games the background accepts at its message boundary (mirror of SQX.GAMES
+// in lib/util.js — adapters can only ever emit these). An unvalidated
+// msg.game would let a hostile sender ack rounds into '__proto__' (silently
+// lost through prototype assignment) or churn junk names through the
+// knownRounds shard cap until a real game's replay protection evicts.
+export const KNOWN_GAMES = ['plinko', 'mines', 'crash', 'blackjack', 'roulette'];
 
 export const round2 = (n) => Math.round(n * 100) / 100;
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -105,7 +126,8 @@ export function hasRound(session, id) {
 // evicted). Persisted shape (JSON-safe; a Set mirror per shard is cached in
 // a WeakMap and rebuilt after storage round-trips so lookups are O(1), not a
 // 2000-entry linear scan per round at autobet speed):
-//   knownRounds = { ['g:' + game]: { keys: [id, ...], t: lastWriteMs } }
+//   knownRounds = { ['g:' + game]: { keys: [id, ...], t: lastWriteMs,
+//                                    n?: liveRepeatCounter } }
 // ('g:' prefixing keeps hostile game names like "__proto__" inert.) The
 // legacy flat shape ({keys: ["game:id", ...]}) is read in place by
 // hasKnownRound and migrated to shards by the first rememberRound.
@@ -155,6 +177,20 @@ export function hasKnownRound(log, game, id) {
 export function rememberRound(log, game, id, max = LIMITS.MAX_KNOWN_ROUND_IDS, now = Date.now()) {
   if (id == null) return log;
   log = migrateKnownRounds(log);
+  const shard = getShard(log, game);
+  shard.t = now;
+  const set = shardSet(shard);
+  const key = String(id);
+  if (set.has(key)) return log;
+  shard.keys.push(key);
+  set.add(key);
+  while (shard.keys.length > max) set.delete(shard.keys.shift());
+  return log;
+}
+
+/** A game's shard, created (evicting the least-recently-written shard past
+ *  the count cap) when absent. `log` must already be shard-shaped. */
+function getShard(log, game) {
   let shard = log['g:' + game];
   if (!shard || !Array.isArray(shard.keys)) {
     const games = Object.keys(log);
@@ -167,14 +203,34 @@ export function rememberRound(log, game, id, max = LIMITS.MAX_KNOWN_ROUND_IDS, n
     }
     shard = log['g:' + game] = { keys: [], t: 0 };
   }
+  return shard;
+}
+
+/**
+ * Allocate a collision-free variant of a LIVE round's id after a dedupe hit.
+ * A live round whose id collides with the known-round memory is a genuine
+ * identical-outcome repeat whose page-local synthetic-id counter reset on
+ * reload (normalize.js regenerates 'sqx-SIG', 'sqx-SIG#2', ... from #1 every
+ * page load, while this memory persists) — dropping it would silently eat
+ * every bet of an identical-outcome autobet run after a reload. Uniqueness
+ * must come from where the dedupe memory lives, so the suffix counter
+ * (`shard.n`) is persisted IN the game's shard: it survives worker restarts
+ * and page reloads alike, and can only move forward. Returns { log, id } —
+ * callers assign the log back and append under the new id (replay-shaped
+ * events must NOT come through here; they keep drop semantics).
+ */
+export function liveRepeatId(log, game, id, now = Date.now()) {
+  log = migrateKnownRounds(log);
+  const shard = getShard(log, game);
   shard.t = now;
   const set = shardSet(shard);
-  const key = String(id);
-  if (set.has(key)) return log;
-  shard.keys.push(key);
-  set.add(key);
-  while (shard.keys.length > max) set.delete(shard.keys.shift());
-  return log;
+  const base = String(id).slice(0, LIMITS.MAX_ID_LEN - 14); // room for '~' + counter
+  let next;
+  do {
+    shard.n = (Number.isInteger(shard.n) && shard.n >= 0 ? shard.n : 0) + 1;
+    next = base + '~' + shard.n;
+  } while (set.has(next));
+  return { log, id: next };
 }
 
 // --- round sanitizing ---------------------------------------------------------
@@ -219,6 +275,29 @@ export function sanitizeRound(raw, now = Date.now()) {
 }
 
 /**
+ * Trust-boundary gate for the non-round event payloads: a plain object whose
+ * serialized size fits `cap` passes through untouched, anything else
+ * (array/scalar/circular/oversized) returns null and the caller drops the
+ * event. Rounds get the field-by-field treatment in sanitizeRound; patches
+ * and ticks are free-form by design, so a size bound is the invariant —
+ * without it one hostile 400KiB state patch persists straight into the
+ * storage quota that MAX_DETAIL_JSON exists to protect.
+ */
+export function boundedPlainObject(obj, cap) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  try {
+    const json = JSON.stringify(obj);
+    if (typeof json !== 'string' || json.length > cap) return null;
+  } catch {
+    return null; // circular / hostile serializer
+  }
+  return obj;
+}
+
+export const sanitizePatch = (patch) => boundedPlainObject(patch, LIMITS.MAX_PATCH_JSON);
+export const sanitizeTick = (tick) => boundedPlainObject(tick, LIMITS.MAX_TICK_JSON);
+
+/**
  * Replace a previously appended payout-LESS round with a payout-bearing one
  * carrying the same id (the ack-then-push API shape: a placement ack that
  * slipped through as a result-unknown round, followed by the real settle).
@@ -251,29 +330,51 @@ function stepStreak(run, result) {
  */
 export function appendRound(session, round, max = LIMITS.MAX_ROUNDS_PER_SESSION) {
   session.rounds.push(round);
-  while (session.rounds.length > max) {
-    const ev = session.rounds.shift();
-    const c = session.carry || (session.carry = emptyCarry());
-    c.rounds++;
-    if (ev.result === 'win') c.wins++;
-    else if (ev.result === 'loss') c.losses++;
-    else if (ev.result === 'push') c.pushes++;
-    if (isMoney(ev.bet)) c.wageredC += cents(ev.bet);
-    if (isMoney(ev.payout)) c.returnedC += cents(ev.payout);
-    if (isMoney(ev.profit)) {
-      c.netC += cents(ev.profit);
-      if (ev.profit > c.biggestWin) c.biggestWin = ev.profit;
-      if (ev.profit < c.biggestLoss) c.biggestLoss = ev.profit;
-    }
-    c.tailStreak = stepStreak(c.tailStreak, ev.result);
-    if (c.tailStreak > c.bestWinStreak) c.bestWinStreak = c.tailStreak;
-    if (c.tailStreak < c.worstLossStreak) c.worstLossStreak = c.tailStreak;
-    if (ev.id != null) {
-      const ids = c.evictedIds || (c.evictedIds = []); // legacy carries lack the array
-      ids.push(ev.id);
-      while (ids.length > LIMITS.MAX_EVICTED_IDS) ids.shift();
-    }
+  while (session.rounds.length > max) evictOldest(session);
+}
+
+/** Shift the oldest round off the window, folding its totals (and id) into
+ *  session.carry. Shared by the append cap and archive compaction. */
+function evictOldest(session) {
+  const ev = session.rounds.shift();
+  const c = session.carry || (session.carry = emptyCarry());
+  c.rounds++;
+  if (ev.result === 'win') c.wins++;
+  else if (ev.result === 'loss') c.losses++;
+  else if (ev.result === 'push') c.pushes++;
+  if (isMoney(ev.bet)) c.wageredC += cents(ev.bet);
+  if (isMoney(ev.payout)) c.returnedC += cents(ev.payout);
+  if (isMoney(ev.profit)) {
+    c.netC += cents(ev.profit);
+    if (ev.profit > c.biggestWin) c.biggestWin = ev.profit;
+    if (ev.profit < c.biggestLoss) c.biggestLoss = ev.profit;
   }
+  c.tailStreak = stepStreak(c.tailStreak, ev.result);
+  if (c.tailStreak > c.bestWinStreak) c.bestWinStreak = c.tailStreak;
+  if (c.tailStreak < c.worstLossStreak) c.worstLossStreak = c.tailStreak;
+  if (ev.id != null) {
+    const ids = c.evictedIds || (c.evictedIds = []); // legacy carries lack the array
+    ids.push(ev.id);
+    while (ids.length > LIMITS.MAX_EVICTED_IDS) ids.shift();
+  }
+}
+
+/**
+ * Shrink a session for the archive: all but the newest MAX_ARCHIVED_ROUNDS
+ * rounds are folded into carry through the same eviction path the live cap
+ * uses (lifetime totals, streaks and dedupe ids stay exact), and per-round
+ * detail is dropped from the kept tail. Rationale: 30 archived sessions of
+ * max-detail rounds would serialize far past the chrome.storage.local quota
+ * — persistFailing would surface it, but nothing would shed the load, so the
+ * extension would pin itself in memory-only mode. The popup renders archived
+ * sessions from their summary; the tail is kept for export/inspection.
+ * Callers should recompute stats afterwards so the cached series shrinks too.
+ */
+export function compactSession(session, max = LIMITS.MAX_ARCHIVED_ROUNDS) {
+  while (session.rounds.length > max) evictOldest(session);
+  for (const r of session.rounds) delete r.detail;
+  session.compacted = true;
+  return session;
 }
 
 /** Append a shared-outcome tick, capped (no totals to carry for ticks). */

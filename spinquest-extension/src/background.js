@@ -14,18 +14,24 @@
 'use strict';
 
 import {
+  KNOWN_GAMES,
   LIMITS,
   appendRound,
   appendTick,
+  boundedPlainObject,
+  compactSession,
   computeStats,
   createSession,
   hasData,
   hasKnownRound,
   hasRound,
+  liveRepeatId,
   makeSummary,
   refreshPace,
   rememberRound,
+  sanitizePatch,
   sanitizeRound,
+  sanitizeTick,
   snapshotSession,
   upgradeRound,
 } from './lib/stats.js';
@@ -143,9 +149,15 @@ function archive(session) {
   delete state.active[session.game];
   if (!hasData(session)) return;
   session.endedAt = Date.now();
-  session.stats = computeStats(session);
-  session.summary = makeSummary(session, session.stats);
+  session.summary = makeSummary(session, computeStats(session));
   delete session.current;
+  // Compact for storage: fold all but a small round tail into carry and strip
+  // detail, then recompute stats over the compacted shape (totals are
+  // identical — carry is exact — but the cached series shrinks with the
+  // window). 30 archived full-detail sessions would otherwise serialize past
+  // the chrome.storage.local quota and pin every later save into failure.
+  compactSession(session);
+  session.stats = computeStats(session);
   state.archived.unshift(session);
   state.archived.length = Math.min(state.archived.length, LIMITS.MAX_ARCHIVED_SESSIONS);
 }
@@ -166,17 +178,47 @@ function sweepIdle() {
 
 // --- event handling ---------------------------------------------------------
 
+/**
+ * Ack→rotate→settle repair: the payout-less ack round may have been archived
+ * (manual NEW_SESSION, idle rotation) before its settle arrived. The settle's
+ * upgrade flag would otherwise fall through to the knownRounds dedupe and the
+ * real outcome would be dropped, leaving a dead unknown-result round in the
+ * archive (wagered counted, payout lost). Patch the archived round in place
+ * and refresh that session's stats + summary instead.
+ */
+function upgradeArchivedRound(game, round) {
+  for (const s of state.archived) {
+    if (s.game !== game) continue;
+    if (upgradeRound(s, round)) {
+      s.stats = computeStats(s); // endedAt is set, so duration/pace stay fixed
+      s.summary = makeSummary(s, s.stats);
+      return true;
+    }
+  }
+  return false;
+}
+
 function applyGameEvent(game, event) {
   const session = getActiveSession(game);
   session.lastActivityAt = Date.now();
 
   if (event.type === 'state') {
-    session.current = {
+    // Size-bounded like round.detail (sanitizePatch): a hostile 400KiB patch
+    // must not walk straight into the storage quota. The MERGED current is
+    // bounded too — many small distinct-keyed patches otherwise accrete
+    // without limit — falling back to the fresh patch alone on overflow.
+    const patch = sanitizePatch(event.patch);
+    if (!patch) return;
+    const now = Date.now();
+    const merged = {
       ...(session.current || {}),
-      ...event.patch,
-      detail: { ...((session.current || {}).detail || {}), ...(event.patch.detail || {}) },
-      updatedAt: Date.now(),
+      ...patch,
+      detail: { ...((session.current || {}).detail || {}), ...(patch.detail || {}) },
+      updatedAt: now,
     };
+    session.current = boundedPlainObject(merged, LIMITS.MAX_CURRENT_JSON)
+      ? merged
+      : { ...patch, updatedAt: now };
   } else if (event.type === 'round') {
     // Sanitize at the trust boundary, then dedupe two ways: a re-injected
     // content script (page reload) can replay history payloads whose rounds
@@ -185,18 +227,38 @@ function applyGameEvent(game, event) {
     // already counted before it rotated/archived. The global knownRounds
     // memory catches (b): without it, 20 rounds → new session → reload →
     // history replay would double-count all 20 into the fresh session.
+    //
+    // `round.live` (set by normalize.js, stripped by sanitizeRound) marks a
+    // weak-id round captured on a LIVE transport: its id uniqueness comes
+    // from a page-local counter that a reload resets while knownRounds
+    // persists, so a dedupe hit on such a round is a GENUINE identical-
+    // outcome repeat, not a replay — re-suffix it from the counter persisted
+    // in the game's shard instead of silently eating the bet. Replay-shaped
+    // events (history lists, refetches) keep drop semantics.
+    const live = event.round && event.round.live === true;
     const round = sanitizeRound(event.round);
     // `event.upgrade` (set by content.js) marks a payout-bearing settle for a
     // round already forwarded WITHOUT a payout (ack-then-push APIs): replace
-    // the stored round in place instead of deduping the real outcome away.
-    if (!(event.upgrade === true && upgradeRound(session, round))) {
-      if (hasRound(session, round.id) || hasKnownRound(state.knownRounds, game, round.id)) return;
+    // the stored round in place — in this session or, when a rotation slipped
+    // between ack and settle, in the archived one — instead of deduping the
+    // real outcome away.
+    if (!(event.upgrade === true && (upgradeRound(session, round) || upgradeArchivedRound(game, round)))) {
+      if (hasRound(session, round.id) || hasKnownRound(state.knownRounds, game, round.id)) {
+        if (!live) return;
+        const alloc = liveRepeatId(state.knownRounds, game, round.id);
+        state.knownRounds = alloc.log;
+        round.id = alloc.id;
+      }
       appendRound(session, round);
       state.knownRounds = rememberRound(state.knownRounds, game, round.id);
     }
     session.current = null; // deal resolved
   } else if (event.type === 'tick') {
-    appendTick(session, event.tick);
+    const tick = sanitizeTick(event.tick);
+    if (!tick) return;
+    appendTick(session, tick);
+  } else {
+    return; // unknown event type — nothing changed, nothing to persist
   }
 
   session.stats = computeStats(session);
@@ -283,16 +345,29 @@ function doBroadcast() {
 
 // --- messages ---------------------------------------------------------------
 
+// Game names are allowlisted at the same boundary sanitizeRound guards:
+// adapters can only emit KNOWN_GAMES, so anything else is a spoofed sender.
+// Unvalidated, a game of '__proto__' would ack {ok:true} while the round
+// vanishes into prototype assignment, and 16 junk names would churn real
+// games' shards out of the knownRounds cap (replay protection lost).
+const VALID_GAMES = new Set(KNOWN_GAMES);
+const validGame = (g) => (typeof g === 'string' && VALID_GAMES.has(g) ? g : null);
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     await loadState();
 
     if (msg.type === 'SQX_GAME_EVENT') {
+      if (!validGame(msg.game) || !msg.event || typeof msg.event !== 'object') {
+        sendResponse({ ok: false }); // never a silent {ok:true} for dropped data
+        return;
+      }
       applyGameEvent(msg.game, msg.event);
       sendResponse({ ok: true });
     } else if (msg.type === 'SQX_PAGE') {
-      if (state.focusedGame !== msg.game) {
-        state.focusedGame = msg.game;
+      const game = validGame(msg.game); // null = lobby / unknown page
+      if (state.focusedGame !== game) {
+        state.focusedGame = game;
         scheduleSave();
         requestBroadcast(null);
       }
@@ -300,6 +375,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     } else if (msg.type === 'SQX_GET_STATE') {
       sendResponse({ state: snapshot() });
     } else if (msg.type === 'SQX_NEW_SESSION') {
+      if (!validGame(msg.game)) {
+        sendResponse({ ok: false });
+        return;
+      }
       const session = state.active[msg.game];
       if (session) archive(session);
       getActiveSession(msg.game, { rotateIfIdle: false });

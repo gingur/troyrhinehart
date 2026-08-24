@@ -12,7 +12,10 @@
 // replays on history-shaped transports (list payloads, history URLs) keep the
 // same id so dedupe still catches them; on a LIVE transport the identical
 // repeat is treated as a genuine second bet instead (see the replay-vs-repeat
-// note at SQX.isLiveCapture).
+// note at SQX.isLiveCapture). The live-repeat counter is page-local, so
+// weak-id live rounds also carry `round.live = true`: the background pairs it
+// with a counter PERSISTED next to its dedupe memory, keeping genuine repeats
+// countable across page reloads (see LIMITS/liveRepeatId in lib/stats.js).
 'use strict';
 
 SQX.KEYS = {
@@ -179,34 +182,63 @@ SQX.isLiveCapture = function isLiveCapture(evt) {
    * `live` (from SQX.isLiveCapture) flips the exact-repeat rule: on a live
    * transport an identical repeat is a genuine second bet and gets its own
    * id; on history-shaped transports it keeps the id so dedupe drops it.
+   *
+   * Returns { id, weakLive }. `weakLive` marks a live-transport round whose
+   * id came from the weak/synthetic path: its uniqueness rests on THIS
+   * page-local occurrence counter, which resets on reload while the
+   * background's knownRounds dedupe memory persists — so the regenerated id
+   * sequence would collide there and every genuine bet of an
+   * identical-outcome autobet run after a reload would be silently eaten.
+   * extractRound forwards it as `round.live` so the background can re-suffix
+   * such collisions from a PERSISTED counter instead of dropping them
+   * (replay-shaped events keep drop semantics). Strong per-bet ids are never
+   * flagged — a repeated betId on any transport is a true duplicate.
    */
-  SQX.resolveRoundId = function resolveRoundId(body, bet, payout, live) {
+  SQX._resolveRound = function _resolveRound(body, bet, payout, live) {
     const found = SQX.findRoundIdRanked(body);
-    if (!found) return SQX.shortId();
+    if (!found) return { id: SQX.shortId(), weakLive: false }; // random: collision-free by construction
     const id = String(found.id);
     // Strong keys (betId, roundId, nonce, ...) are per-bet by convention:
     // trust them outright. Running them through the constant-id detector would
     // misfire on history refetches whose entries differ only by a volatile
     // field (a server timestamp, a seq) — same betId, different bytes — and
     // the synthetic fallback would double-count the round.
-    if (found.strong) return id;
+    if (found.strong) return { id, weakLive: false };
+    const weakLive = live === true;
     const sig = contentSig(body, bet, payout);
-    if (badIds.has(id)) return syntheticId(sig, live);
+    if (badIds.has(id)) {
+      // Replay-shaped byte-identical repeat of the round FIRST recorded under
+      // this (now blacklisted) weak id: resolve back to the weak id. The
+      // original round was appended under it, so dedupe must see the same id
+      // — the bare synthetic would be an alias nobody ever recorded, and the
+      // replayed entry would double-count.
+      if (!live && idSig.get(id) === sig) return { id, weakLive };
+      return { id: syntheticId(sig, live), weakLive };
+    }
     const prev = idSig.get(id);
     if (prev === undefined) {
       idSig.set(id, sig);
       if (idSig.size > ID_MEMORY_MAX) idSig.delete(idSig.keys().next().value);
       if (live) syntheticId(sig, true); // count the occurrence: a live repeat of this exact content must not collide
-      return id;
+      return { id, weakLive };
     }
     if (prev === sig) {
       // Exact same content again: genuine repeat on a live transport (new
       // id), replayed history otherwise (same id — dedupe drops it).
-      return live ? syntheticId(sig, true) : id;
+      return { id: live ? syntheticId(sig, true) : id, weakLive };
     }
     badIds.add(id);
     if (badIds.size > BAD_IDS_MAX) badIds.delete(badIds.values().next().value);
-    return 'sqx-' + sig;
+    // Constant-id discovery: this round switches to a synthetic id. On a live
+    // transport the occurrence must be REGISTERED (not just derived), or the
+    // next genuine repeat of this exact content would resolve to the same
+    // bare 'sqx-'+sig and dedupe would eat one real round per discovery.
+    return { id: live ? syntheticId(sig, true) : 'sqx-' + sig, weakLive };
+  };
+
+  /** String-only view of _resolveRound, kept for direct callers. */
+  SQX.resolveRoundId = function resolveRoundId(body, bet, payout, live) {
+    return SQX._resolveRound(body, bet, payout, live).id;
   };
 
   /** Test hook: forget id history (a fresh page load does this naturally). */
@@ -385,14 +417,21 @@ SQX._extractRound = function _extractRound(evt) {
     if (payout === undefined && net === 0 && !strong) return null;
   }
 
+  const rid = SQX._resolveRound(body, bet, payout ?? net, SQX.isLiveCapture(evt));
   const round = {
-    id: SQX.resolveRoundId(body, bet, payout ?? net, SQX.isLiveCapture(evt)),
+    id: rid.id,
     ts: evt.ts || Date.now(),
     bet: bet,
     payout: payout,
     multiplier: multiplier,
     currency: SQX.deepStr(body, SQX.KEYS.currency),
   };
+  // Live-transport round with a weak/synthetic id: its uniqueness comes from
+  // a PAGE-LOCAL occurrence counter that a reload resets, while the
+  // background's dedupe memory persists. Flag it so the background re-suffixes
+  // a dedupe collision (genuine identical-outcome repeat) instead of dropping
+  // the bet. Transient: sanitizeRound strips it before anything persists.
+  if (rid.weakLive) round.live = true;
 
   // Derive what we can: a net-profit field beats a multiplier for the missing
   // payout leg (it's exact); payout = bet * multiplier otherwise.

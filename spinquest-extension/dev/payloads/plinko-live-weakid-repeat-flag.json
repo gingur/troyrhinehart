@@ -1,0 +1,46 @@
+{
+  "_comment": "Weak-id identical-outcome autobet on a LIVE transport: both genuine drops must survive with DISTINCT ids and carry the transient round.live flag (the background pairs it with its persisted counter so reload-regenerated ids can't collide into the dedupe memory). The byte-identical HISTORY refetch of the same outcome must resolve back to the recorded id and be dropped by the content-script dedupe.",
+  "game": "plinko",
+  "steps": [
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/game",
+      "direction": "in",
+      "ts": 1000,
+      "body": { "gameId": "plinko-main", "betAmount": 1, "payoutMultiplier": 0.5, "payout": 0.5 }
+    },
+    {
+      "transport": "direct",
+      "kind": "ws",
+      "url": "wss://spinquest.com/game",
+      "direction": "in",
+      "ts": 2000,
+      "body": { "gameId": "plinko-main", "betAmount": 1, "payoutMultiplier": 0.5, "payout": 0.5 }
+    },
+    {
+      "transport": "direct",
+      "kind": "fetch",
+      "url": "https://spinquest.com/api/plinko/history?limit=50",
+      "direction": "in",
+      "ts": 3000,
+      "body": { "gameId": "plinko-main", "betAmount": 1, "payoutMultiplier": 0.5, "payout": 0.5 }
+    }
+  ],
+  "expected": [
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": { "id": "plinko-main", "bet": 1, "payout": 0.5, "result": "loss", "live": true }
+      }
+    },
+    {
+      "game": "plinko",
+      "event": {
+        "type": "round",
+        "round": { "id": "*", "bet": 1, "payout": 0.5, "result": "loss", "live": true }
+      }
+    }
+  ]
+}
