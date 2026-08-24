@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Validate the Mines engine against the published references.
 
-1. Payout-for-payout comparison of the analytic table against ALL 300 cells
-   of Stake's published 24x24 payout table (references/stake/mines.md).
-   Stake displays ``toFixed(2)`` values; exact half-cent ties (e.g. the
-   exact 202,254.525x cell, printed as .52x in one place and .53x in the
-   symmetric cell) are accepted, so the tolerance is |diff| <= 0.005+eps.
+1. Payout-for-payout comparison against ALL 300 cells of Stake's published
+   24x24 payout table (references/stake/mines.md), with ZERO tolerance: the
+   rendered display string ``f"{multiplier_display_float(m,k):,.2f}x"``
+   must equal the published cell string exactly, all 300/300.  This
+   reproduces the reference's 7 internally asymmetric cell-pairs (e.g.
+   1 mine/7 gems = 1.37x but 7 mines/1 gem = 1.38x, both exactly 11/8),
+   which arise from Stake's left-to-right float64 accumulation — the gate
+   verifies our display replays that reduce, not the exact rational.
 
 2. Wizard-of-Odds methodology cross-check (references/woo/mines.md):
    WoO's method is return = pays x P(win) with hypergeometric survival
@@ -61,6 +64,7 @@ from spinquest_sim.games.mines import (  # noqa: E402
     Mines,
     display_multiplier,
     multiplier,
+    multiplier_display_float,
     multiplier_exact,
     win_probability,
     win_probability_exact,
@@ -73,11 +77,6 @@ class ValidationError(RuntimeError):
 
 STAKE_MD = _ROOT / "references" / "stake" / "mines.md"
 WOO_MD = _ROOT / "references" / "woo" / "mines.md"
-
-# Display tolerance: table values are toFixed(2); exact .xx5 ties may be
-# printed either way (both appear in Stake's own table for the same exact
-# value), so accept up to half a cent.
-DISPLAY_TOL = 0.005 + 1e-9
 
 DEFAULT_CONFIGS: List[Tuple[int, int]] = [(1, 1), (3, 3), (5, 5), (10, 10), (24, 1)]
 DEFAULT_ROUNDS = 10_000_000
@@ -92,8 +91,12 @@ SIM_CLIENT_SEED = "spinquest-mines"
 # Reference parsers
 # ---------------------------------------------------------------------------
 
-def parse_stake_table(path: Path = STAKE_MD) -> Dict[Tuple[int, int], float]:
-    """Parse Stake's three markdown payout tables -> {(mines, picks): mult}.
+def parse_stake_table(path: Path = STAKE_MD) -> Dict[Tuple[int, int], str]:
+    """Parse Stake's three markdown payout tables -> {(mines, picks): cell}.
+
+    Cells are returned as the VERBATIM published strings (e.g.
+    ``"2,277.00x"``) so the display gate can compare rendered strings with
+    zero numeric tolerance; use :func:`cell_to_float` for a numeric view.
 
     Hardened: raises :class:`ValidationError` on a missing file, malformed
     header, unparseable cell, duplicate cell, out-of-range coordinates, or a
@@ -101,7 +104,7 @@ def parse_stake_table(path: Path = STAKE_MD) -> Dict[Tuple[int, int], float]:
     """
     if not path.is_file():
         raise ValidationError(f"reference file missing: {path}")
-    cells: Dict[Tuple[int, int], float] = {}
+    cells: Dict[Tuple[int, int], str] = {}
     mine_cols: List[int] = []
     for lineno, line in enumerate(path.read_text().splitlines(), 1):
         line = line.strip()
@@ -134,7 +137,7 @@ def parse_stake_table(path: Path = STAKE_MD) -> Dict[Tuple[int, int], float]:
                 raise ValidationError(
                     f"{path}:{lineno}: duplicate cell mines={m} picks={picks}"
                 )
-            cells[(m, picks)] = float(cell.replace(",", "").rstrip("x"))
+            cells[(m, picks)] = cell
     # Structural completeness: each mines column must hold exactly 25-m cells.
     for m in range(MIN_MINES, MAX_MINES + 1):
         got = sum(1 for (mm, _) in cells if mm == m)
@@ -191,33 +194,79 @@ def parse_woo_table(path: Path = WOO_MD) -> List[Dict[str, float]]:
 # Validation sections
 # ---------------------------------------------------------------------------
 
+def cell_to_float(cell: str) -> float:
+    """Numeric value of a published cell string like ``"2,277.00x"``."""
+    return float(cell.replace(",", "").rstrip("x"))
+
+
+def render_cell(mines: int, picks: int) -> str:
+    """Render our display multiplier exactly as Stake's table prints it."""
+    return f"{multiplier_display_float(mines, picks):,.2f}x"
+
+
 def check_stake_table() -> Dict[str, object]:
+    """String-exact comparison against every published cell, no tolerance.
+
+    Also verifies (a) the reference's 7 internally asymmetric cell-pairs
+    (same exact rational, different displayed cent — the fingerprint of
+    Stake's left-to-right float64 reduce) are reproduced verbatim, and
+    (b) the display reduce never drifts materially from the exact rational
+    used for payouts (relative drift < 1e-14).
+    """
     ref = parse_stake_table()
     expected_cells = sum(GRID_TILES - m for m in range(1, 25))  # 300
     mismatches: List[Dict[str, object]] = []
-    exact_2dp = 0
-    tie_cells = 0
+    exact_string = 0
     max_diff = 0.0
-    for (m, k), ref_val in sorted(ref.items()):
-        ours = multiplier(m, k)
-        diff = abs(ours - ref_val)
-        max_diff = max(max_diff, diff)
-        if abs(round(ours, 2) - ref_val) < 1e-9:
-            exact_2dp += 1
-        elif diff <= DISPLAY_TOL:
-            tie_cells += 1  # exact .xx5 half-cent tie, printed the other way
+    worst_rel_drift = 0.0
+    for (m, k), ref_cell in sorted(ref.items()):
+        ours = render_cell(m, k)
+        max_diff = max(max_diff, abs(multiplier(m, k) - cell_to_float(ref_cell)))
+        exact = multiplier(m, k)
+        worst_rel_drift = max(
+            worst_rel_drift, abs(multiplier_display_float(m, k) - exact) / exact
+        )
+        if ours == ref_cell:
+            exact_string += 1
         else:
             mismatches.append(
-                {"mines": m, "picks": k, "reference": ref_val, "computed": ours}
+                {"mines": m, "picks": k, "reference": ref_cell, "computed": ours}
+            )
+    # The reference's internally asymmetric pairs: exact math is symmetric
+    # in (m, k), so any displayed asymmetry is pure float-order behaviour
+    # our display path must reproduce (round-half-even of the exact value
+    # gets 7 of these cells wrong by one cent).
+    asym_pairs = []
+    asym_ok = True
+    for (m, k), ref_cell in sorted(ref.items()):
+        if m < k and (k, m) in ref and ref_cell != ref[(k, m)]:
+            match = render_cell(m, k) == ref_cell and render_cell(k, m) == ref[(k, m)]
+            asym_ok = asym_ok and match
+            asym_pairs.append(
+                {
+                    "cells": [(m, k), (k, m)],
+                    "reference": [ref_cell, ref[(k, m)]],
+                    "computed": [render_cell(m, k), render_cell(k, m)],
+                    "exact_symmetric": multiplier_exact(m, k) == multiplier_exact(k, m),
+                    "match": match,
+                }
             )
     return {
         "cells_parsed": len(ref),
         "cells_expected": expected_cells,
-        "exact_2dp_matches": exact_2dp,
-        "half_cent_tie_cells": tie_cells,
+        "exact_string_matches": exact_string,
         "max_abs_diff": max_diff,
+        "display_vs_exact_worst_rel_drift": worst_rel_drift,
+        "asymmetric_pairs": asym_pairs,
+        "asymmetric_pairs_reproduced": asym_ok,
         "mismatches": mismatches,
-        "pass": len(ref) == expected_cells and not mismatches,
+        "pass": (
+            len(ref) == expected_cells
+            and exact_string == expected_cells
+            and not mismatches
+            and asym_ok
+            and worst_rel_drift < 1e-14
+        ),
     }
 
 
@@ -425,12 +474,31 @@ def main(argv: List[str] | None = None) -> int:
     table = check_stake_table()
     print(
         f"[table] {table['cells_parsed']}/{table['cells_expected']} cells parsed; "
-        f"{table['exact_2dp_matches']} exact 2dp matches, "
-        f"{table['half_cent_tie_cells']} exact half-cent tie cells, "
-        f"max |diff| = {table['max_abs_diff']:.6f}, "
-        f"mismatches beyond tolerance: {len(table['mismatches'])} -> "
+        f"{table['exact_string_matches']}/{table['cells_expected']} rendered "
+        f"display strings identical to published strings (zero tolerance), "
+        f"string mismatches: {len(table['mismatches'])} -> "
         f"{'PASS' if table['pass'] else 'FAIL'}"
     )
+    print(
+        f"[table] display float64 reduce vs exact rational: worst relative "
+        f"drift {table['display_vs_exact_worst_rel_drift']:.2e} "
+        f"(payout math stays exact; max |exact - published| = "
+        f"{table['max_abs_diff']:.6f}, the documented half-cent cells)"
+    )
+    print(
+        f"[table] reference's {len(table['asymmetric_pairs'])} internally "
+        f"asymmetric cell-pairs (float-order fingerprint) reproduced "
+        f"verbatim: {'YES' if table['asymmetric_pairs_reproduced'] else 'NO'}"
+    )
+    for pair in table["asymmetric_pairs"]:
+        (m1, k1), (m2, k2) = pair["cells"]
+        print(
+            f"[table]   ({m1},{k1})={pair['reference'][0]} / "
+            f"({m2},{k2})={pair['reference'][1]} — ours "
+            f"{pair['computed'][0]} / {pair['computed'][1]} "
+            f"(exact values symmetric: {pair['exact_symmetric']}) -> "
+            f"{'OK' if pair['match'] else 'MISMATCH'}"
+        )
     for bad in table["mismatches"][:10]:
         print(f"  MISMATCH {bad}")
 

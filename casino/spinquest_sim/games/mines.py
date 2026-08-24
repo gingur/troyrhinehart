@@ -8,8 +8,19 @@ Math (references/stake/mines.md — Stake's published client code, verbatim):
 
 so the game returns exactly 99% RTP (1% house edge) at *every* cash-out
 point, for every mines count.  The in-game display rounds the multiplier to
-2 decimals (JS ``toFixed(2)``); this module keeps the exact value and only
-rounds for display/table comparison.
+2 decimals.  Crucially, Stake's client computes the multiplier as a
+left-to-right float64 reduce over the product above (JS numbers), NOT from
+the exact rational — 7 of the 300 published cells land on the other side of
+a half-cent boundary because of that float accumulation (e.g. the table
+shows 1.37x at 1 mine / 7 gems but 1.38x at the mathematically symmetric
+7 mines / 1 gem, even though both cells are exactly 11/8 = 1.375: the
+float64 reduce gives 1.3749999999999996 in one pick order and exactly
+1.375 in the other).
+:func:`multiplier_display_float` replays that exact float64 reduce and
+:func:`display_multiplier` rounds it, reproducing all 300 published cells
+digit-for-digit; payout/RTP math stays on the exact rational
+(:func:`multiplier_exact`), whose float image differs from the display
+reduce by < 1e-15 relative.
 
 Provably-fair mechanics (same reference): 24 mine-location events are drawn
 from the 25 tiles by partial Fisher-Yates over the HMAC-SHA256 float stream;
@@ -44,6 +55,7 @@ __all__ = [
     "win_probability_exact",
     "win_probability",
     "multiplier",
+    "multiplier_display_float",
     "display_multiplier",
     "full_payout_table",
     "Mines",
@@ -100,9 +112,33 @@ def multiplier(mines: int, picks: int) -> float:
     return float(multiplier_exact(mines, picks))
 
 
+def multiplier_display_float(mines: int, picks: int) -> float:
+    """Stake's client-side multiplier: left-to-right float64 reduce.
+
+    Replays the published JS accumulation ``0.99 * prod (25-i)/(25-m-i)``
+    term by term in IEEE-754 double precision — the number the client
+    actually rounds for display.  Differs from ``multiplier()`` (the float
+    image of the exact rational) by < 1e-15 relative, but 7 of the 300
+    published cells sit on a half-cent boundary where that difference flips
+    the displayed cent.  Display/table comparison ONLY — payout and RTP
+    math stay on :func:`multiplier_exact`.
+    """
+    _validate(mines, picks)
+    a = 0.99
+    for i in range(picks):
+        a = a * (GRID_TILES - i) / (GRID_TILES - mines - i)
+    return a
+
+
 def display_multiplier(mines: int, picks: int) -> float:
-    """Multiplier rounded to 2 decimals as shown in-game (``toFixed(2)``)."""
-    return round(multiplier(mines, picks), 2)
+    """Multiplier rounded to 2 decimals as shown in-game.
+
+    Rounds :func:`multiplier_display_float` (the client's float64 reduce),
+    NOT the exact rational — this reproduces every one of Stake's 300
+    published table cells digit-for-digit, including the 7 cells whose
+    displayed cent disagrees with round-half-even of the exact value.
+    """
+    return round(multiplier_display_float(mines, picks), 2)
 
 
 def full_payout_table() -> Dict[int, Dict[int, float]]:
@@ -153,7 +189,7 @@ class Mines:
 
     @property
     def display_mult(self) -> float:
-        return round(self.multiplier, 2)
+        return display_multiplier(self.mines, self.picks)
 
     @property
     def rtp(self) -> float:

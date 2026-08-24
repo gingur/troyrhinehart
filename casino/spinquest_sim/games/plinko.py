@@ -15,27 +15,27 @@ Ground truth (references/stake/plinko.md, references/woo/plinko.md):
   BGAMING analysis is configuration-identical (its published example tables —
   8/low and 16/medium — and its per-config RTP grid pin the same tables).
   ``PAYTABLES`` below is the standard Stake/BGAMING grid; every row is
-  validated payout-for-payout against everything the references publish by
+  checked against everything the references publish by
   ``scripts/validate_plinko.py`` and ``tests/test_plinko.py``.
 
-Engine surfaces:
-
-* analytic pocket probabilities / RTP / variance (exact, Fraction-free float64)
-* provably-fair single-round :meth:`PlinkoEngine.play` on ``spinquest_sim.rng``
-* vectorized simulators: :meth:`simulate` (fast numpy PCG64 binomial path,
-  10M+ rounds in seconds) and :meth:`simulate_provably_fair` (the real
-  HMAC-SHA256 stream via :class:`spinquest_sim.rng.BulkRng`, row-verifiable)
-* a standard result dict ``{rtp, house_edge, std_per_unit, config}``.
+Provably-fair mechanics: both the scalar path
+(:func:`spinquest_sim.rng.plinko_directions` over
+:func:`spinquest_sim.rng.generate_floats`) and the vectorized path
+(:meth:`spinquest_sim.rng.BulkRng.plinko_directions`) are the critic-verified
+RNG core — this module adds no randomness of its own.
 """
 
 from __future__ import annotations
 
 import math
+import time
+from fractions import Fraction
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from spinquest_sim import rng as sq_rng
+from spinquest_sim.rng import BulkRng
 
 __all__ = [
     "RISKS",
@@ -43,12 +43,17 @@ __all__ = [
     "MAX_ROWS",
     "PAYTABLES",
     "pascal_probabilities",
-    "PlinkoEngine",
+    "Plinko",
 ]
 
 RISKS: Tuple[str, ...] = ("low", "medium", "high")
 MIN_ROWS = 8
 MAX_ROWS = 16  # == sq_rng.EVENT_COUNTS["plinko"]
+
+# 1M drops x up-to-16 float64 columns keeps per-chunk arrays ~128 MB
+# (well under the project's 500 MB budget even with the floor/int64
+# temporaries alive at the same time).
+_SIM_CHUNK_ROUNDS = 1_000_000
 
 # ---------------------------------------------------------------------------
 # The 27-config multiplier grid (Stake Originals / BGAMING, x bet).
@@ -132,11 +137,17 @@ def pascal_probabilities(rows: int) -> np.ndarray:
     return np.asarray(t, dtype=np.float64)
 
 
-class PlinkoEngine:
-    """One (risk, rows) Plinko configuration.
+class Plinko:
+    """Plinko engine for ONE configuration (risk, rows), one unit staked.
 
-    >>> eng = PlinkoEngine(rows=16, risk="medium")
-    >>> eng.result()["rtp"]            # doctest: +ELLIPSIS
+    Provides the standard engine contract:
+
+    (a) analytic paytable / probability / RTP / variance,
+    (b) provably-fair single-round play on the scalar RNG path,
+    (c) a vectorized :class:`BulkRng` simulator for 10M+ rounds,
+    (d) the standard result dict {rtp, house_edge, std_per_unit, config}.
+
+    >>> Plinko(rows=16, risk="medium").rtp     # doctest: +ELLIPSIS
     0.9898...
 
     Besides the 27-config Stake/BGAMING grid, :meth:`from_table` builds an
@@ -157,7 +168,7 @@ class PlinkoEngine:
         self._init_common(rows, risk, _full_table(PAYTABLES[(risk, rows)], rows))
 
     @classmethod
-    def from_table(cls, payouts, label: str = "custom") -> "PlinkoEngine":
+    def from_table(cls, payouts, label: str = "custom") -> "Plinko":
         """Engine from an explicit full pocket multiplier array.
 
         ``payouts`` is the length-(rows + 1) pocket array, edge to edge;
@@ -165,8 +176,7 @@ class PlinkoEngine:
         model and analytic surface as the grid configs (used to check the
         WoO CryptoGames / BetFury published RTP + SD figures).  The
         vectorized provably-fair simulator still requires 8..16 rows (the
-        verified rng contract); analytic math and the fast simulator work
-        for any rows >= 1.
+        verified rng contract); analytic math works for any rows >= 1.
         """
         arr = np.asarray(payouts, dtype=np.float64)
         if arr.ndim != 1 or arr.size < 2:
@@ -185,16 +195,25 @@ class PlinkoEngine:
         self.risk = risk
         self.payouts: np.ndarray = payouts
         self.payouts.setflags(write=False)
+        # Exact rational copies (Fraction over the shortest decimal repr, which
+        # round-trips every published table entry) so every analytic quantity
+        # below is exact; floats only at the API edge.
+        self._mult_exact: Tuple[Fraction, ...] = tuple(
+            Fraction(str(float(m))) for m in payouts
+        )
         # exact binomial pocket probabilities: C(rows, k) / 2**rows
+        self._prob_exact: Tuple[Fraction, ...] = tuple(
+            Fraction(math.comb(rows, k), 2 ** rows) for k in range(rows + 1)
+        )
         self._combinations = np.asarray(
             [math.comb(rows, k) for k in range(rows + 1)], dtype=np.float64
         )
         self.probabilities: np.ndarray = self._combinations / float(2 ** rows)
         self.probabilities.setflags(write=False)
 
-    # ------------------------------------------------------------------ #
-    # (a) analytic paytable / probability / RTP / variance
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # (a) analytics — exact rational arithmetic, converted at the edge
+    # ------------------------------------------------------------------
 
     @property
     def pockets(self) -> int:
@@ -209,29 +228,51 @@ class PlinkoEngine:
                 "combinations": int(self._combinations[k]),
                 "probability": float(self.probabilities[k]),
                 "multiplier": float(self.payouts[k]),
-                "return": float(self.probabilities[k] * self.payouts[k]),
+                "return": float(self._prob_exact[k] * self._mult_exact[k]),
             }
             for k in range(self.pockets)
         ]
 
+    @property
+    def rtp_exact(self) -> Fraction:
+        """Exact analytic RTP: sum_k C(rows,k)/2^rows * multiplier_k."""
+        return sum(
+            (p * m for p, m in zip(self._prob_exact, self._mult_exact)),
+            Fraction(0),
+        )
+
+    @property
     def rtp(self) -> float:
-        """Expected multiplier per unit bet: sum p_k * m_k (exact float64 dot
-        of exact binomial probabilities against the published table)."""
-        return float(self.probabilities @ self.payouts)
+        return float(self.rtp_exact)
 
+    @property
     def house_edge(self) -> float:
-        return 1.0 - self.rtp()
+        return float(1 - self.rtp_exact)
 
-    def variance(self) -> float:
-        """Per-drop variance of the multiplier, per unit bet."""
-        mean = self.rtp()
-        second = float(self.probabilities @ (self.payouts ** 2))
-        return second - mean * mean
+    @property
+    def variance_exact(self) -> Fraction:
+        """Exact Var of the for-one payout X per unit staked: E[X^2] - EV^2
+        (identical to the variance of the NET result X - 1, matching the WoO
+        per-unit SD convention)."""
+        ex2 = sum(
+            (p * m * m for p, m in zip(self._prob_exact, self._mult_exact)),
+            Fraction(0),
+        )
+        return ex2 - self.rtp_exact * self.rtp_exact
 
+    @property
+    def variance_per_unit(self) -> float:
+        return float(self.variance_exact)
+
+    @property
     def std_per_unit(self) -> float:
         """Per-drop standard deviation of the multiplier, per unit bet
         (the WoO 'standard deviation' convention)."""
-        return math.sqrt(self.variance())
+        return math.sqrt(self.variance_per_unit)
+
+    @property
+    def max_multiplier(self) -> float:
+        return float(max(self._mult_exact))
 
     def config(self) -> Dict[str, object]:
         return {
@@ -244,29 +285,42 @@ class PlinkoEngine:
                         for x in self.payouts],
         }
 
-    def result(self) -> Dict[str, object]:
-        """Standard analytic result dict."""
+    def analytic_summary(self) -> Dict[str, object]:
+        """Standard result dict, analytic (no simulation)."""
         return {
-            "rtp": self.rtp(),
-            "house_edge": self.house_edge(),
-            "std_per_unit": self.std_per_unit(),
+            "rtp": self.rtp,
+            "house_edge": self.house_edge,
+            "std_per_unit": self.std_per_unit,
             "config": self.config(),
         }
 
-    # ------------------------------------------------------------------ #
-    # (b) provably-fair single round (spinquest_sim.rng scalar path)
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # (b) provably-fair single round (scalar verification path)
+    # ------------------------------------------------------------------
 
-    def play(
+    def play_round(
         self,
         server_seed: str,
         client_seed: str,
         nonce: int,
         bet: float = 1.0,
     ) -> Dict[str, object]:
-        """One verifiable drop: ``rows`` floats from cursor 0 of the bet's
-        HMAC-SHA256 stream; ``direction = floor(float * 2)``; the landing
-        pocket is the count of rights."""
+        """Play one verifiable drop: ``rows`` floats from cursor 0 of the
+        bet's HMAC-SHA256 stream; ``direction = floor(float * 2)``; the
+        landing pocket is the count of rights.  The directions come from the
+        critic-verified scalar RNG port of Stake's published verifier; the
+        returned dict carries everything needed to re-verify the round
+        externally."""
+        if not isinstance(server_seed, str) or not server_seed:
+            raise ValueError(
+                "server_seed must be a non-empty string (Stake publishes a "
+                "64-character hex seed; an empty seed is not a reachable state)"
+            )
+        nonce = sq_rng._check_nonce(nonce)
+        if nonce < 0:
+            raise ValueError(
+                f"nonce must be >= 0 (it counts bets made), got {nonce}"
+            )
         bet = float(bet)
         if not math.isfinite(bet) or bet < 0:
             raise ValueError(f"bet must be a finite value >= 0, got {bet!r}")
@@ -293,86 +347,114 @@ class PlinkoEngine:
             "payout": float(bet) * multiplier,
         }
 
-    # ------------------------------------------------------------------ #
-    # (c) vectorized simulators
-    # ------------------------------------------------------------------ #
-
-    def _summarize(self, counts: np.ndarray, n: int) -> Dict[str, object]:
-        """Empirical result dict from per-pocket landing counts."""
-        counts = np.asarray(counts, dtype=np.int64)
-        total_payout = float(counts @ self.payouts)
-        emp_rtp = total_payout / n
-        emp_second = float(counts @ (self.payouts ** 2)) / n
-        emp_var = max(emp_second - emp_rtp * emp_rtp, 0.0)
-        analytic = self.result()
-        se = self.std_per_unit() / math.sqrt(n)
-        return {
-            "rtp": emp_rtp,
-            "house_edge": 1.0 - emp_rtp,
-            "std_per_unit": math.sqrt(emp_var),
-            "config": self.config(),
-            "rounds": int(n),
-            "pocket_counts": counts.tolist(),
-            "analytic_rtp": analytic["rtp"],
-            "rtp_standard_error": se,
-            "rtp_z": (emp_rtp - analytic["rtp"]) / se if se > 0 else 0.0,
-        }
+    # ------------------------------------------------------------------
+    # (c) vectorized simulator
+    # ------------------------------------------------------------------
 
     def simulate(
         self,
         n_rounds: int,
-        seed: Optional[int] = None,
-        chunk: int = 20_000_000,
+        bulk: Optional[BulkRng] = None,
+        chunk_rounds: int = _SIM_CHUNK_ROUNDS,
+        progress: bool = True,
     ) -> Dict[str, object]:
-        """Fast Monte-Carlo of ``n_rounds`` drops using numpy PCG64.
+        """Simulate ``n_rounds`` provably-fair drops (one nonce per drop) on
+        the vectorized :class:`BulkRng` stream and return the standard result
+        dict.
 
-        Model-identical to the provably-fair path: the pocket is a
-        Binomial(rows, 0.5) draw (the per-row 50/50 directions summed).
-        Memory-bounded: works in chunks of ``chunk`` int8 draws (<500 MB).
+        Chunked so per-chunk arrays stay well under 500 MB (the campaign is
+        accumulated as a per-pocket ``np.bincount`` histogram); prints
+        progress for long campaigns.  Row i of the campaign is bit-for-bit
+        verifiable against the scalar path at nonce ``nonce_start + i``.
+        Empirical RTP and SD are computed from the histogram in exact
+        arithmetic.
         """
-        if n_rounds < 1:
-            raise ValueError("n_rounds must be >= 1")
-        if chunk < 1:
-            raise ValueError(f"chunk must be >= 1, got {chunk}")
-        gen = np.random.default_rng(seed)
+        if n_rounds <= 0:
+            raise ValueError("n_rounds must be positive")
+        if chunk_rounds < 1:
+            raise ValueError(f"chunk_rounds must be >= 1, got {chunk_rounds}")
+        if not MIN_ROWS <= self.rows <= MAX_ROWS:
+            raise ValueError(
+                f"the provably-fair stream covers {MIN_ROWS}..{MAX_ROWS} "
+                f"rows, got {self.rows}"
+            )
+        rng = bulk if bulk is not None else BulkRng()
+        nonce_first = rng.nonce_next
         counts = np.zeros(self.pockets, dtype=np.int64)
         done = 0
+        t0 = time.perf_counter()
         while done < n_rounds:
-            step = min(chunk, n_rounds - done)
-            pockets = gen.binomial(self.rows, 0.5, size=step)
+            step = min(chunk_rounds, n_rounds - done)
+            pockets = rng.plinko_directions(self.rows, step).sum(axis=1)
             counts += np.bincount(pockets, minlength=self.pockets)
             done += step
-            if n_rounds > chunk:
-                print(f"plinko simulate[{self.risk}/{self.rows}]: "
-                      f"{done:,}/{n_rounds:,}", flush=True)
-        out = self._summarize(counts, n_rounds)
-        out["simulator"] = "numpy-pcg64-binomial"
-        return out
+            if progress and n_rounds > chunk_rounds:
+                rate = done / (time.perf_counter() - t0)
+                print(
+                    f"  plinko {self.risk}/{self.rows}: "
+                    f"{done:,}/{n_rounds:,} drops ({rate:,.0f}/s)",
+                    flush=True,
+                )
+        elapsed = time.perf_counter() - t0
+        return self.summarize_counts(
+            counts,
+            elapsed_s=elapsed,
+            verification={
+                "server_seed_hash": rng.server_seed_hash,
+                "client_seed": rng.client_seed,
+                "nonce_range": (nonce_first, rng.nonce_next),
+            },
+        )
 
-    def simulate_provably_fair(
+    def summarize_counts(
         self,
-        n_rounds: int,
-        bulk: Optional[sq_rng.BulkRng] = None,
-        server_seed: Optional[str] = None,
-        client_seed: str = "spinquest",
-        nonce_start: int = 0,
+        pocket_counts: np.ndarray,
+        elapsed_s: Optional[float] = None,
+        verification: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
-        """Monte-Carlo on the REAL provably-fair HMAC-SHA256 stream
-        (:class:`spinquest_sim.rng.BulkRng`): one bet per nonce, ``rows``
-        floats per bet, every row bit-reproducible by :meth:`play` at its
-        nonce.  ~1M+ digests/s; internally chunked by BulkRng."""
-        if n_rounds < 1:
-            raise ValueError("n_rounds must be >= 1")
-        if bulk is None:
-            bulk = sq_rng.BulkRng(
-                server_seed=server_seed,
-                client_seed=client_seed,
-                nonce_start=nonce_start,
+        """Standard result dict from per-pocket landing counts (also used by
+        the validation script, which settles all three risk settings against
+        one shared direction stream per row count).
+
+        Aggregation is exact: the total payout and its square are summed as
+        rationals over the histogram, so empirical RTP/SD carry no float
+        accumulation error.
+        """
+        pocket_counts = np.asarray(pocket_counts, dtype=np.int64)
+        if pocket_counts.shape != (self.pockets,):
+            raise ValueError(
+                f"expected {self.pockets} pocket counts, got {pocket_counts.shape}"
             )
-        directions = bulk.plinko_directions(self.rows, n_rounds)
-        pockets = directions.sum(axis=1)
-        counts = np.bincount(pockets, minlength=self.pockets)
-        out = self._summarize(counts, n_rounds)
-        out["simulator"] = "provably-fair-hmac-sha256"
-        out["verification"] = bulk.verification_params()
+        n = int(pocket_counts.sum())
+        if n <= 0:
+            raise ValueError("no rounds in pocket_counts")
+        counts = [int(c) for c in pocket_counts]
+        total = sum(m * c for m, c in zip(self._mult_exact, counts))
+        total_sq = sum(m * m * c for m, c in zip(self._mult_exact, counts))
+        rtp_emp = float(Fraction(total) / n)
+        var_emp = float(Fraction(total_sq) / n) - rtp_emp ** 2
+        std_emp = math.sqrt(max(var_emp, 0.0))
+        se_analytic = self.std_per_unit / math.sqrt(n)
+        z = (rtp_emp - self.rtp) / se_analytic if se_analytic > 0 else 0.0
+        out: Dict[str, object] = {
+            "rtp": rtp_emp,
+            "house_edge": 1.0 - rtp_emp,
+            "std_per_unit": std_emp,
+            "config": self.config(),
+            "n_rounds": n,
+            "pocket_counts": counts,
+            "total_payout": float(total),
+            "analytic_rtp": self.rtp,
+            "analytic_std_per_unit": self.std_per_unit,
+            "se_rtp": se_analytic,
+            "z_score": z,
+            "within_3se": abs(z) <= 3.0,
+        }
+        if elapsed_s is not None:
+            out["elapsed_s"] = elapsed_s
+            out["rounds_per_sec"] = (
+                n / elapsed_s if elapsed_s > 0 else float("inf")
+            )
+        if verification is not None:
+            out["verification"] = verification
         return out

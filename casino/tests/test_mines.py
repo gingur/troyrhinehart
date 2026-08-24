@@ -47,12 +47,31 @@ CLIENT = "test-mines-client"
 # ---------------------------------------------------------------------------
 
 class TestStakeTable:
-    def test_all_300_cells_match_reference(self):
+    def test_all_300_cells_match_reference_string_exact(self):
+        # Zero tolerance: our rendered display string must equal the
+        # published cell string verbatim in all 300 cells.
         ref = VAL.parse_stake_table()
         assert len(ref) == 300
-        for (m, k), ref_val in ref.items():
-            ours = multiplier(m, k)
-            assert abs(ours - ref_val) <= VAL.DISPLAY_TOL, (m, k, ours, ref_val)
+        for (m, k), ref_cell in ref.items():
+            assert VAL.render_cell(m, k) == ref_cell, (m, k, ref_cell)
+
+    def test_display_is_the_float64_reduce_payout_is_exact(self):
+        # Display path replays Stake's left-to-right float64 accumulation;
+        # payout/RTP math stays on the exact rational, and the two never
+        # drift more than 1e-14 relative.
+        for m in range(1, 25):
+            for k in range(1, 25 - m + 1):
+                a = 0.99
+                for i in range(k):
+                    a = a * (25 - i) / (25 - m - i)
+                assert mines_mod.multiplier_display_float(m, k) == a
+                assert display_multiplier(m, k) == round(a, 2)
+                exact = multiplier(m, k)
+                assert abs(a - exact) / exact < 1e-14
+                # payout path untouched by the display reduce
+                assert multiplier_exact(m, k) * win_probability_exact(
+                    m, k
+                ) == Fraction(99, 100)
 
     def test_published_spot_checks(self):
         # Verbatim spot checks from references/stake/mines.md section 7.
@@ -79,10 +98,43 @@ class TestStakeTable:
                 assert game.rtp == pytest.approx(0.99, abs=1e-15)
                 assert game.house_edge == pytest.approx(0.01, abs=1e-15)
 
-    def test_symmetry_in_mines_and_picks(self):
-        # C(25,k)/C(25-m,k) is symmetric in (m, k).
-        assert multiplier_exact(9, 15) == multiplier_exact(15, 9)
-        assert multiplier_exact(7, 17) == multiplier_exact(17, 7)
+    # The reference's 7 internally asymmetric cell-pairs: the exact rational
+    # is symmetric in (m, k), but Stake's displayed table prints a different
+    # cent on each side because its client accumulates the product left to
+    # right in float64.  Our DISPLAYED table must reproduce the asymmetry
+    # verbatim (round-half-even of the exact value gets 7 cells wrong).
+    ASYMMETRIC_PAIRS = [
+        ((1, 7), "1.37x", (7, 1), "1.38x"),
+        ((1, 15), "2.47x", (15, 1), "2.48x"),
+        ((1, 23), "12.37x", (23, 1), "12.38x"),
+        ((2, 9), "2.47x", (9, 2), "2.48x"),
+        ((5, 15), "208.72x", (15, 5), "208.73x"),
+        ((7, 17), "59,486.63x", (17, 7), "59,486.62x"),
+        ((9, 15), "202,254.53x", (15, 9), "202,254.52x"),
+    ]
+
+    def test_reference_has_exactly_these_asymmetric_pairs(self):
+        ref = VAL.parse_stake_table()
+        found = sorted(
+            (mk, (mk[1], mk[0]))
+            for mk in ref
+            if mk[0] < mk[1] and (mk[1], mk[0]) in ref
+            and ref[mk] != ref[(mk[1], mk[0])]
+        )
+        assert found == [(a, b) for a, _, b, _ in self.ASYMMETRIC_PAIRS]
+
+    def test_displayed_table_reproduces_reference_asymmetry(self):
+        ref = VAL.parse_stake_table()
+        for (m1, k1), cell1, (m2, k2), cell2 in self.ASYMMETRIC_PAIRS:
+            # the exact math IS symmetric — the asymmetry is display-only
+            assert multiplier_exact(m1, k1) == multiplier_exact(m2, k2)
+            # the published table really prints these strings
+            assert ref[(m1, k1)] == cell1
+            assert ref[(m2, k2)] == cell2
+            # and our displayed table reproduces both sides verbatim
+            assert VAL.render_cell(m1, k1) == cell1
+            assert VAL.render_cell(m2, k2) == cell2
+            assert display_multiplier(m1, k1) != display_multiplier(m2, k2)
 
 
 class TestWooMethodology:

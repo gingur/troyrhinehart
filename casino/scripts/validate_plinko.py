@@ -34,23 +34,30 @@ Checks, in order:
              not evaluate to it).  11 independently published figures.
 5. BINOM   — probabilities are exactly C(rows, k)/2^rows and equal Stake's
              own shipped Pascal helper (WoO binomial path methodology).
-6. EMPIRICAL — 10,000,000 drops per config, all 27 configs (fast vectorized
-             binomial simulator, model-identical to the path math):
-             |empirical RTP - analytic RTP| < 3 SE, SE = std_per_unit/sqrt(N).
-7. PROV-FAIR — 10,000,000 drops per config on the REAL HMAC-SHA256
-             provably-fair stream (BulkRng, floor(float*2) per row) for
-             low/8, medium/16 and high/16: each within 3 SE; plus sample
-             rounds bit-reproduced through the scalar verifier
-             (engine.play) and a full first-1000 histogram replay.
+6. EMPIRICAL — 10,000,000 drops per row count (8..16), every drop on the
+             REAL HMAC-SHA256 provably-fair stream (BulkRng, chunked
+             floor(float*2) per row) — 90M real rounds total.  The pocket
+             depends only on the row count, so each 10M-drop direction
+             stream is settled against all three risk tables
+             (Plinko.summarize_counts), giving all 27 configs 10M real
+             rounds each: |empirical RTP - analytic RTP| < 3 SE,
+             SE = std_per_unit/sqrt(N).
+7. PROV-FAIR replay — for low/8, medium/16 and high/16: sample rounds of
+             the section-6 campaigns bit-reproduced through the scalar
+             verifier (engine.play_round), a full first-1000 histogram
+             replay, and chunk-size invariance of simulate().
+8. MEM     — peak RSS of this whole process stays under the project's
+             500 MB chunk budget (the round-4 critic measured 2.5 GB for
+             an unchunked 10M-drop campaign; the chunked simulator must
+             never come close).
 
 Prints a machine-readable summary (one "CHECK|..." line per check, final
 "RESULT|PASS|..." / "RESULT|FAIL|..." line). Exactly one RESULT line is
 always printed — even on an unexpected exception, which yields
 "RESULT|FAIL|error=..." — and the exit code is 0 iff every check passed.
 
-Usage: validate_plinko.py [--rounds N] [--pf-rounds N]
-  --rounds     drops per config for the fast empirical check (default 10M)
-  --pf-rounds  drops per config for the provably-fair stream check (default 10M)
+Usage: validate_plinko.py [--rounds N]
+  --rounds  drops per row-count stream for the empirical check (default 10M)
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import resource
 import sys
 import time
 import traceback
@@ -72,7 +80,7 @@ from spinquest_sim.games.plinko import (
     MAX_ROWS,
     MIN_ROWS,
     PAYTABLES,
-    PlinkoEngine,
+    Plinko,
     RISKS,
     pascal_probabilities,
 )
@@ -142,8 +150,14 @@ WOO_BETFURY = {
 }
 
 N_EMPIRICAL = 10_000_000
-N_PROVABLY_FAIR = 10_000_000
-PROVABLY_FAIR_CONFIGS = [("low", 8), ("medium", 16), ("high", 16)]
+REPLAY_CONFIGS = [("low", 8), ("medium", 16), ("high", 16)]
+CLIENT_SEED = "validate-plinko"
+MEM_BUDGET_MB = 500.0
+
+
+def _stream_seed(rows: int) -> str:
+    """Distinct 64-hex server seed per row-count stream."""
+    return f"{rows:02x}9b" * 16
 
 ALL_CONFIGS = [(risk, rows) for risk in RISKS
                for rows in range(MIN_ROWS, MAX_ROWS + 1)]
@@ -226,9 +240,9 @@ def parse_woo(text: str) -> dict:
     return out
 
 
-def main(n_empirical: int, n_provably_fair: int) -> int:
+def main(n_empirical: int) -> int:
     t0 = time.time()
-    engines = {cfg: PlinkoEngine(rows=cfg[1], risk=cfg[0]) for cfg in ALL_CONFIGS}
+    engines = {cfg: Plinko(rows=cfg[1], risk=cfg[0]) for cfg in ALL_CONFIGS}
 
     # 0. REFPARSE: hardcoded reference constants == the reference .md files --
     stake_md = (REFERENCES / "stake" / "plinko.md").read_text()
@@ -297,7 +311,7 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
           str(engines[("high", 16)].payouts.tolist()))
 
     for cfg in ALL_CONFIGS:
-        rtp_pct = round(100 * engines[cfg].rtp(), 2)
+        rtp_pct = round(100 * engines[cfg].rtp, 2)
         pub = WOO_RTP_PCT[cfg]
         diff = round(rtp_pct - pub, 2)
         if cfg[0] in ("medium", "high"):
@@ -314,38 +328,37 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
 
     # 4. XTAB: WoO CryptoGames + BetFury published RTP/SD via from_table ---
     for name, (table, pub_rtp, pub_sd) in WOO_CRYPTOGAMES.items():
-        eng = PlinkoEngine.from_table(table, label=f"cryptogames-{name}")
-        rtp_pct = round(100 * eng.rtp(), 2)
-        sd6 = round(eng.std_per_unit(), 6)
+        eng = Plinko.from_table(table, label=f"cryptogames-{name}")
+        rtp_pct = round(100 * eng.rtp, 2)
+        sd6 = round(eng.std_per_unit, 6)
         check(f"xtab.cryptogames_{name}.rtp", abs(rtp_pct - pub_rtp) < 1e-9,
               f"analytic={rtp_pct:.2f}% woo={pub_rtp:.2f}%")
         check(f"xtab.cryptogames_{name}.sd", abs(sd6 - pub_sd) < 1e-9,
               f"analytic_sd={sd6:.6f} woo_sd={pub_sd:.6f}")
     for name in ("green", "red"):
         table, pub_rtp = WOO_BETFURY[name]
-        eng = PlinkoEngine.from_table(table, label=f"betfury-{name}")
-        rtp_pct = round(100 * eng.rtp(), 2)
+        eng = Plinko.from_table(table, label=f"betfury-{name}")
+        rtp_pct = round(100 * eng.rtp, 2)
         check(f"xtab.betfury_{name}.rtp", abs(rtp_pct - pub_rtp) < 1e-9,
               f"analytic={rtp_pct:.2f}% woo={pub_rtp:.2f}%")
     # BetFury Blue: the reference page's printed table does NOT evaluate to
     # the RTP printed beside it (97.88%) — it evaluates to 97.5018%.  Assert
     # the true value of the printed table, surfacing the page's own defect.
-    bf_blue = PlinkoEngine.from_table(WOO_BETFURY["blue"][0],
-                                      label="betfury-blue")
-    blue_pct4 = round(100 * bf_blue.rtp(), 4)
+    bf_blue = Plinko.from_table(WOO_BETFURY["blue"][0], label="betfury-blue")
+    blue_pct4 = round(100 * bf_blue.rtp, 4)
     check("xtab.betfury_blue.reference_self_inconsistency",
           abs(blue_pct4 - 97.5018) < 1e-9,
           f"printed_table_evaluates_to={blue_pct4:.4f}% "
           f"page_prints={WOO_BETFURY['blue'][1]:.2f}% "
           f"(reference-internal defect; corroborates the Low-column caveat)")
     # BetFury Red is the Stake 16/high table — both constructors must agree.
-    bf_red = PlinkoEngine.from_table(WOO_BETFURY["red"][0], label="betfury-red")
+    bf_red = Plinko.from_table(WOO_BETFURY["red"][0], label="betfury-red")
     g16h = engines[("high", 16)]
     check("xtab.betfury_red_equals_stake_high16",
           bf_red.payouts.tolist() == g16h.payouts.tolist()
-          and bf_red.rtp() == g16h.rtp()
-          and bf_red.std_per_unit() == g16h.std_per_unit(),
-          f"rtp={100 * bf_red.rtp():.4f}% sd={bf_red.std_per_unit():.6f}")
+          and bf_red.rtp == g16h.rtp
+          and bf_red.std_per_unit == g16h.std_per_unit,
+          f"rtp={100 * bf_red.rtp:.4f}% sd={bf_red.std_per_unit:.6f}")
 
     # 5. BINOM -------------------------------------------------------------
     for rows in range(MIN_ROWS, MAX_ROWS + 1):
@@ -358,56 +371,61 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
         check(f"binom.rows{rows}", ok,
               f"P(edge)=1/{2 ** rows} pascal_helper=match")
 
-    # 6. EMPIRICAL: 10M drops per config, all 27 ---------------------------
-    print(f"# empirical: {n_empirical:,} drops x {len(ALL_CONFIGS)} configs "
-          f"(fast vectorized binomial simulator)", flush=True)
+    # 6. EMPIRICAL: 10M real provably-fair drops per row count, all 27 -----
+    n_streams = MAX_ROWS - MIN_ROWS + 1
+    print(f"# empirical: {n_empirical:,} drops x {n_streams} row counts on "
+          f"the real HMAC-SHA256 provably-fair stream (floor(float*2) per "
+          f"row), each stream settled against all 3 risk tables", flush=True)
     total_rounds = 0
     t_emp = time.time()
     worst_z = 0.0
-    for i, cfg in enumerate(ALL_CONFIGS):
-        eng = engines[cfg]
-        sim = eng.simulate(n_empirical, seed=20260824 + i)
-        z = sim["rtp_z"]
-        worst_z = max(worst_z, abs(z))
-        total_rounds += sim["rounds"]
-        check(f"empirical.{cfg[0]}/{cfg[1]}", abs(z) < 3.0,
-              f"n={sim['rounds']:,} emp_rtp={sim['rtp']:.6f} "
-              f"analytic={sim['analytic_rtp']:.6f} "
-              f"se={sim['rtp_standard_error']:.2e} z={z:+.2f} "
-              f"emp_sd={sim['std_per_unit']:.4f} sd={eng.std_per_unit():.4f}")
+    for rows in range(MIN_ROWS, MAX_ROWS + 1):
+        bulk = sq_rng.BulkRng(server_seed=_stream_seed(rows),
+                              client_seed=CLIENT_SEED, nonce_start=0)
+        t_rows = time.time()
+        # one shared direction stream per row count: the landing pocket is a
+        # pure function of the rows floats, so all three risks settle the
+        # identical verifiable campaign (the Wheel-validator pattern)
+        lead = engines[("low", rows)].simulate(n_empirical, bulk=bulk,
+                                               progress=False)
+        rows_secs = time.time() - t_rows
+        counts = np.asarray(lead["pocket_counts"], dtype=np.int64)
+        total_rounds += lead["n_rounds"]
+        for risk in RISKS:
+            eng = engines[(risk, rows)]
+            sim = (lead if risk == "low"
+                   else eng.summarize_counts(counts,
+                                             verification=lead["verification"]))
+            z = sim["z_score"]
+            worst_z = max(worst_z, abs(z))
+            check(f"empirical.{risk}/{rows}",
+                  sim["within_3se"] and sim["n_rounds"] == n_empirical,
+                  f"n={sim['n_rounds']:,} emp_rtp={sim['rtp']:.6f} "
+                  f"analytic={sim['analytic_rtp']:.6f} "
+                  f"se={sim['se_rtp']:.2e} z={z:+.2f} "
+                  f"emp_sd={sim['std_per_unit']:.4f} "
+                  f"sd={eng.std_per_unit:.4f} "
+                  f"({lead['n_rounds'] / rows_secs:,.0f} rounds/s)")
     emp_secs = time.time() - t_emp
     rps = total_rounds / emp_secs
-    print(f"# empirical throughput: {total_rounds:,} rounds in {emp_secs:.1f}s "
-          f"= {rps:,.0f} rounds/s", flush=True)
+    print(f"# empirical throughput: {total_rounds:,} provably-fair rounds in "
+          f"{emp_secs:.1f}s = {rps:,.0f} rounds/s", flush=True)
 
-    # 7. PROVABLY FAIR stream (BulkRng): 10M drops per config --------------
-    print(f"# provably-fair: {n_provably_fair:,} drops x "
-          f"{len(PROVABLY_FAIR_CONFIGS)} configs on the real HMAC-SHA256 "
-          f"stream (floor(float*2) per row)", flush=True)
-    client_seed = "validate-plinko"
-    pf_total = 0
-    pf_worst_z = 0.0
-    t_pf_all = time.time()
-    for j, cfg in enumerate(PROVABLY_FAIR_CONFIGS):
+    # 7. PROV-FAIR replay: scalar/bulk bit-identity + chunk invariance -----
+    print(f"# provably-fair replay: {len(REPLAY_CONFIGS)} configs, sample "
+          f"nonces + first-1000 histograms through engine.play_round",
+          flush=True)
+    for cfg in REPLAY_CONFIGS:
         eng = engines[cfg]
-        server_seed = f"{j:02x}9b" * 16  # distinct 64-hex seed per config
-        t_pf = time.time()
-        bulk = sq_rng.BulkRng(server_seed=server_seed, client_seed=client_seed,
-                              nonce_start=0)
-        pf = eng.simulate_provably_fair(n_provably_fair, bulk=bulk)
-        pf_secs = time.time() - t_pf
-        pf_total += pf["rounds"]
-        pf_worst_z = max(pf_worst_z, abs(pf["rtp_z"]))
-        check(f"provfair.{cfg[0]}/{cfg[1]}_within_3se", abs(pf["rtp_z"]) < 3.0,
-              f"n={pf['rounds']:,} emp_rtp={pf['rtp']:.6f} "
-              f"analytic={pf['analytic_rtp']:.6f} "
-              f"se={pf['rtp_standard_error']:.2e} z={pf['rtp_z']:+.2f} "
-              f"({pf['rounds'] / pf_secs:,.0f} rounds/s)")
-        # bit-reproduce sample rounds through the scalar verifier: engine.play
-        # floats/pocket must equal the stream's own verifier spot-checks
+        server_seed = _stream_seed(cfg[1])  # the section-6 campaign seeds
+        bulk = sq_rng.BulkRng(server_seed=server_seed,
+                              client_seed=CLIENT_SEED,
+                              nonce_start=0, workers=1)
+        # bit-reproduce sample campaign rounds through the scalar verifier:
+        # play_round floats/pocket must equal the stream's own spot checks
         replay_ok = True
-        for nonce in (0, 1, n_provably_fair // 2, n_provably_fair - 1):
-            r = eng.play(server_seed, client_seed, nonce)
+        for nonce in (0, 1, n_empirical // 2, n_empirical - 1):
+            r = eng.play_round(server_seed, CLIENT_SEED, nonce)
             expect = bulk.verify_floats(nonce, eng.rows)
             if r["floats"] != expect:
                 replay_ok = False
@@ -417,22 +435,38 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
         replay_counts = np.zeros(eng.pockets, dtype=np.int64)
         for nonce in range(1000):
             replay_counts[
-                eng.play(server_seed, client_seed, nonce)["pocket"]] += 1
-        bulk2 = sq_rng.BulkRng(server_seed=server_seed,
-                               client_seed=client_seed,
-                               nonce_start=0, workers=1)
-        d2 = bulk2.plinko_directions(eng.rows, 1000).sum(axis=1)
+                eng.play_round(server_seed, CLIENT_SEED, nonce)["pocket"]] += 1
+        d2 = bulk.plinko_directions(eng.rows, 1000).sum(axis=1)
         bulk_counts = np.bincount(d2, minlength=eng.pockets)
         replay_ok = replay_ok and np.array_equal(replay_counts, bulk_counts)
         check(f"provfair.{cfg[0]}/{cfg[1]}_scalar_bulk_bit_identical",
               replay_ok,
               f"first_1000_hist_match="
               f"{bool(np.array_equal(replay_counts, bulk_counts))} "
-              f"seed_hash={pf['verification']['server_seed_hash'][:16]}...")
-    pf_all_secs = time.time() - t_pf_all
-    pf_rps = pf_total / pf_all_secs
-    print(f"# provably-fair throughput: {pf_total:,} rounds in "
-          f"{pf_all_secs:.1f}s = {pf_rps:,.0f} rounds/s", flush=True)
+              f"seed_hash={bulk.server_seed_hash[:16]}...")
+        # chunk size must never change results, only peak memory
+        s1 = eng.simulate(
+            50_000, chunk_rounds=7_001, progress=False,
+            bulk=sq_rng.BulkRng(server_seed=server_seed,
+                                client_seed=CLIENT_SEED,
+                                nonce_start=0, workers=1))
+        s2 = eng.simulate(
+            50_000, progress=False,
+            bulk=sq_rng.BulkRng(server_seed=server_seed,
+                                client_seed=CLIENT_SEED,
+                                nonce_start=0, workers=1))
+        check(f"provfair.{cfg[0]}/{cfg[1]}_chunk_invariant",
+              s1["pocket_counts"] == s2["pocket_counts"]
+              and s1["n_rounds"] == s2["n_rounds"] == 50_000
+              and s1["verification"]["nonce_range"] == (0, 50_000),
+              f"counts_equal={s1['pocket_counts'] == s2['pocket_counts']} "
+              f"(chunk_rounds 7,001 vs one default chunk)")
+
+    # 8. MEM: peak RSS of this whole run (incl. the 90M-round campaigns) ---
+    peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    check("mem.peak_rss_under_500mb", peak_mb < MEM_BUDGET_MB,
+          f"peak_rss={peak_mb:.0f}MB budget={MEM_BUDGET_MB:.0f}MB "
+          f"(chunked simulate; round-4 critic measured 2,541MB unchunked)")
 
     # ----------------------------------------------------------------------
     # completeness guard: every planned check must actually have run
@@ -443,7 +477,8 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
                        + 4 * 2 + 2 + 1 + 1    # xtab
                        + 9                    # binom
                        + 27                   # empirical
-                       + 2 * len(PROVABLY_FAIR_CONFIGS)  # provfair
+                       + 2 * len(REPLAY_CONFIGS)  # provfair replay
+                       + 1                    # mem
                        + 1)                   # this meta check itself
     check("meta.all_planned_checks_ran", _checks_run == expected_checks - 1,
           f"ran={_checks_run + 1} expected={expected_checks}")
@@ -451,11 +486,10 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
     status = "PASS" if not failures else "FAIL"
     print(f"RESULT|{status}|configs=27|checks={_checks_run}|"
           f"passed={_checks_run - len(failures)}|"
-          f"empirical_rounds={total_rounds:,}|"
-          f"worst_abs_z={worst_z:.2f}|provfair_rounds={pf_total:,}|"
-          f"provfair_worst_abs_z={pf_worst_z:.2f}|"
-          f"fast_rounds_per_sec={rps:,.0f}|"
-          f"provfair_rounds_per_sec={pf_rps:,.0f}|"
+          f"provfair_rounds={total_rounds:,}|"
+          f"worst_abs_z={worst_z:.2f}|"
+          f"rounds_per_sec={rps:,.0f}|"
+          f"peak_rss_mb={peak_mb:.0f}|"
           f"failures={len(failures)}|elapsed={time.time() - t0:.1f}s")
     for f in failures:
         print(f"FAILURE|{f}")
@@ -465,12 +499,10 @@ def main(n_empirical: int, n_provably_fair: int) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rounds", type=int, default=N_EMPIRICAL,
-                        help="drops per config, fast empirical check")
-    parser.add_argument("--pf-rounds", type=int, default=N_PROVABLY_FAIR,
-                        help="drops per config, provably-fair stream check")
+                        help="drops per row-count stream, empirical check")
     args = parser.parse_args()
     try:
-        sys.exit(main(args.rounds, args.pf_rounds))
+        sys.exit(main(args.rounds))
     except SystemExit:
         raise
     except BaseException as exc:  # guarantee exactly one RESULT line
