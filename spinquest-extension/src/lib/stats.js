@@ -13,13 +13,24 @@ export const LIMITS = {
   MAX_TICKS: 100, // shared-outcome feed (crash points, roulette numbers)
   MAX_ARCHIVED_SESSIONS: 30,
   MAX_EVICTED_IDS: 600, // dedupe memory for rounds already evicted by the cap
-  MAX_KNOWN_ROUND_IDS: 2000, // cross-session dedupe memory (survives rotation)
+  MAX_KNOWN_ROUND_IDS: 2000, // cross-session dedupe memory, PER GAME (survives rotation)
+  MAX_KNOWN_GAMES: 16, // shards in the cross-session memory (least-recent evicted)
   SNAPSHOT_ROUNDS_TAIL: 120, // rounds included per session in a broadcast snapshot
+  // At/past this magnitude a "money" figure is a timestamp, an id, or garbage
+  // — and cents(1e308) would overflow to Infinity, violating the no-Infinity
+  // invariant one multiply past the sanitizer. Mirrors SQX.NUM_MAX upstream.
+  MAX_ABS_MONEY: 1e12,
+  MAX_ID_LEN: 128, // round ids longer than this are truncated (still deterministic)
+  MAX_DETAIL_JSON: 4096, // detail blobs serializing past this are dropped whole
 };
 
 export const round2 = (n) => Math.round(n * 100) / 100;
 const round1 = (n) => Math.round(n * 10) / 10;
 const isNum = Number.isFinite;
+// Money guard: finite AND inside the magnitude cap. Every money read in the
+// stats math uses this (not bare isNum) so even a legacy-persisted round with
+// an absurd figure can never overflow the cents math into Infinity.
+const isMoney = (n) => isNum(n) && Math.abs(n) < LIMITS.MAX_ABS_MONEY;
 const cents = (n) => Math.round(n * 100);
 
 export function createSession(game, now = Date.now()) {
@@ -79,30 +90,90 @@ export function hasRound(session, id) {
 // the site re-serves bet history, and every replayed round would land in the
 // fresh session, double-counting real bets (archived 20 + live 20). Replayed
 // history can't be caught by timestamps either — extractRound stamps capture
-// time, so a replay looks freshly timed. So the background keeps a global
-// capped FIFO of `game:id` keys for every round it has ever appended
-// (state.knownRounds, persisted with the rest of the state) and consults it
-// before appending, no matter which session the id first landed in.
+// time, so a replay looks freshly timed. So the background keeps a capped
+// FIFO of appended round ids (state.knownRounds, persisted with the rest of
+// the state) and consults it before appending, no matter which session the
+// id first landed in.
+//
+// The memory is SHARDED PER GAME: a single shared FIFO would let high-volume
+// autobet on one game evict another game's keys (2000 plinko drops arm that
+// in under 4 minutes at ~10/s), so its archived rounds would resurrect as
+// fresh live rounds on the next reload's history replay. Each game gets its
+// own FIFO capped at MAX_KNOWN_ROUND_IDS — same per-game bound, immune to
+// cross-game flooding — with the shard COUNT itself capped (hostile game
+// strings can't grow the state without bound; least-recently-written shard
+// evicted). Persisted shape (JSON-safe; a Set mirror per shard is cached in
+// a WeakMap and rebuilt after storage round-trips so lookups are O(1), not a
+// 2000-entry linear scan per round at autobet speed):
+//   knownRounds = { ['g:' + game]: { keys: [id, ...], t: lastWriteMs } }
+// ('g:' prefixing keeps hostile game names like "__proto__" inert.) The
+// legacy flat shape ({keys: ["game:id", ...]}) is read in place by
+// hasKnownRound and migrated to shards by the first rememberRound.
 
-/**
- * True when this game:id round was already appended to ANY session (current,
- * archived, or evicted) still inside the id-memory window.
- */
-export function hasKnownRound(log, game, id) {
-  if (id == null || !log || !Array.isArray(log.keys)) return false;
-  return log.keys.includes(game + ':' + id);
+const knownSets = new WeakMap(); // shard -> Set(ids), rebuilt on cache miss
+
+function shardSet(shard) {
+  let s = knownSets.get(shard);
+  if (!s || s.size !== shard.keys.length) {
+    s = new Set(shard.keys);
+    knownSets.set(shard, s);
+  }
+  return s;
+}
+
+function migrateKnownRounds(log) {
+  if (!log || typeof log !== 'object') return {};
+  if (!Array.isArray(log.keys)) return log; // already sharded
+  const sharded = {};
+  for (const key of log.keys) {
+    const i = typeof key === 'string' ? key.indexOf(':') : -1;
+    if (i <= 0) continue;
+    const g = 'g:' + key.slice(0, i);
+    const shard = sharded[g] || (sharded[g] = { keys: [], t: 0 });
+    shard.keys.push(key.slice(i + 1));
+  }
+  return sharded;
 }
 
 /**
- * Record an appended round's game:id in the global memory, evicting the
- * oldest past `max`. Returns the log (creating it when absent/legacy-shaped)
+ * True when this game's round id was already appended to ANY session
+ * (current, archived, or evicted) still inside that game's id-memory window.
+ */
+export function hasKnownRound(log, game, id) {
+  if (id == null || !log || typeof log !== 'object') return false;
+  if (Array.isArray(log.keys)) return log.keys.includes(game + ':' + id); // legacy flat shape
+  const shard = log['g:' + game];
+  if (!shard || !Array.isArray(shard.keys)) return false;
+  return shardSet(shard).has(String(id));
+}
+
+/**
+ * Record an appended round's id in its game's shard, evicting the oldest past
+ * `max`. Returns the log (creating/migrating it when absent or legacy-shaped)
  * so callers can assign it back: `state.knownRounds = rememberRound(...)`.
  */
-export function rememberRound(log, game, id, max = LIMITS.MAX_KNOWN_ROUND_IDS) {
+export function rememberRound(log, game, id, max = LIMITS.MAX_KNOWN_ROUND_IDS, now = Date.now()) {
   if (id == null) return log;
-  if (!log || !Array.isArray(log.keys)) log = { keys: [] };
-  log.keys.push(game + ':' + id);
-  while (log.keys.length > max) log.keys.shift();
+  log = migrateKnownRounds(log);
+  let shard = log['g:' + game];
+  if (!shard || !Array.isArray(shard.keys)) {
+    const games = Object.keys(log);
+    if (games.length >= LIMITS.MAX_KNOWN_GAMES) {
+      let oldest = null;
+      for (const g of games) {
+        if (oldest === null || (log[g].t || 0) < (log[oldest].t || 0)) oldest = g;
+      }
+      if (oldest !== null) delete log[oldest];
+    }
+    shard = log['g:' + game] = { keys: [], t: 0 };
+  }
+  shard.t = now;
+  const set = shardSet(shard);
+  const key = String(id);
+  if (set.has(key)) return log;
+  shard.keys.push(key);
+  set.add(key);
+  while (shard.keys.length > max) set.delete(shard.keys.shift());
   return log;
 }
 
@@ -114,21 +185,36 @@ export function rememberRound(log, game, id, max = LIMITS.MAX_KNOWN_ROUND_IDS) {
  * makes the "no NaN/Infinity/garbage in persisted rounds" invariant local to
  * one place instead of distributed across every consumer. Unknown fields are
  * dropped; malformed known fields are dropped (money) or defaulted (ts,
- * result) rather than poisoning storage.
+ * result) rather than poisoning storage. Bounds enforced here:
+ *  - money/multiplier magnitude < MAX_ABS_MONEY: a finite-but-absurd figure
+ *    (1e308) would overflow the cents math to Infinity one multiply later;
+ *  - id length ≤ MAX_ID_LEN (truncated, deterministically, so dedupe on the
+ *    truncated id still works) and detail ≤ MAX_DETAIL_JSON serialized (a
+ *    megabyte detail blob would burn the chrome.storage.local quota in a
+ *    handful of rounds and silently kill every later save).
  */
 export function sanitizeRound(raw, now = Date.now()) {
   const r = raw && typeof raw === 'object' ? raw : {};
+  let id = typeof r.id === 'string' || (typeof r.id === 'number' && isNum(r.id)) ? r.id : null;
+  if (typeof id === 'string' && id.length > LIMITS.MAX_ID_LEN) id = id.slice(0, LIMITS.MAX_ID_LEN);
   const round = {
-    id: typeof r.id === 'string' || (typeof r.id === 'number' && isNum(r.id)) ? r.id : null,
+    id,
     ts: isNum(r.ts) ? r.ts : now,
     result: r.result === 'win' || r.result === 'loss' || r.result === 'push' ? r.result : 'unknown',
   };
-  if (isNum(r.bet) && r.bet >= 0) round.bet = r.bet;
-  if (isNum(r.payout) && r.payout >= 0) round.payout = r.payout;
-  if (isNum(r.profit)) round.profit = r.profit;
-  if (isNum(r.multiplier) && r.multiplier >= 0) round.multiplier = r.multiplier;
+  if (isMoney(r.bet) && r.bet >= 0) round.bet = r.bet;
+  if (isMoney(r.payout) && r.payout >= 0) round.payout = r.payout;
+  if (isMoney(r.profit)) round.profit = r.profit;
+  if (isMoney(r.multiplier) && r.multiplier >= 0) round.multiplier = r.multiplier;
   if (typeof r.currency === 'string' && r.currency.length < 32) round.currency = r.currency;
-  if (r.detail && typeof r.detail === 'object' && !Array.isArray(r.detail)) round.detail = r.detail;
+  if (r.detail && typeof r.detail === 'object' && !Array.isArray(r.detail)) {
+    try {
+      const json = JSON.stringify(r.detail);
+      if (typeof json === 'string' && json.length <= LIMITS.MAX_DETAIL_JSON) round.detail = r.detail;
+    } catch {
+      // circular / hostile detail — dropped, the round itself survives
+    }
+  }
   return round;
 }
 
@@ -172,9 +258,9 @@ export function appendRound(session, round, max = LIMITS.MAX_ROUNDS_PER_SESSION)
     if (ev.result === 'win') c.wins++;
     else if (ev.result === 'loss') c.losses++;
     else if (ev.result === 'push') c.pushes++;
-    if (isNum(ev.bet)) c.wageredC += cents(ev.bet);
-    if (isNum(ev.payout)) c.returnedC += cents(ev.payout);
-    if (isNum(ev.profit)) {
+    if (isMoney(ev.bet)) c.wageredC += cents(ev.bet);
+    if (isMoney(ev.payout)) c.returnedC += cents(ev.payout);
+    if (isMoney(ev.profit)) {
       c.netC += cents(ev.profit);
       if (ev.profit > c.biggestWin) c.biggestWin = ev.profit;
       if (ev.profit < c.biggestLoss) c.biggestLoss = ev.profit;
@@ -228,9 +314,9 @@ export function computeStats(session, now = Date.now()) {
     if (r.result === 'win') stats.wins++;
     else if (r.result === 'loss') stats.losses++;
     else if (r.result === 'push') stats.pushes++;
-    if (isNum(r.bet)) wageredC += cents(r.bet);
-    if (isNum(r.payout)) returnedC += cents(r.payout);
-    if (isNum(r.profit)) {
+    if (isMoney(r.bet)) wageredC += cents(r.bet);
+    if (isMoney(r.payout)) returnedC += cents(r.payout);
+    if (isMoney(r.profit)) {
       const p = cents(r.profit);
       netC += p;
       cumC += p;

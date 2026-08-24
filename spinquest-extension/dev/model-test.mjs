@@ -428,14 +428,68 @@ test('known-round memory is per game and survives a null/legacy log shape', () =
   assert.equal(hasKnownRound(log, 'crash', null), false);
 });
 
-test('known-round memory: FIFO capped at MAX_KNOWN_ROUND_IDS', () => {
+test('known-round memory: per-game FIFO capped at MAX_KNOWN_ROUND_IDS', () => {
   let log;
   const n = LIMITS.MAX_KNOWN_ROUND_IDS + 7;
   for (let i = 0; i < n; i++) log = rememberRound(log, 'mines', 'm' + i);
-  assert.equal(log.keys.length, LIMITS.MAX_KNOWN_ROUND_IDS);
+  assert.equal(log['g:mines'].keys.length, LIMITS.MAX_KNOWN_ROUND_IDS);
   assert.equal(hasKnownRound(log, 'mines', 'm0'), false); // oldest evicted
   assert.equal(hasKnownRound(log, 'mines', 'm7'), true);
   assert.equal(hasKnownRound(log, 'mines', 'm' + (n - 1)), true);
+});
+
+test('known-round shards: flooding one game past the cap cannot evict another game\'s keys', () => {
+  // The round-3 bug: a single global 2000-key FIFO let 2000 plinko autobet
+  // rounds flush blackjack's replay protection. Shards make eviction per-game.
+  let log;
+  for (let i = 0; i < 20; i++) log = rememberRound(log, 'blackjack', 'bj-' + i);
+  const n = LIMITS.MAX_KNOWN_ROUND_IDS + 500;
+  for (let i = 0; i < n; i++) log = rememberRound(log, 'plinko', 'pk-' + i);
+  for (let i = 0; i < 20; i++) {
+    assert.equal(hasKnownRound(log, 'blackjack', 'bj-' + i), true, 'bj-' + i + ' must survive the plinko flood');
+  }
+  assert.equal(hasKnownRound(log, 'plinko', 'pk-0'), false); // plinko's own FIFO still evicts
+  assert.equal(hasKnownRound(log, 'plinko', 'pk-' + (n - 1)), true);
+});
+
+test('known-round memory: legacy flat shape reads in place and migrates on first write', () => {
+  const legacy = { keys: ['blackjack:h1', 'plinko:p1', 'plinko:p2'] };
+  assert.equal(hasKnownRound(legacy, 'blackjack', 'h1'), true);
+  assert.equal(hasKnownRound(legacy, 'plinko', 'h1'), false); // still game-scoped
+  const log = rememberRound(legacy, 'plinko', 'p3');
+  assert.equal(Array.isArray(log.keys), false); // sharded now
+  assert.equal(hasKnownRound(log, 'blackjack', 'h1'), true); // nothing lost in migration
+  assert.equal(hasKnownRound(log, 'plinko', 'p1'), true);
+  assert.equal(hasKnownRound(log, 'plinko', 'p3'), true);
+  assert.equal(hasKnownRound(log, 'blackjack', 'p1'), false);
+});
+
+test('known-round memory: shard count capped, hostile game names stay inert', () => {
+  let log;
+  for (let i = 0; i < LIMITS.MAX_KNOWN_GAMES + 5; i++) {
+    log = rememberRound(log, 'game' + i, 'x', LIMITS.MAX_KNOWN_ROUND_IDS, T0 + i);
+  }
+  assert.ok(Object.keys(log).length <= LIMITS.MAX_KNOWN_GAMES);
+  assert.equal(hasKnownRound(log, 'game' + (LIMITS.MAX_KNOWN_GAMES + 4), 'x'), true); // newest kept
+  assert.equal(hasKnownRound(log, 'game0', 'x'), false); // least-recently-written evicted
+  const evil = rememberRound(undefined, '__proto__', 'e1');
+  assert.equal(hasKnownRound(evil, '__proto__', 'e1'), true);
+  assert.equal({}.e1, undefined); // no prototype pollution through the game name
+  assert.equal(Object.getPrototypeOf(evil), Object.prototype);
+});
+
+test('known-round memory survives a JSON storage round-trip (Set cache rebuilt)', () => {
+  let log;
+  for (let i = 0; i < 50; i++) log = rememberRound(log, 'crash', 'c' + i);
+  log = rememberRound(log, 'crash', 42); // numeric ids coerce consistently
+  const revived = JSON.parse(JSON.stringify(log));
+  assert.equal(hasKnownRound(revived, 'crash', 'c0'), true);
+  assert.equal(hasKnownRound(revived, 'crash', 42), true);
+  assert.equal(hasKnownRound(revived, 'crash', '42'), true);
+  assert.equal(hasKnownRound(revived, 'crash', 'nope'), false);
+  const log2 = rememberRound(revived, 'crash', 'c50');
+  assert.equal(hasKnownRound(log2, 'crash', 'c50'), true);
+  assert.equal(log2['g:crash'].keys.length, 52);
 });
 
 // --- sanitizeRound (trust boundary) -----------------------------------------
@@ -475,6 +529,43 @@ test('sanitizeRound: well-formed rounds pass through intact', () => {
   const none = sanitizeRound(null, T0);
   assert.equal(none.result, 'unknown');
   assert.equal(none.ts, T0);
+});
+
+test('sanitizeRound: finite-overflow money (1e308) rejected before cents math can hit Infinity', () => {
+  const r = sanitizeRound(
+    { id: 'big-1', ts: T0, bet: 1e308, payout: 1e308, profit: 1e300, multiplier: 1e13, result: 'win' },
+    T0
+  );
+  assert.equal(r.bet, undefined);
+  assert.equal(r.payout, undefined);
+  assert.equal(r.profit, undefined);
+  assert.equal(r.multiplier, undefined);
+  // Just inside the cap still passes.
+  const ok = sanitizeRound({ id: 'big-2', ts: T0, bet: 999, payout: 1e11, profit: 1e11 - 999, result: 'win' }, T0);
+  assert.equal(ok.payout, 1e11);
+  // Even a legacy-persisted round that skipped the sanitizer cannot poison stats.
+  const s = createSession('plinko', T0);
+  appendRound(s, { id: 'legacy', ts: T0, result: 'win', bet: 1e308, payout: 1e308, profit: 1e308 });
+  const stats = computeStats(s, T0 + MIN);
+  for (const v of [stats.wagered, stats.returned, stats.net, stats.biggestWin, stats.biggestLoss]) {
+    assert.ok(Number.isFinite(v), 'stat must stay finite, got ' + v);
+  }
+});
+
+test('sanitizeRound: oversized id truncated deterministically, oversized/circular detail dropped', () => {
+  const r = sanitizeRound({ id: 'x'.repeat(100000), ts: T0, result: 'win', detail: { blob: 'y'.repeat(100000) } }, T0);
+  assert.equal(r.id.length, LIMITS.MAX_ID_LEN);
+  assert.equal(r.detail, undefined); // a megabyte detail would burn the storage quota
+  // Deterministic truncation: the same oversized id replayed still dedupes.
+  const r2 = sanitizeRound({ id: 'x'.repeat(100000), ts: T0, result: 'win' }, T0);
+  assert.equal(r.id, r2.id);
+  // Sane detail passes; a circular one is dropped without throwing.
+  const good = sanitizeRound({ id: 'd1', ts: T0, result: 'win', detail: { slot: 3 } }, T0);
+  assert.deepEqual(good.detail, { slot: 3 });
+  const cyc = {};
+  cyc.self = cyc;
+  const c = sanitizeRound({ id: 'd2', ts: T0, result: 'win', detail: cyc }, T0);
+  assert.equal(c.detail, undefined);
 });
 
 // --- snapshot round-tail trimming -------------------------------------------
@@ -553,6 +644,35 @@ test('byte-identical replay keeps the same id (dedupe still catches re-fetched h
   N._resetRoundIds();
   const run2 = [mk(2), mk(3), mk(3)].map((r) => r.id);
   assert.deepEqual(run1, run2);
+});
+
+test('live transport: byte-identical weak-id frames are genuine repeats, each counted', () => {
+  // Plinko autobet, same stake, same slot: the settle frames are identical.
+  // On a live socket that is two REAL bets — dedupe must not eat the second.
+  N._resetRoundIds();
+  const body = { gameId: 'plinko-main', betAmount: 1, payoutMultiplier: 0.5, payout: 0.5 };
+  const mk = () =>
+    N.extractRound({ ts: T0, kind: 'ws', url: 'wss://spinquest.com/socket', body: JSON.parse(JSON.stringify(body)) });
+  const ids = [mk().id, mk().id, mk().id];
+  assert.equal(new Set(ids).size, 3); // three drops -> three distinct ids
+});
+
+test('history transport: byte-identical weak-id entries keep one id (replay still deduped)', () => {
+  N._resetRoundIds();
+  const body = { gameId: 'plinko-main', betAmount: 1, payoutMultiplier: 0.5, payout: 0.5 };
+  const hist = () =>
+    N.extractRound({
+      ts: T0,
+      kind: 'fetch',
+      url: 'https://spinquest.com/api/plinko/history?limit=50',
+      body: JSON.parse(JSON.stringify(body)),
+    });
+  assert.equal(hist().id, hist().id);
+  // No transport info at all (sub-item extraction, list entries) stays on the
+  // replay-safe side too.
+  N._resetRoundIds();
+  const bare = () => N.extractRound({ ts: T0, body: JSON.parse(JSON.stringify(body)) });
+  assert.equal(bare().id, bare().id);
 });
 
 test('strong per-bet ids never trip the constant-id detector', () => {
@@ -768,6 +888,7 @@ async function atest(name, fn) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const backend = new Map(); // key -> JSON string, shared across worker restarts
+const failWrites = { on: false }; // simulate quota exhaustion / IO failure
 
 function makeChrome() {
   const runtime = {
@@ -784,6 +905,7 @@ function makeChrome() {
           return out;
         },
         set: async (obj) => {
+          if (failWrites.on) throw new Error('QUOTA_BYTES quota exceeded');
           for (const [k, v] of Object.entries(obj)) backend.set(k, JSON.stringify(v));
         },
       },
@@ -805,9 +927,9 @@ async function bootWorker() {
   return { chrome, send };
 }
 
-const roundEvent = (id, bet = 1, payout = 2) => ({
+const roundEvent = (id, bet = 1, payout = 2, game = 'plinko') => ({
   type: 'SQX_GAME_EVENT',
-  game: 'plinko',
+  game,
   event: {
     type: 'round',
     round: { id, ts: Date.now(), bet, payout, profit: round2(payout - bet), result: payout > bet ? 'win' : payout < bet ? 'loss' : 'push' },
@@ -908,6 +1030,78 @@ await atest('message path: broadcast/GET_STATE rounds bounded to SNAPSHOT_ROUNDS
   assert.equal(s.stats.rounds, n); // lifetime totals unaffected by the trim
   assert.equal(s.stats.net, n);
   assert.equal(s.rounds.at(-1).id, 'bulk-' + (n - 1));
+});
+
+await atest('message path: cross-game autobet flood cannot evict another game\'s replay protection', async () => {
+  // The round-3 double-count, end-to-end: 20 blackjack hands -> rotation ->
+  // 2000+ plinko autobet rounds (blows any SHARED 2000-key FIFO) -> page
+  // reload replays blackjack history. With per-game shards the archived hands
+  // must stay dead.
+  const { send } = await bootWorker();
+  await send({ type: 'SQX_CLEAR_ALL' }); // fresh sessions; knownRounds survives by design
+  for (let i = 0; i < 20; i++) await send(roundEvent('hand-' + i, 5, 10, 'blackjack'));
+  await send({ type: 'SQX_NEW_SESSION', game: 'blackjack' });
+  const flood = LIMITS.MAX_KNOWN_ROUND_IDS + 50;
+  for (let i = 0; i < flood; i++) await send(roundEvent('storm-' + i));
+  // Page reload: content-script seenRounds resets, site re-serves history.
+  for (let i = 0; i < 20; i++) await send(roundEvent('hand-' + i, 5, 10, 'blackjack'));
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.active.blackjack.rounds.length, 0); // no archived hand resurrects
+  assert.equal(snap.active.blackjack.stats.rounds, 0);
+  assert.equal(snap.active.blackjack.stats.net, 0);
+  const bj = snap.archivedSummaries.filter((s) => s.game === 'blackjack');
+  assert.equal(bj.length, 1);
+  assert.equal(bj[0].rounds, 20); // lifetime: 20 real hands stay 20, not 40
+  assert.equal(bj[0].net, 100); // money counted once, not 2x
+  assert.equal(snap.active.plinko.stats.rounds, flood); // the storm itself is intact
+  assert.equal(snap.active.plinko.stats.net, flood);
+  // A genuinely new blackjack hand still lands after the flood.
+  await send(roundEvent('hand-new', 5, 0, 'blackjack'));
+  const snap2 = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap2.active.blackjack.stats.rounds, 1);
+});
+
+await atest('message path: legacy flat knownRounds in storage still dedupes, then migrates', async () => {
+  await sleep(1200); // drain the previous worker's trailing save first
+  const stored = JSON.parse(backend.get('sqxState'));
+  stored.knownRounds = { keys: ['plinko:legacy-1', 'plinko:legacy-2'] }; // pre-shard shape
+  backend.set('sqxState', JSON.stringify(stored));
+  const { send } = await bootWorker();
+  await send(roundEvent('legacy-1'));
+  await send(roundEvent('legacy-2'));
+  await send(roundEvent('legacy-3'));
+  const snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  const ids = snap.active.plinko.rounds.map((r) => r.id);
+  assert.equal(ids.includes('legacy-1'), false); // legacy memory still honored
+  assert.equal(ids.includes('legacy-2'), false);
+  assert.equal(ids.includes('legacy-3'), true); // new bets still land
+  await sleep(1200); // flush, then confirm the persisted shape is sharded
+  const after = JSON.parse(backend.get('sqxState'));
+  assert.equal(Array.isArray(after.knownRounds.keys), false);
+  assert.equal(after.knownRounds['g:plinko'].keys.includes('legacy-3'), true);
+  assert.equal(after.knownRounds['g:plinko'].keys.includes('legacy-1'), true); // migrated, not lost
+});
+
+await atest('message path: failed storage writes surface persistFailing, then recover', async () => {
+  await sleep(1200); // drain pending saves before toggling failures
+  const { send } = await bootWorker();
+  failWrites.on = true;
+  await send(roundEvent('pf-1'));
+  await sleep(20); // let the rejected write settle
+  let snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.persistFailing, true); // consumers can warn: memory-only data
+  failWrites.on = false;
+  await sleep(1100); // past the debounce window: the next event writes at once
+  await send(roundEvent('pf-2'));
+  await sleep(20);
+  snap = (await send({ type: 'SQX_GET_STATE' })).state;
+  assert.equal(snap.persistFailing, false);
+  // The retried write carried BOTH rounds: a fresh worker rehydrates them.
+  const w2 = await bootWorker();
+  const snap2 = (await w2.send({ type: 'SQX_GET_STATE' })).state;
+  const ids = snap2.active.plinko.rounds.map((r) => r.id);
+  assert.ok(ids.includes('pf-1'), 'pf-1 persisted after recovery');
+  assert.ok(ids.includes('pf-2'), 'pf-2 persisted after recovery');
 });
 
 // ----------------------------------------------------------------------------

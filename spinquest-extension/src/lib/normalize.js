@@ -9,7 +9,10 @@
 // signature of a payload-constant key like gameId — and switches those rounds
 // to deterministic synthetic ids so the dedupe layers (content.js seenRounds,
 // background hasRound) never silently drop real rounds. Exact byte-identical
-// replays (history re-fetches) keep the same id so dedupe still catches them.
+// replays on history-shaped transports (list payloads, history URLs) keep the
+// same id so dedupe still catches them; on a LIVE transport the identical
+// repeat is treated as a genuine second bet instead (see the replay-vs-repeat
+// note at SQX.isLiveCapture).
 'use strict';
 
 SQX.KEYS = {
@@ -105,11 +108,34 @@ SQX.sioPayload = function sioPayload(body) {
   return undefined;
 };
 
+// Replay-vs-repeat classification for weak-id payloads. Two byte-identical
+// payloads under the same weak id are inherently ambiguous: a re-fetched
+// history entry (must be deduped) or a second GENUINE identical bet (plinko
+// autobet, same stake, same slot — must be counted). The transport breaks the
+// tie: history replays arrive via round LISTS (roundsFromList marks each
+// entry `replay: true`) or history-shaped URLs, while a single live frame
+// (socket push, bet-response) repeating the exact same content is far more
+// likely a real repeat bet. Captures with no transport info (sub-item
+// extractions, tests) stay on the replay-safe side. Residual tradeoff, by
+// design: a server that re-pushes an old single settle frame verbatim on a
+// LIVE channel more than RECENT_BODY_MS after the original (reconnect replay)
+// is counted again — we prefer that rare double to silently eating every
+// second bet of an identical-outcome autobet run.
+const SQX_HISTORYISH_URL = /(histor|archive|past|recent|my[-_]?bets|bet[-_]?list|rounds|results)/i;
+SQX.isLiveCapture = function isLiveCapture(evt) {
+  if (!evt || evt.replay === true) return false;
+  if (typeof evt.kind !== 'string' || evt.kind === '') return false;
+  if (typeof evt.url === 'string' && SQX_HISTORYISH_URL.test(evt.url)) return false;
+  return true;
+};
+
 (() => {
   const ID_MEMORY_MAX = 200;
   const BAD_IDS_MAX = 50;
+  const REPEATS_MAX = 200;
   const idSig = new Map(); // extracted id -> content signature of its first round
   const badIds = new Set(); // ids proven payload-constant (repeat w/ different content)
+  const liveRepeats = new Map(); // content signature -> live occurrences seen
 
   /**
    * Content signature of a round payload: full-body hash + the money legs.
@@ -132,11 +158,29 @@ SQX.sioPayload = function sioPayload(body) {
   }
 
   /**
+   * Synthetic id for a weak-id round. Replay-classified captures get the bare
+   * signature — deterministic, so a re-fetch after reload resolves to the
+   * same id and dedupe catches it. LIVE captures mix in a per-signature
+   * occurrence counter, so a second genuine identical bet gets a distinct id
+   * instead of being deduped away (see the classification note above).
+   */
+  function syntheticId(sig, live) {
+    if (!live) return 'sqx-' + sig;
+    const n = (liveRepeats.get(sig) || 0) + 1;
+    liveRepeats.set(sig, n);
+    if (liveRepeats.size > REPEATS_MAX) liveRepeats.delete(liveRepeats.keys().next().value);
+    return n === 1 ? 'sqx-' + sig : 'sqx-' + sig + '#' + n;
+  }
+
+  /**
    * Resolve the id for a round. A candidate id seen before with DIFFERENT
    * content is a payload constant — it (and every later occurrence) gets a
    * deterministic synthetic id instead, so no real round collides away.
+   * `live` (from SQX.isLiveCapture) flips the exact-repeat rule: on a live
+   * transport an identical repeat is a genuine second bet and gets its own
+   * id; on history-shaped transports it keeps the id so dedupe drops it.
    */
-  SQX.resolveRoundId = function resolveRoundId(body, bet, payout) {
+  SQX.resolveRoundId = function resolveRoundId(body, bet, payout, live) {
     const found = SQX.findRoundIdRanked(body);
     if (!found) return SQX.shortId();
     const id = String(found.id);
@@ -147,14 +191,19 @@ SQX.sioPayload = function sioPayload(body) {
     // the synthetic fallback would double-count the round.
     if (found.strong) return id;
     const sig = contentSig(body, bet, payout);
-    if (badIds.has(id)) return 'sqx-' + sig;
+    if (badIds.has(id)) return syntheticId(sig, live);
     const prev = idSig.get(id);
     if (prev === undefined) {
       idSig.set(id, sig);
       if (idSig.size > ID_MEMORY_MAX) idSig.delete(idSig.keys().next().value);
+      if (live) syntheticId(sig, true); // count the occurrence: a live repeat of this exact content must not collide
       return id;
     }
-    if (prev === sig) return id; // exact replay of the same round — keep id, let dedupe drop it
+    if (prev === sig) {
+      // Exact same content again: genuine repeat on a live transport (new
+      // id), replayed history otherwise (same id — dedupe drops it).
+      return live ? syntheticId(sig, true) : id;
+    }
     badIds.add(id);
     if (badIds.size > BAD_IDS_MAX) badIds.delete(badIds.values().next().value);
     return 'sqx-' + sig;
@@ -164,6 +213,7 @@ SQX.sioPayload = function sioPayload(body) {
   SQX._resetRoundIds = function _resetRoundIds() {
     idSig.clear();
     badIds.clear();
+    liveRepeats.clear();
   };
 })();
 
@@ -336,7 +386,7 @@ SQX._extractRound = function _extractRound(evt) {
   }
 
   const round = {
-    id: SQX.resolveRoundId(body, bet, payout ?? net),
+    id: SQX.resolveRoundId(body, bet, payout ?? net, SQX.isLiveCapture(evt)),
     ts: evt.ts || Date.now(),
     bet: bet,
     payout: payout,
@@ -492,7 +542,9 @@ SQX.roundsFromList = function roundsFromList(evt, decorate) {
   const out = [];
   for (const item of list.slice(0, 50)) {
     if (!SQX._roundish(item)) continue;
-    const round = SQX.extractRound({ ts: SQX.itemTs(item) ?? evt.ts, body: item });
+    // `replay: true`: list-delivered rounds are the history/refetch shape, so
+    // byte-identical entries keep deterministic ids and dedupe drops them.
+    const round = SQX.extractRound({ ts: SQX.itemTs(item) ?? evt.ts, body: item, replay: true });
     if (!round) continue;
     if (decorate) {
       try {

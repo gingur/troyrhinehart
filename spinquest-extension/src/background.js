@@ -49,9 +49,10 @@ const IDLE_SWEEP_PERIOD_MIN = 5;
  *   active: { [game]: Session },
  *   archived: Session[],           // most recent first, each with .summary
  *   focusedGame: string|null,      // game page the user is currently on
- *   knownRounds: { keys: [] },     // global `game:id` FIFO — replay dedupe
- *                                  // across session rotations (lazy-created,
- *                                  // absent in legacy stored states)
+ *   knownRounds: {                 // replay dedupe across session rotations:
+ *     ['g:'+game]: {keys, t}       // PER-GAME capped id FIFOs (lazy-created;
+ *   }                              // legacy flat {keys:["game:id"]} states
+ *                                  // migrate on first write — see stats.js)
  * }
  * Session = { id, game, startedAt, lastActivityAt, rounds[], ticks[],
  *             current{}, carry?, stats?, summary? (archived only) }
@@ -83,6 +84,11 @@ function loadState() {
 let saveTimer = null;
 let dirty = false;
 let lastSaveAt = 0;
+// True after a failed storage write (quota exhausted, IO error): everything
+// since the last good write exists only in memory. Surfaced in every snapshot
+// as `persistFailing` so a consumer can warn instead of silently losing data;
+// `dirty` stays set so the next event or the alarm sweep retries the write.
+let persistFailing = false;
 
 function scheduleSave() {
   dirty = true;
@@ -103,7 +109,15 @@ function flushSave() {
   if (!dirty || !state) return;
   dirty = false;
   lastSaveAt = Date.now();
-  chrome.storage.local.set({ sqxState: state }).catch(() => {});
+  chrome.storage.local.set({ sqxState: state }).then(
+    () => {
+      persistFailing = false;
+    },
+    () => {
+      persistFailing = true;
+      dirty = true; // retried by the next event's save or the alarm sweep
+    }
+  );
 }
 
 // --- session lifecycle ------------------------------------------------------
@@ -192,7 +206,10 @@ function applyGameEvent(game, event) {
 
 // --- snapshots + broadcast --------------------------------------------------
 
-// Monotonic across worker restarts: seeded from the clock, bumped per snapshot.
+// Monotonic across worker restarts: seeded from the clock, and each snapshot
+// takes max(seq + 1, now) — so seq can only outrun the clock by the number of
+// same-millisecond snapshots, and a restart's fresh clock seed can never fall
+// behind a long-lived predecessor.
 let seq = Date.now();
 
 function legacySummary(s) {
@@ -208,8 +225,8 @@ function legacySummary(s) {
 }
 
 function snapshot(changedGame = null) {
-  seq += 1;
   const now = Date.now();
+  seq = Math.max(seq + 1, now);
   // Live sessions carry stats cached at the last event; duration and pace
   // drift with the clock, so refresh them per snapshot (cheap, no full pass).
   // Sessions go out through snapshotSession: rounds bounded to the newest
@@ -225,6 +242,7 @@ function snapshot(changedGame = null) {
     generatedAt: now,
     changedGame, // which game's session changed, null = anything/everything
     focusedGame: state.focusedGame,
+    persistFailing, // true while storage writes fail (quota/IO) — memory-only data
     active,
     archivedSummaries: state.archived.map((s) => s.summary || legacySummary(s)),
   };
@@ -296,7 +314,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // the cleared rounds would resurrect as a fresh session.
       state = { active: {}, archived: [], focusedGame: state.focusedGame, knownRounds: state.knownRounds };
       dirty = false;
-      await chrome.storage.local.set({ sqxState: state });
+      try {
+        await chrome.storage.local.set({ sqxState: state });
+        persistFailing = false;
+      } catch {
+        persistFailing = true;
+        dirty = true;
+      }
       requestBroadcast(null);
       sendResponse({ ok: true });
     } else {
