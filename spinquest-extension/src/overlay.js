@@ -100,6 +100,27 @@
 
   const posNegCls = (n) => (n > 0 ? 'sqx-pos' : n < 0 ? 'sqx-neg' : 'sqx-dim');
 
+  // Compact signed value for the graph's min/max scale labels: +34 / -80 /
+  // +4.5 / -0.42 / +12.3k — small enough for a corner, precise enough to scale.
+  const fmtAxis = (v) => {
+    const sign = v > 0 ? '+' : v < 0 ? '-' : '';
+    const a = Math.abs(v);
+    if (a >= 10000) return sign + (a / 1000).toFixed(1) + 'k';
+    if (a >= 10) return sign + Math.round(a);
+    if (a >= 1) return sign + a.toFixed(1);
+    return sign + a.toFixed(2);
+  };
+
+  // Session display currency, from the most recent round that carried one.
+  const sessionCurrency = (session) => {
+    const rounds = session.rounds || [];
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      const c = rounds[i].currency;
+      if (typeof c === 'string' && c) return c.toUpperCase().slice(0, 5);
+    }
+    return null;
+  };
+
   const isNum = Number.isFinite;
 
   const pctOf = (n, d) => (d ? Math.round((n / d) * 100) + '%' : '—');
@@ -521,7 +542,8 @@
 
   // Stake-style session profit chart: one point per bet, value-colored stroke
   // + faint area fill (green at/above zero, red below), a dashed zero baseline
-  // with a tiny "0" label, and a dot on the latest point. No other furniture.
+  // with a tiny "0" label, auto-scaled max/min labels in the right corners,
+  // and a dot on the latest point. No other furniture.
   function renderGraph(body, session) {
     const s = session.stats;
     if (!s || !s.rounds) return;
@@ -530,17 +552,22 @@
     const box = h('div', 'sqx-graph');
     const top = h('div', 'sqx-graph-top');
     top.appendChild(h('span', 'sqx-graph-l', 'Profit'));
+    const cur = sessionCurrency(session);
+    if (cur) top.appendChild(h('span', 'sqx-cur', cur));
     top.appendChild(h('span', 'sqx-count', s.rounds + (s.rounds === 1 ? ' bet' : ' bets')));
     top.appendChild(num(fmtMoney(s.net), 'sqx-graph-net ' + posNegCls(s.net)));
     box.appendChild(top);
 
     if (vals.length >= 2) {
-      const W = 272, H = 54, PT = 5, PB = 5;
+      // W matches the card's rendered inner width so SVG text isn't scaled;
+      // PT/PB reserve corner bands for the max/min scale labels.
+      const W = 260, H = 72, PT = 12, PB = 12;
       let min = 0, max = 0;
       for (const v of vals) {
         if (v < min) min = v;
         if (v > max) max = v;
       }
+      const realMin = min, realMax = max;
       if (max - min < 1e-9) { max = 0.5; min = -0.5; }
       const ih = H - PT - PB;
       const y = (v) => PT + ((max - v) / (max - min)) * ih;
@@ -555,6 +582,16 @@
       const ly = y(vals[vals.length - 1]).toFixed(1);
       const lastCol = vals[vals.length - 1] < 0 ? 'var(--sqx-neg)' : 'var(--sqx-pos)';
       const zeroLabelY = y0 > 13 ? y0 - 3.5 : y0 + 9.5;
+      // Auto-scale labels: max at top-right, min at bottom-right, sitting in
+      // the reserved bands so they never collide with the line. Skipped when
+      // they'd merely restate the zero baseline.
+      const axisText = (yPos, v) =>
+        '<text x="' + (W - 2) + '" y="' + yPos + '" text-anchor="end"' +
+        ' style="fill:var(--sqx-faint);font-family:var(--sqx-mono);font-size:9px;font-variant-numeric:tabular-nums">' +
+        fmtAxis(v) + '</text>';
+      let axisLabels = '';
+      if (realMax > 0) axisLabels += axisText(9, realMax);
+      if (realMin < 0) axisLabels += axisText(H - 3, realMin);
       const svg =
         '<svg class="sqx-spark" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
         '<defs>' +
@@ -572,6 +609,7 @@
         '<circle cx="' + lx + '" cy="' + ly + '" r="2.3" style="fill:' + lastCol + '"/>' +
         '<text x="3" y="' + zeroLabelY.toFixed(1) + '"' +
         ' style="fill:var(--sqx-faint);font-family:var(--sqx-mono);font-size:8px">0</text>' +
+        axisLabels +
         '</svg>';
       const wrap = h('div', 'sqx-spark-wrap');
       wrap.innerHTML = svg;
@@ -601,6 +639,7 @@
 
     // Derived stats with fallbacks so older snapshots (no series/duration/
     // best-worst streaks) still fill every cell.
+    const cur = sessionCurrency(session);
     const durationMs = sessionDurationMs(session);
     const avgBet = s.rounds ? s.wagered / s.rounds : null;
     const rtp = s.wagered > 0 && typeof s.returned === 'number'
@@ -630,9 +669,13 @@
       cell('win rate', s.winRate == null ? '—' : s.winRate + '%'),
       cell('streak', s.streak === 0 ? '—' : (s.streak > 0 ? 'W' : 'L') + Math.abs(s.streak),
         posNegCls(s.streak)),
-      cell('wagered', fmtAmount(s.wagered)),
+      cell('wagered', cur
+        ? [h('span', null, fmtAmount(s.wagered)), h('span', 'sqx-cur-sfx', cur)]
+        : fmtAmount(s.wagered)),
       cell('avg bet', avgBet == null ? '—' : fmtAmount(avgBet)),
-      cell('rtp', rtp == null ? '—' : rtp + '%', rtp == null ? '' : rtp >= 100 ? 'sqx-pos' : ''),
+      // Session payout ratio (returned / wagered) — "payout", not "rtp", so it
+      // can't be mistaken for the game's theoretical RTP.
+      cell('payout', rtp == null ? '—' : rtp + '%', rtp == null ? '' : rtp >= 100 ? 'sqx-pos' : ''),
       cell('best / worst', pair(
         fmtMoney(s.biggestWin), s.biggestWin > 0 ? 'sqx-pos' : '',
         fmtMoney(s.biggestLoss), s.biggestLoss < 0 ? 'sqx-neg' : ''

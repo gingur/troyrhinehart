@@ -551,7 +551,29 @@
 #sqx-hud .sqx-spark {
   display: block;
   width: 100%;
-  height: 54px;
+  height: 72px;
+}
+
+/* session display currency, derived from the rounds' own denomination */
+#sqx-hud .sqx-cur {
+  font-family: var(--sqx-mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--sqx-faint);
+  border: 1px solid var(--sqx-hair);
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 11px;
+}
+
+/* tiny denomination suffix after a money value (stats grid) */
+#sqx-hud .sqx-cur-sfx {
+  font-size: 7.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--sqx-faint);
+  margin-left: 3px;
 }
 
 /* ---- stats card ----------------------------------------------------------- */

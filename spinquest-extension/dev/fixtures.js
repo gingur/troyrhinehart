@@ -183,6 +183,13 @@
     };
   }
 
+  // Rounds carry the denomination the adapters mapped (src/lib/stats.js keeps
+  // round.currency); fixtures denominate in USD like the dev payloads do.
+  const tagCurrency = (s) => {
+    for (const r of s.rounds) r.currency = 'usd';
+    return s;
+  };
+
   const BETS = [0.5, 1, 2, 2.5, 5, 10, 15, 25];
   const pickBet = (rand, streakBias) => BETS[Math.floor(rand() * (streakBias ? 5 : BETS.length))];
 
@@ -224,6 +231,7 @@
       }
     }
     s.ticks = s.ticks.slice(-100);
+    tagCurrency(s);
     s.stats = computeStats(s);
     return s;
   }
@@ -259,6 +267,7 @@
       }
     }
     s.ticks = s.ticks.slice(-100);
+    tagCurrency(s);
     s.stats = computeStats(s);
     return s;
   }
@@ -302,6 +311,7 @@
         detail: { mines, revealedCount: picks },
       });
     }
+    tagCurrency(s);
     s.stats = computeStats(s);
     return s;
   }
@@ -366,6 +376,7 @@
         },
       });
     }
+    tagCurrency(s);
     s.stats = computeStats(s);
     return s;
   }
@@ -392,6 +403,7 @@
         detail: { slot: pos, risk: 'high' },
       });
     }
+    tagCurrency(s);
     s.stats = computeStats(s);
     return s;
   }
