@@ -21,6 +21,11 @@ function render(state) {
   const games = Object.keys(state.active || {});
   if (!games.length) {
     const box = el('div', 'empty');
+    const glyph = el('div', 'i');
+    glyph.innerHTML =
+      '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+      '<path d="M3.5 3.5v13h13"/><path d="M6.5 12.5 9.5 9l2.5 2 4.5-5.5"/></svg>';
+    box.appendChild(glyph);
     box.appendChild(el('div', 't', 'No active sessions'));
     box.appendChild(el('div', 's', 'Open a game on spinquest.com and play a round.'));
     main.appendChild(box);

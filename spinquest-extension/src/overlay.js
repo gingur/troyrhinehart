@@ -31,6 +31,9 @@
     reset:
       '<svg viewBox="0 0 16 16" aria-hidden="true">' +
       '<path d="M3.4 6.2a5 5 0 1 1-.4 3"/><path d="M3.4 2.8v3.4h3.4"/></svg>',
+    chart:
+      '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+      '<path d="M3.5 3.5v13h13"/><path d="M6.5 12.5 9.5 9l2.5 2 4.5-5.5"/></svg>',
   };
 
   const icon = (name) => {
@@ -225,6 +228,9 @@
 
   function emptyState(title, sub) {
     const box = h('div', 'sqx-empty');
+    const glyph = h('div', 'sqx-empty-i');
+    glyph.innerHTML = ICONS.chart;
+    box.appendChild(glyph);
     box.appendChild(h('div', 'sqx-empty-t', title));
     if (sub) box.appendChild(h('div', 'sqx-empty-s', sub));
     return box;
