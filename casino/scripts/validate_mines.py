@@ -15,12 +15,23 @@
    for a DIFFERENT ~95% (BetFury) paytable and intentionally do NOT match
    Stake's — the discrepancy is reported, not treated as an error.
 
-3. Empirical check: 10M+ provably-fair rounds per (mines, picks) config on
+3. Cross-verification gate: the vectorized BulkRng simulator is replayed
+   round-for-round against the critic-verified scalar RNG path
+   (``spinquest_sim.rng.mines_positions``); mine positions AND win/loss
+   outcomes must bit-match, proving the 10M campaign runs on the verified
+   provably-fair core.
+
+4. Exactness gate: multiplier_exact x win_probability_exact == 99/100 in
+   rational arithmetic (Fraction) for all 300 cells — no float tolerance.
+
+5. Empirical check: 10M+ provably-fair rounds per (mines, picks) config on
    the vectorized BulkRng stream; empirical RTP must land within 3 SE of
    the analytic 99%.
 
 Prints a human-readable report plus a machine-readable JSON line prefixed
-``MINES_VALIDATION_JSON:``.  Exit code 0 iff every gate passes.
+``MINES_VALIDATION_JSON:`` (contains a named ``gates`` map).  Exit code 0
+iff every gate passes; any unexpected exception exits nonzero with a FAIL
+summary rather than a bare traceback.
 
 Usage:
     python scripts/validate_mines.py [--rounds N] [--configs m:k,m:k,...]
@@ -32,22 +43,33 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import re
 import sys
+import traceback
+from fractions import Fraction
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
+from spinquest_sim import rng as sq_rng  # noqa: E402
 from spinquest_sim.games.mines import (  # noqa: E402
     GRID_TILES,
+    MAX_MINES,
+    MIN_MINES,
     Mines,
+    display_multiplier,
     multiplier,
+    multiplier_exact,
     win_probability,
+    win_probability_exact,
 )
 from spinquest_sim.rng import BulkRng  # noqa: E402
+
+
+class ValidationError(RuntimeError):
+    """A reference file is missing or structurally malformed."""
 
 STAKE_MD = _ROOT / "references" / "stake" / "mines.md"
 WOO_MD = _ROOT / "references" / "woo" / "mines.md"
@@ -71,18 +93,28 @@ SIM_CLIENT_SEED = "spinquest-mines"
 # ---------------------------------------------------------------------------
 
 def parse_stake_table(path: Path = STAKE_MD) -> Dict[Tuple[int, int], float]:
-    """Parse Stake's three markdown payout tables -> {(mines, picks): mult}."""
+    """Parse Stake's three markdown payout tables -> {(mines, picks): mult}.
+
+    Hardened: raises :class:`ValidationError` on a missing file, malformed
+    header, unparseable cell, duplicate cell, out-of-range coordinates, or a
+    per-mines-column cell count different from the structural 25 - m.
+    """
+    if not path.is_file():
+        raise ValidationError(f"reference file missing: {path}")
     cells: Dict[Tuple[int, int], float] = {}
     mine_cols: List[int] = []
-    for line in path.read_text().splitlines():
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
         line = line.strip()
         if not line.startswith("|"):
             continue
         parts = [c.strip() for c in line.strip("|").split("|")]
         if parts and parts[0] == "Gems picked":
-            mine_cols = [int(re.match(r"(\d+) mines?", c).group(1)) for c in parts[1:]]
+            headers = [re.fullmatch(r"(\d+) mines?", c) for c in parts[1:]]
+            if not headers or any(h is None for h in headers):
+                raise ValidationError(f"{path}:{lineno}: malformed header: {line!r}")
+            mine_cols = [int(h.group(1)) for h in headers]
             continue
-        if not mine_cols or not re.fullmatch(r"\d+", parts[0]):
+        if not mine_cols or not parts or not re.fullmatch(r"\d+", parts[0]):
             continue
         picks = int(parts[0])
         if not 1 <= picks <= 24:
@@ -90,24 +122,54 @@ def parse_stake_table(path: Path = STAKE_MD) -> Dict[Tuple[int, int], float]:
         for m, cell in zip(mine_cols, parts[1:]):
             if cell in ("—", "-", ""):
                 continue
-            value = float(cell.replace(",", "").rstrip("x"))
-            cells[(m, picks)] = value
+            if not re.fullmatch(r"[\d,]+(?:\.\d+)?x", cell):
+                raise ValidationError(
+                    f"{path}:{lineno}: unparseable multiplier cell {cell!r}"
+                )
+            if not (MIN_MINES <= m <= MAX_MINES and picks <= GRID_TILES - m):
+                raise ValidationError(
+                    f"{path}:{lineno}: impossible cell mines={m} picks={picks}"
+                )
+            if (m, picks) in cells:
+                raise ValidationError(
+                    f"{path}:{lineno}: duplicate cell mines={m} picks={picks}"
+                )
+            cells[(m, picks)] = float(cell.replace(",", "").rstrip("x"))
+    # Structural completeness: each mines column must hold exactly 25-m cells.
+    for m in range(MIN_MINES, MAX_MINES + 1):
+        got = sum(1 for (mm, _) in cells if mm == m)
+        if got != GRID_TILES - m:
+            raise ValidationError(
+                f"{path}: mines={m} column has {got} cells, expected {GRID_TILES - m}"
+            )
     return cells
 
 
 def parse_woo_table(path: Path = WOO_MD) -> List[Dict[str, float]]:
-    """Parse WoO's 300-row analysis table -> [{mines,picks,pays,prob,ret}]."""
+    """Parse WoO's 300-row analysis table -> [{mines,picks,pays,prob,ret}].
+
+    Hardened: raises :class:`ValidationError` on a missing file, duplicate
+    (mines, picks) rows, or a row count different from the 300 valid combos.
+    """
+    if not path.is_file():
+        raise ValidationError(f"reference file missing: {path}")
     rows: List[Dict[str, float]] = []
+    seen: set = set()
     pat = re.compile(
         r"^\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|$"
     )
-    for line in path.read_text().splitlines():
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
         match = pat.match(line.strip())
         if not match:
             continue
         m, k = int(match.group(1)), int(match.group(2))
-        if not (1 <= m <= 24 and 1 <= k <= 25 - m):
+        if not (MIN_MINES <= m <= MAX_MINES and 1 <= k <= GRID_TILES - m):
             continue
+        if (m, k) in seen:
+            raise ValidationError(
+                f"{path}:{lineno}: duplicate WoO row mines={m} picks={k}"
+            )
+        seen.add((m, k))
         rows.append(
             {
                 "mines": m,
@@ -116,6 +178,11 @@ def parse_woo_table(path: Path = WOO_MD) -> List[Dict[str, float]]:
                 "prob": float(match.group(4)),
                 "ret": float(match.group(5)),
             }
+        )
+    expected = sum(GRID_TILES - m for m in range(MIN_MINES, MAX_MINES + 1))
+    if len(rows) != expected:
+        raise ValidationError(
+            f"{path}: parsed {len(rows)} WoO rows, expected {expected}"
         )
     return rows
 
@@ -152,6 +219,82 @@ def check_stake_table() -> Dict[str, object]:
         "mismatches": mismatches,
         "pass": len(ref) == expected_cells and not mismatches,
     }
+
+
+def check_spot_checks() -> Dict[str, object]:
+    """Verbatim in-game spot checks published in references/stake/mines.md §7."""
+    published = [
+        (1, 1, 1.03),      # "1 mine / 1 gem = 1.03x"
+        (24, 1, 24.75),    # "24 mines / 1 gem = 24.75x"
+        (1, 24, 24.75),    # "1 mine / 24 gems (full clear) = 24.75x"
+        (3, 22, 2277.00),  # "3 mines / 22 gems = 2,277.00x"
+    ]
+    checks = []
+    ok = True
+    for m, k, want in published:
+        got = display_multiplier(m, k)
+        good = abs(got - want) < 1e-9
+        ok = ok and good
+        checks.append({"mines": m, "picks": k, "published": want, "computed": got,
+                       "match": good})
+    return {"checks": checks, "pass": ok}
+
+
+def check_exact_rtp_identity() -> Dict[str, object]:
+    """multiplier_exact x win_probability_exact == 99/100 exactly (Fraction)
+    for every one of the 300 valid cells — zero float tolerance."""
+    target = Fraction(99, 100)
+    bad: List[Tuple[int, int]] = []
+    n = 0
+    for m in range(MIN_MINES, MAX_MINES + 1):
+        for k in range(1, GRID_TILES - m + 1):
+            n += 1
+            if multiplier_exact(m, k) * win_probability_exact(m, k) != target:
+                bad.append((m, k))
+    return {"cells_checked": n, "exact_failures": bad, "pass": n == 300 and not bad}
+
+
+def check_scalar_bulk_bitmatch(
+    n_rounds: int = 2_000, configs: List[Tuple[int, int]] = ((1, 24), (5, 5), (24, 1))
+) -> Dict[str, object]:
+    """Replay the vectorized simulator round-for-round against the verified
+    scalar RNG path: mine positions AND simulated win/loss outcomes must
+    bit-match at every nonce.  This is what licenses the 10M campaign."""
+    import numpy as np
+
+    results = []
+    ok = True
+    for m, k in configs:
+        game = Mines(m, k)
+        bulk = BulkRng(
+            server_seed=SIM_SERVER_SEED, client_seed=SIM_CLIENT_SEED, nonce_start=0
+        )
+        pos_bulk = bulk.mines_positions(m, n_rounds)  # (n_rounds, m)
+        pos_mismatch = 0
+        outcome_mismatch = 0
+        for nonce in range(n_rounds):
+            scalar = sq_rng.mines_positions(
+                SIM_SERVER_SEED, SIM_CLIENT_SEED, nonce, m
+            )
+            if list(pos_bulk[nonce]) != scalar:
+                pos_mismatch += 1
+            bulk_win = not bool(np.any(pos_bulk[nonce] < k))
+            scalar_win = game.play_round(SIM_SERVER_SEED, SIM_CLIENT_SEED, nonce)["win"]
+            if bulk_win is not scalar_win:
+                outcome_mismatch += 1
+        good = pos_mismatch == 0 and outcome_mismatch == 0
+        ok = ok and good
+        results.append(
+            {
+                "mines": m,
+                "picks": k,
+                "rounds_compared": n_rounds,
+                "position_mismatches": pos_mismatch,
+                "outcome_mismatches": outcome_mismatch,
+                "pass": good,
+            }
+        )
+    return {"configs": results, "pass": ok}
 
 
 def check_woo_methodology() -> Dict[str, object]:
@@ -243,6 +386,23 @@ def run_empirical(configs: List[Tuple[int, int]], n_rounds: int) -> Dict[str, ob
     return {"configs": results, "pass": ok}
 
 
+def _parse_configs(text: str) -> List[Tuple[int, int]]:
+    configs: List[Tuple[int, int]] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        match = re.fullmatch(r"(\d+):(\d+)", part)
+        if not match:
+            raise SystemExit(f"--configs: expected mines:picks, got {part!r}")
+        m, k = int(match.group(1)), int(match.group(2))
+        Mines(m, k)  # raises ValueError with a clear message if invalid
+        configs.append((m, k))
+    if not configs:
+        raise SystemExit("--configs: no valid mines:picks pairs given")
+    return configs
+
+
 def main(argv: List[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
@@ -254,11 +414,9 @@ def main(argv: List[str] | None = None) -> int:
     )
     ap.add_argument("--skip-sim", action="store_true")
     args = ap.parse_args(argv)
-    configs = [
-        (int(part.split(":")[0]), int(part.split(":")[1]))
-        for part in args.configs.split(",")
-        if part
-    ]
+    if args.rounds < 1:
+        raise SystemExit("--rounds must be >= 1")
+    configs = _parse_configs(args.configs)
 
     print("=" * 72)
     print("MINES VALIDATION — Stake 24x24 table + WoO methodology + empirical")
@@ -275,6 +433,37 @@ def main(argv: List[str] | None = None) -> int:
     )
     for bad in table["mismatches"][:10]:
         print(f"  MISMATCH {bad}")
+
+    spots = check_spot_checks()
+    for c in spots["checks"]:
+        print(
+            f"[spot]  mines={c['mines']} picks={c['picks']}: published "
+            f"{c['published']}x, computed {c['computed']}x -> "
+            f"{'OK' if c['match'] else 'MISMATCH'}"
+        )
+    print(f"[spot]  verbatim published spot checks -> "
+          f"{'PASS' if spots['pass'] else 'FAIL'}")
+
+    exact = check_exact_rtp_identity()
+    print(
+        f"[exact] Fraction identity mult x P(win) == 99/100 on "
+        f"{exact['cells_checked']}/300 cells, failures: "
+        f"{len(exact['exact_failures'])} -> {'PASS' if exact['pass'] else 'FAIL'}"
+    )
+
+    bitmatch = check_scalar_bulk_bitmatch()
+    for c in bitmatch["configs"]:
+        print(
+            f"[xver]  mines={c['mines']} picks={c['picks']}: "
+            f"{c['rounds_compared']} rounds vs verified scalar path — "
+            f"{c['position_mismatches']} position mismatches, "
+            f"{c['outcome_mismatches']} outcome mismatches -> "
+            f"{'PASS' if c['pass'] else 'FAIL'}"
+        )
+    print(
+        f"[xver]  vectorized simulator bit-matches verified scalar RNG core -> "
+        f"{'PASS' if bitmatch['pass'] else 'FAIL'}"
+    )
 
     woo = check_woo_methodology()
     print(
@@ -307,27 +496,88 @@ def main(argv: List[str] | None = None) -> int:
 
     if args.skip_sim:
         sim = {"configs": [], "pass": True, "skipped": True}
-        print("[sim]   skipped (--skip-sim)")
+        print("[sim]   skipped (--skip-sim) — empirical gate NOT exercised")
     else:
+        if args.rounds < DEFAULT_ROUNDS:
+            print(
+                f"[sim]   NOTE: --rounds {args.rounds:,} is below the official "
+                f"{DEFAULT_ROUNDS:,}-round empirical bar (smoke run only)",
+                flush=True,
+            )
         sim = run_empirical(configs, args.rounds)
+        sim["skipped"] = False
+        sim["meets_10m_bar"] = args.rounds >= DEFAULT_ROUNDS
 
-    overall = bool(table["pass"] and woo["pass"] and sim["pass"])
+    gates = {
+        "stake_table_300_cells": bool(table["pass"]),
+        "published_spot_checks": bool(spots["pass"]),
+        "exact_rtp_identity": bool(exact["pass"]),
+        "scalar_bulk_bitmatch": bool(bitmatch["pass"]),
+        "woo_methodology": bool(woo["pass"]),
+        "empirical_within_3se": bool(sim["pass"]),
+    }
+    overall = all(gates.values())
     summary = {
         "game": "mines",
         "overall_pass": overall,
+        "gates": gates,
         "stake_table": {kk: vv for kk, vv in table.items() if kk != "mismatches"}
         | {"n_mismatches": len(table["mismatches"])},
+        "spot_checks": spots,
+        "exact_rtp_identity": {
+            "cells_checked": exact["cells_checked"],
+            "exact_failures": exact["exact_failures"],
+            "pass": exact["pass"],
+        },
+        "scalar_bulk_bitmatch": bitmatch,
         "woo_methodology": woo,
+        "woo_discrepancy_note": (
+            "references/woo/mines.md analyzes the BetFury ~95% paytable; "
+            "Stake's schedule is 0.99/P(win) (99% RTP). WoO's prob-x-pay "
+            "methodology applied to Stake's table returns 0.99 in every cell; "
+            "WoO's own published pays intentionally do not match Stake's."
+        ),
         "empirical": sim,
+        "empirical_skipped": bool(sim.get("skipped", False)),
         "sim_seeds": {
             "server_seed": SIM_SERVER_SEED,
             "client_seed": SIM_CLIENT_SEED,
         },
     }
     print("MINES_VALIDATION_JSON: " + json.dumps(summary, default=float))
-    print(f"OVERALL: {'PASS' if overall else 'FAIL'}")
+    verdict = "PASS" if overall else "FAIL"
+    if overall and summary["empirical_skipped"]:
+        verdict += " (analytic gates only — empirical sim skipped)"
+    elif overall and not sim.get("meets_10m_bar", True):
+        verdict += " (smoke-level empirical rounds, below the 10M bar)"
+    print(f"OVERALL: {verdict}")
     return 0 if overall else 1
 
 
+def _guarded_main() -> int:
+    try:
+        return main()
+    except ValidationError as exc:
+        print(f"VALIDATION ERROR: {exc}", file=sys.stderr)
+        print(
+            "MINES_VALIDATION_JSON: "
+            + json.dumps({"game": "mines", "overall_pass": False,
+                          "error": str(exc)})
+        )
+        print("OVERALL: FAIL")
+        return 2
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        traceback.print_exc()
+        print(
+            "MINES_VALIDATION_JSON: "
+            + json.dumps({"game": "mines", "overall_pass": False,
+                          "error": f"{type(exc).__name__}: {exc}"})
+        )
+        print("OVERALL: FAIL")
+        return 3
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_guarded_main())

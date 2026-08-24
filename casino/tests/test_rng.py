@@ -672,16 +672,26 @@ class TestBulkIsProvablyFair:
         b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=0)
         n = 30
 
-        cards = b.cards(n)
+        bacc = b.baccarat_cards(n)
         for i, n0 in [(i, b.last_nonce_range[0]) for i in range(n)]:
-            f = ref_floats(SERVER, BULK_CLIENT, n0 + i, 0, 1)[0]
-            assert cards[i] == math.floor(f * 52)
+            fs = ref_floats(SERVER, BULK_CLIENT, n0 + i, 0, 6)
+            assert bacc[i].tolist() == [math.floor(f * 52) for f in fs]
 
-        gems = b.gems(n); n0 = b.last_nonce_range[0]
-        rolls = None
+        hands = b.card_hands(3, n); n0 = b.last_nonce_range[0]
         for i in range(n):
-            f = ref_floats(SERVER, BULK_CLIENT, n0 + i, 0, 1)[0]
-            assert gems[i] == math.floor(f * 7)
+            fs = ref_floats(SERVER, BULK_CLIENT, n0 + i, 0, 3)
+            assert hands[i].tolist() == [math.floor(f * 52) for f in fs]
+
+        dgems = b.diamonds_gems(n); n0 = b.last_nonce_range[0]
+        for i in range(n):
+            fs = ref_floats(SERVER, BULK_CLIENT, n0 + i, 0, 5)
+            assert dgems[i].tolist() == [math.floor(f * 7) for f in fs]
+
+        dealer, player = b.diamond_poker_hands(n); n0 = b.last_nonce_range[0]
+        for i in range(n):
+            fs = ref_floats(SERVER, BULK_CLIENT, n0 + i, 0, 10)
+            assert dealer[i].tolist() == [math.floor(f * 7) for f in fs[:5]]
+            assert player[i].tolist() == [math.floor(f * 7) for f in fs[5:]]
 
         rolls = b.dice_rolls(n); n0 = b.last_nonce_range[0]
         for i in range(n):
@@ -844,6 +854,260 @@ class TestBulkValidation:
         for row in d:
             assert len(set(row.tolist())) == 10
             assert row.min() >= 0 and row.max() < 40
+
+
+class TestBulkMultiEventCardGames:
+    """Round-4 D2: BulkRng must expose per-bet methods for the multi-event
+    card/gem games, each reading its budget from EVENT_COUNTS and consuming
+    ONE nonce per bet — bulk row i == the scalar helper at nonce n0 + i."""
+
+    def test_baccarat_row_equals_scalar_coup_at_nonce_900(self):
+        """The critic's exact probe: the scalar coup at nonce 900 must be the
+        bulk row for nonce 900 (the old cards(6) trap gave 6 one-card bets)."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=900)
+        got = b.baccarat_cards(4)
+        assert got.shape == (4, 6)
+        assert b.last_nonce_range == (900, 904)  # ONE nonce per coup
+        for i in range(4):
+            assert got[i].tolist() == rng.baccarat_cards(SERVER, BULK_CLIENT, 900 + i)
+
+    def test_baccarat_budget_comes_from_event_counts(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT)
+        assert b.baccarat_cards(2).shape == (2, rng.EVENT_COUNTS["baccarat"])
+
+    @pytest.mark.parametrize("n_cards", [1, 2, 6, 13, 52])
+    def test_card_hands_rows_equal_scalar_card_draws(self, n_cards):
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=250)
+        got = b.card_hands(n_cards, 8)
+        assert got.shape == (8, n_cards)
+        assert b.last_nonce_range == (250, 258)
+        for i in range(8):
+            assert got[i].tolist() == rng.card_draws(
+                SERVER, BULK_CLIENT, 250 + i, n_cards
+            )
+
+    def test_card_hands_validation_consumes_no_nonces(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT)
+        with pytest.raises(ValueError):
+            b.card_hands(0, 5)
+        assert b.nonce_next == b.nonce_start
+
+    def test_diamonds_rows_equal_scalar_gems(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=40)
+        got = b.diamonds_gems(12)
+        assert got.shape == (12, rng.EVENT_COUNTS["diamonds"])
+        assert b.last_nonce_range == (40, 52)
+        for i in range(12):
+            names = [rng.GEMS[g] for g in got[i]]
+            assert names == rng.diamonds_gems(SERVER, BULK_CLIENT, 40 + i)
+
+    def test_diamond_poker_rows_equal_scalar_dealer_first(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=70)
+        dealer, player = b.diamond_poker_hands(12)
+        assert dealer.shape == player.shape == (12, 5)
+        assert b.last_nonce_range == (70, 82)
+        for i in range(12):
+            sd, sp = rng.diamond_poker_hands(SERVER, BULK_CLIENT, 70 + i)
+            assert [rng.GEMS[g] for g in dealer[i]] == sd
+            assert [rng.GEMS[g] for g in player[i]] == sp
+
+    def test_new_methods_verify_at_the_hardcoded_vectors(self):
+        """Bulk rows at (SERVER, CLIENT, nonce 7) must hit the same
+        independently derived vectors the scalar tests pin."""
+        b = rng.BulkRng(SERVER, CLIENT, nonce_start=NONCE)
+        assert b.baccarat_cards(1)[0].tolist() == BACCARAT_VECTOR
+        b2 = rng.BulkRng(SERVER, CLIENT, nonce_start=NONCE)
+        assert [rng.GEMS[g] for g in b2.diamonds_gems(1)[0]] == DIAMONDS_VECTOR
+        b3 = rng.BulkRng(SERVER, CLIENT, nonce_start=NONCE)
+        d, p = b3.diamond_poker_hands(1)
+        assert [rng.GEMS[g] for g in d[0]] == DP_DEALER
+        assert [rng.GEMS[g] for g in p[0]] == DP_PLAYER
+        b4 = rng.BulkRng(SERVER, CLIENT, nonce_start=NONCE)
+        assert b4.card_hands(8, 1)[0].tolist() == CARD_DRAWS8
+
+    def test_diamonds_names_true_equals_scalar_exactly(self):
+        """Round-5 secondary: the scalar diamonds_gems returns gem NAMES;
+        names=True makes the bulk row equal it element-for-element (no
+        GEMS[...] translation step for the caller to get wrong)."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=40)
+        named = b.diamonds_gems(12, names=True)
+        assert named.shape == (12, 5)
+        for i in range(12):
+            assert named[i].tolist() == rng.diamonds_gems(SERVER, BULK_CLIENT, 40 + i)
+        # names=True is a pure relabeling of the default indices
+        b2 = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=40)
+        idx = b2.diamonds_gems(12)
+        assert np.array_equal(np.array(rng.GEMS)[idx], named)
+
+    def test_diamond_poker_names_true_equals_scalar_exactly(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=70)
+        dealer, player = b.diamond_poker_hands(12, names=True)
+        assert dealer.shape == player.shape == (12, 5)
+        for i in range(12):
+            sd, sp = rng.diamond_poker_hands(SERVER, BULK_CLIENT, 70 + i)
+            assert dealer[i].tolist() == sd
+            assert player[i].tolist() == sp
+
+    def test_names_true_at_hardcoded_vectors(self):
+        b = rng.BulkRng(SERVER, CLIENT, nonce_start=NONCE)
+        assert b.diamonds_gems(1, names=True)[0].tolist() == DIAMONDS_VECTOR
+        b2 = rng.BulkRng(SERVER, CLIENT, nonce_start=NONCE)
+        d, p = b2.diamond_poker_hands(1, names=True)
+        assert d[0].tolist() == DP_DEALER
+        assert p[0].tolist() == DP_PLAYER
+
+    def test_cards_and_gems_traps_are_deprecated_but_unchanged(self):
+        """The one-nonce-per-card shape stays available (deprecated) so old
+        callers fail loudly-by-warning, not silently differently."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=0)
+        with pytest.warns(DeprecationWarning, match="one nonce per card"):
+            cards = b.cards(6)
+        assert b.last_nonce_range == (0, 6)  # still one nonce per CARD
+        for i in range(6):
+            f = ref_floats(SERVER, BULK_CLIENT, i, 0, 1)[0]
+            assert cards[i] == math.floor(f * 52)
+        with pytest.warns(DeprecationWarning, match="one nonce per gem"):
+            gems = b.gems(3)
+        for i, nonce in enumerate(range(6, 9)):
+            f = ref_floats(SERVER, BULK_CLIENT, nonce, 0, 1)[0]
+            assert gems[i] == math.floor(f * 7)
+
+    def test_trap_and_per_bet_methods_genuinely_differ(self):
+        """cards(6) (6 nonces) must NOT equal baccarat_cards row 0 (1 nonce) —
+        this is the exact confusion the critic demonstrated at nonce 900."""
+        a = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=900)
+        with pytest.warns(DeprecationWarning):
+            trap = a.cards(6)
+        coup = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=900).baccarat_cards(1)[0]
+        assert trap.tolist() != coup.tolist()
+
+
+class TestFisherYatesDtype:
+    """Round-4 D1: the int16 pool silently wrapped negative above 32767."""
+
+    def test_draws_without_replacement_40000_pool_is_correct(self):
+        """The critic's exact reproducer: pool 40000, 2 draws, 3 bets used to
+        return negative indices; it must now match the scalar Fisher-Yates."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=0)
+        d = b.draws_without_replacement(40000, 2, 3)
+        assert d.dtype == np.int64
+        assert d.min() >= 0 and d.max() < 40000
+        for i in range(3):
+            fs = ref_floats(SERVER, BULK_CLIENT, i, 0, 2)
+            assert d[i].tolist() == ref_fisher_yates(fs, 40000)
+            assert d[i, 0] != d[i, 1]
+
+    @pytest.mark.parametrize("pool", [32768, 65536, 70000])
+    def test_dtype_boundaries_int16_uint16_and_beyond(self, pool):
+        """Pools just past the int16 and uint16 limits stay non-negative and
+        row-identical to the scalar pop implementation."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=11)
+        d = b.draws_without_replacement(pool, 3, 4)
+        assert d.min() >= 0 and d.max() < pool
+        for i in range(4):
+            fs = ref_floats(SERVER, BULK_CLIENT, 11 + i, 0, 3)
+            assert d[i].tolist() == ref_fisher_yates(fs, pool)
+
+    def test_high_floats_hit_pool_tail(self):
+        """floats near 1 index the END of the pool — exactly where int16
+        wrapped.  floor(f * 40000) for f ~ 1-2**-32 must be 39999."""
+        m = rng.BulkRng._fisher_yates_matrix(
+            np.array([[1 - 2**-32, 1 - 2**-32], [0.0, 0.0], [0.5, 0.999999]]),
+            40000,
+        )
+        assert m.tolist() == [[39999, 39998], [0, 1], [20000, 39999]]
+
+    def test_game_pools_unaffected(self):
+        """Small pools (all real games) still agree with the scalar path."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=333)
+        d = b.draws_without_replacement(52, 52, 5)
+        for i in range(5):
+            fs = ref_floats(SERVER, BULK_CLIENT, 333 + i, 0, 52)
+            assert d[i].tolist() == ref_fisher_yates(fs, 52)
+
+
+class TestFisherYatesPoolMemoryBound:
+    """Round-5 gap: draws_without_replacement chunked on draw_count only, so
+    _fisher_yates_matrix materialized a (chunk, pool_size) matrix with no
+    bound — pool 40,000 / 2 draws put 4M rows (a 160 GB pool matrix) in one
+    chunk.  Chunk rows must ALSO be capped at _POOL_CELL_BUDGET // pool_size,
+    with the real game pools (25/40/52) byte-identical because their float
+    budget is already the tighter bound."""
+
+    def test_chunk_rows_capped_by_pool_cells(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT)
+        cap = rng._POOL_CELL_BUDGET // 40000  # 1250 rows at pool 40,000
+        steps = [step for _, step in b._chunks(10_000, 2, pool_size=40000)]
+        assert max(steps) == cap
+        assert sum(steps) == 10_000
+        # the old draw-count-only bound would have allowed 4M rows per chunk
+        assert max(steps) * 40000 <= rng._POOL_CELL_BUDGET
+
+    def test_chunk_rows_capped_even_for_pool_above_budget(self):
+        b = rng.BulkRng(SERVER, BULK_CLIENT)
+        steps = [step for _, step in b._chunks(7, 1, pool_size=10**9)]
+        assert steps == [1] * 7  # never zero, never more than one row
+
+    def test_game_pool_chunk_sizes_unchanged(self):
+        """keno/mines/video_poker (pools 40/25/52): the float budget is the
+        tighter bound, so adding the pool bound changes nothing — the exact
+        byte-identity condition the fix promised."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT)
+        for events, pool in ((10, 40), (24, 25), (52, 52)):
+            with_pool = next(iter(b._chunks(10**8, events, pool_size=pool)))[1]
+            without = next(iter(b._chunks(10**8, events)))[1]
+            assert with_pool == without == rng._CHUNK_FLOAT_BUDGET // events
+            assert with_pool <= rng._POOL_CELL_BUDGET // pool
+
+    def test_large_pool_multi_chunk_matches_scalar(self):
+        """5,000 bets at pool 40,000 forces 4 pool-bounded chunks (1250 rows
+        each); spot-check rows across every chunk against the independent
+        scalar Fisher-Yates."""
+        b = rng.BulkRng(SERVER, BULK_CLIENT, nonce_start=0)
+        d = b.draws_without_replacement(40000, 2, 5000)
+        assert d.shape == (5000, 2)
+        assert d.min() >= 0 and d.max() < 40000
+        assert b.last_nonce_range == (0, 5000)
+        for i in (0, 1, 1249, 1250, 2499, 2500, 3750, 4999):  # chunk seams
+            fs = ref_floats(SERVER, BULK_CLIENT, i, 0, 2)
+            assert d[i].tolist() == ref_fisher_yates(fs, 40000), i
+
+    def test_forced_tiny_pool_budget_identical_output(self, monkeypatch):
+        """Ragged pool-bounded chunking never changes values, only memory."""
+        b1 = rng.BulkRng(SERVER, BULK_CLIENT)
+        base = b1.draws_without_replacement(40000, 3, 41)
+        monkeypatch.setattr(rng, "_POOL_CELL_BUDGET", 40000 * 7)  # 7-row chunks
+        b2 = rng.BulkRng(SERVER, BULK_CLIENT)
+        assert np.array_equal(b2.draws_without_replacement(40000, 3, 41), base)
+        # and the game FY paths under an absurdly tight pool budget
+        monkeypatch.setattr(rng, "_POOL_CELL_BUDGET", 1)  # 1-row chunks
+        b3 = rng.BulkRng(SERVER, BULK_CLIENT)
+        keno = b3.keno_hits(9)
+        mines = b3.mines_positions(5, 9)
+        decks = b3.video_poker_decks(9)
+        monkeypatch.setattr(rng, "_POOL_CELL_BUDGET", 50_000_000)
+        b4 = rng.BulkRng(SERVER, BULK_CLIENT)
+        assert np.array_equal(b4.keno_hits(9), keno)
+        assert np.array_equal(b4.mines_positions(5, 9), mines)
+        assert np.array_equal(b4.video_poker_decks(9), decks)
+
+    def test_pool_matrix_cells_bounded_at_runtime(self, monkeypatch):
+        """Watch the actual (rows, pool) matrices _fisher_yates_matrix
+        receives: every one must respect the pool-cell budget."""
+        seen = []
+        real = rng.BulkRng._fisher_yates_matrix  # class access unwraps staticmethod
+
+        def spy(floats2d, pool_size):
+            seen.append(floats2d.shape[0] * pool_size)
+            return real(floats2d, pool_size)
+
+        monkeypatch.setattr(rng.BulkRng, "_fisher_yates_matrix", staticmethod(spy))
+        b = rng.BulkRng(SERVER, BULK_CLIENT)
+        b.draws_without_replacement(40000, 2, 3000)
+        b.keno_hits(50)
+        b.mines_positions(3, 50)
+        b.video_poker_decks(50)
+        assert seen and all(c <= rng._POOL_CELL_BUDGET for c in seen)
 
 
 class TestBulkDistributions:

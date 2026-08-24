@@ -17,6 +17,18 @@
    (terminating hash reached by re-hashing, per-game verification steps,
    streamed simulator bit-identical to scalar chain play).
 
+3b. Commitment-ordering enforcement (the fairness guarantee itself): the
+   reference binds the salt to "a future bitcoin block ... so players can
+   be certain that we did not pick one in the house's favor" — terminating
+   hash FIRST, salt SECOND.  Gates: STAKE_SALT (block 584,500, mined
+   2019-07-21) is refused for any newly generated chain; chains cannot be
+   played before a salt is bound; a salt attested to predate the commitment
+   is refused; a caller-supplied (pre-existing) salt warns and is marked
+   ``fair_ordering: False``; the honest two-phase protocol (commit, then
+   draw salt) runs end-to-end and its verification dict records the order
+   with timestamps; replaying Stake's own published chain with an explicit
+   STAKE_SALT still works.
+
 4. Empirical bar: 10M+ provably-fair rounds per mechanism —
    (a) vectorized BulkRng stream (critic-verified rng core), and
    (b) Stake's ACTUAL salted hash-chain mechanism, streamed.
@@ -45,6 +57,7 @@ import json
 import math
 import re
 import sys
+import warnings
 from pathlib import Path
 from typing import Dict, List
 
@@ -59,9 +72,12 @@ from spinquest_sim.games.crash import (  # noqa: E402
     STAKE_SALT,
     STAKE_TERMINATING_HASH,
     TWO32,
+    CommitmentOrderError,
+    CommitmentOrderWarning,
     Crash,
     HashChain,
     analytic_table,
+    crash_point_from_hash,
     build_hash_chain,
     crash_int_from_hash,
     crash_point_from_int,
@@ -89,6 +105,10 @@ DEFAULT_CHAIN_ROUNDS = 10_000_000
 SIM_SERVER_SEED = hashlib.sha256(b"spinquest crash validation v1").hexdigest()
 SIM_CLIENT_SEED = "spinquest-crash"
 SIM_CHAIN_SECRET = hashlib.sha256(b"spinquest crash chain v1").hexdigest()
+# Fixed salt for the reproducible 10M chain campaign — NOT STAKE_SALT (the
+# engine refuses that for new chains); using it emits CommitmentOrderWarning
+# and marks the run fair_ordering=False, both asserted below.
+SIM_CHAIN_SALT = hashlib.sha256(b"spinquest crash validation salt v1").hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -213,14 +233,16 @@ def check_chain_mechanics() -> Dict[str, object]:
         verify_game_hash(chain[-1 - g], term, length) == g
         for g in (1, 100, length - 1)
     )
-    # streamed simulator bit-identical to scalar HashChain play (all 10k games)
+    # streamed simulator bit-identical to scalar HashChain play (all 10k
+    # games), honest protocol: chain committed first, salt bound afterwards
     hc = HashChain(seed, length=length)
+    hc.bind_salt(SIM_CHAIN_SALT, salt_source="validation fixture")
     scalar_ints = [
-        crash_int_from_hash(hc.pop_hash()[1], STAKE_SALT)
+        crash_int_from_hash(hc.pop_hash()[1], hc.salt)
         for _ in range(length - 1)
     ]
     ints, term_stream = crash_mod._stream_chain_ints(
-        seed, length - 1, STAKE_SALT, progress=False
+        seed, length - 1, SIM_CHAIN_SALT, progress=False
     )
     stream_ok = term_stream == term and ints.tolist() == scalar_ints
     return {
@@ -230,6 +252,109 @@ def check_chain_mechanics() -> Dict[str, object]:
         "verification_steps_ok": steps_ok,
         "stream_bit_identical_to_scalar": stream_ok,
         "pass": term_ok and steps_ok and stream_ok,
+    }
+
+
+def check_commitment_ordering() -> Dict[str, object]:
+    """Gate 3b: the commitment order the reference's guarantee rests on."""
+    checks: Dict[str, bool] = {}
+
+    # (1) STAKE_SALT (revealed 2019-07-21) refused for any NEW chain, at
+    # every chain-generating entry point.
+    def _raises_commitment_error(fn) -> bool:
+        try:
+            fn()
+        except CommitmentOrderError:
+            return True
+        except Exception:
+            return False
+        return False
+
+    checks["stake_salt_refused_at_hashchain_init"] = _raises_commitment_error(
+        lambda: HashChain("grind-attempt", length=6, salt=STAKE_SALT)
+    )
+    checks["stake_salt_refused_at_bind_salt"] = _raises_commitment_error(
+        lambda: HashChain("grind-attempt", length=6).bind_salt(STAKE_SALT)
+    )
+    checks["stake_salt_refused_in_chain_simulator"] = _raises_commitment_error(
+        lambda: simulate_chain_targets(
+            [2.0], 10, secret_seed="grind-attempt", salt=STAKE_SALT,
+            progress=False,
+        )
+    )
+
+    # (2) no play before a salt is bound (commitment must be publishable
+    # while the salt does not yet exist).
+    hc = HashChain("ordering-demo", length=64)
+    commitment_first = len(hc.terminating_hash) == 64 and hc.salt is None
+    try:
+        hc.pop_hash()
+        no_play = False
+    except RuntimeError:
+        no_play = True
+    checks["terminating_hash_available_before_salt"] = commitment_first
+    checks["play_refused_before_salt_bound"] = no_play
+
+    # (3) a salt attested to predate the commitment is refused.
+    stale_salt = hashlib.sha256(b"a block mined years ago").hexdigest()
+    checks["salt_predating_commitment_refused"] = _raises_commitment_error(
+        lambda: hc.bind_salt(stale_salt, revealed_at=hc.committed_at - 86400.0)
+    )
+
+    # (4) honest binding AFTER the commitment succeeds and is recorded.
+    hc.bind_salt(
+        hashlib.sha256(b"future-source salt for ordering demo").hexdigest(),
+        salt_source="demo source revealed after commitment",
+        revealed_at=hc.committed_at + 1.0,
+    )
+    rec = hc.commitment
+    checks["honest_bind_fair_ordering_recorded"] = (
+        rec["fair_ordering"] is True
+        and rec["order"] == "terminating_hash_first"
+        and rec["salt_bound_at_unix"] >= rec["terminating_hash_committed_at_unix"]
+    )
+
+    # (5) caller-supplied (pre-existing) salt warns and is marked unfair.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = simulate_chain_targets(
+            [2.0], 200, secret_seed="warn-demo", salt=SIM_CHAIN_SALT,
+            progress=False,
+        )
+    checks["preexisting_salt_warns"] = any(
+        issubclass(w.category, CommitmentOrderWarning) for w in caught
+    )
+    checks["preexisting_salt_marked_unfair"] = (
+        res["verification"]["commitment"]["fair_ordering"] is False
+    )
+
+    # (6) honest two-phase protocol end-to-end: commit -> draw salt -> play.
+    honest = simulate_chain_targets(
+        [2.0], 20_000, secret_seed="honest-two-phase-demo", progress=False
+    )
+    hrec = honest["verification"]["commitment"]
+    checks["two_phase_protocol_fair_ordering"] = (
+        hrec["fair_ordering"] is True
+        and hrec["order"] == "terminating_hash_first"
+        and hrec["terminating_hash_committed_at_unix"]
+        <= hrec["salt_bound_at_unix"]
+        and hrec["salt"] != STAKE_SALT
+    )
+
+    # (7) the one legitimate STAKE_SALT use — replay verification of a hash
+    # claimed to belong to Stake's published 2019 chain — still works.
+    try:
+        pt = crash_point_from_hash(
+            hashlib.sha256(b"claimed stake hash").hexdigest(), STAKE_SALT
+        )
+        checks["stake_replay_verification_still_works"] = pt >= 1.0
+    except Exception:
+        checks["stake_replay_verification_still_works"] = False
+
+    return {
+        "checks": checks,
+        "honest_two_phase_commitment_record": hrec,
+        "pass": all(checks.values()),
     }
 
 
@@ -300,8 +425,27 @@ def run_empirical_chain(targets: List[float], n_rounds: int) -> Dict[str, object
         f"mechanism (sequential SHA-256 walk + HMAC) ...",
         flush=True,
     )
-    res = simulate_chain_targets(
-        targets, n_rounds, secret_seed=SIM_CHAIN_SECRET, salt=STAKE_SALT
+    print(
+        "[sim:chain] reproducible mode: fixed validation salt (never "
+        "STAKE_SALT — the engine refuses that for new chains); the engine "
+        "warns and records fair_ordering=False, asserted below.",
+        flush=True,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = simulate_chain_targets(
+            targets, n_rounds, secret_seed=SIM_CHAIN_SECRET,
+            salt=SIM_CHAIN_SALT,
+        )
+    warned = any(issubclass(w.category, CommitmentOrderWarning) for w in caught)
+    commitment = res["verification"]["commitment"]
+    guard_ok = warned and commitment["fair_ordering"] is False
+    print(
+        f"[sim:chain] CommitmentOrderWarning emitted={warned}, "
+        f"commitment order recorded as '{commitment['order']}' "
+        f"(fair_ordering={commitment['fair_ordering']}) -> "
+        f"{'PASS' if guard_ok else 'FAIL'}",
+        flush=True,
     )
     _print_sim("chain", res)
     return {
@@ -311,7 +455,8 @@ def run_empirical_chain(targets: List[float], n_rounds: int) -> Dict[str, object
         "elapsed_s": res["elapsed_s"],
         "targets": _sim_rows(res),
         "verification": res["verification"],
-        "pass": res["pass"],
+        "reproducible_mode_guard_ok": guard_ok,
+        "pass": bool(res["pass"] and guard_ok),
     }
 
 
@@ -406,6 +551,19 @@ def main(argv: List[str] | None = None) -> int:
         f"{'PASS' if chain['pass'] else 'FAIL'}"
     )
 
+    ordering = check_commitment_ordering()
+    for name, ok in ordering["checks"].items():
+        print(f"[order] {name}: {'PASS' if ok else 'FAIL'}")
+    hrec = ordering["honest_two_phase_commitment_record"]
+    print(
+        f"[order] honest two-phase demo: terminating_hash "
+        f"{hrec['terminating_hash'][:16]}... committed at "
+        f"{hrec['terminating_hash_committed_at']}, salt "
+        f"{str(hrec['salt'])[:16]}... bound at {hrec['salt_bound_at']} "
+        f"({hrec['salt_source']}) -> "
+        f"{'PASS' if ordering['pass'] else 'FAIL'}"
+    )
+
     woo = check_woo_comparison(targets)
     print(
         "[woo]   COMPARISON ONLY (documented, not a target): WoO analyzes "
@@ -436,13 +594,14 @@ def main(argv: List[str] | None = None) -> int:
         chain_sim = run_empirical_chain(targets, args.chain_rounds)
 
     overall = bool(
-        spec["pass"] and table["pass"] and chain["pass"] and woo["pass"]
-        and bulk_sim["pass"] and chain_sim["pass"]
+        spec["pass"] and table["pass"] and chain["pass"] and ordering["pass"]
+        and woo["pass"] and bulk_sim["pass"] and chain_sim["pass"]
     )
     summary = {
         "game": "crash",
         "overall_pass": overall,
         "spec_parity": {"checks": spec["checks"], "pass": spec["pass"]},
+        "commitment_ordering": ordering,
         "payout_table": {
             "worst_rtp_dev_from_099": table["worst_rtp_dev_from_099"],
             "worst_p_rel_dev_from_ideal": table["worst_p_rel_dev_from_ideal"],
@@ -462,6 +621,7 @@ def main(argv: List[str] | None = None) -> int:
             "server_seed": SIM_SERVER_SEED,
             "client_seed": SIM_CLIENT_SEED,
             "chain_secret_seed": SIM_CHAIN_SECRET,
+            "chain_salt": SIM_CHAIN_SALT,
         },
     }
     print("CRASH_VALIDATION_JSON: " + json.dumps(summary, default=float))

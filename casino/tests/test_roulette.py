@@ -27,9 +27,13 @@ RTP_EXACT = Fraction(36, 37)
 def test_bet_enumeration_counts():
     assert len(rl.all_splits()) == 60      # 24 horizontal + 33 vertical + 3 zero
     assert len(rl.all_streets()) == 12
+    assert len(rl.zero_trios()) == 2
     assert len(rl.all_corners()) == 22
+    assert len(rl.first_four()) == 4
     assert len(rl.all_lines()) == 11
-    assert len(rl.all_bets()) == 37 + 60 + 12 + 22 + 11 + 3 + 3 + 6 == 154
+    # Standard 157-bet European catalogue:
+    # street bets = 12 rows + 2 zero trios; corner bets = 22 + first four.
+    assert len(rl.all_bets()) == 37 + 60 + (12 + 2) + (22 + 1) + 11 + 3 + 3 + 6 == 157
 
 
 def test_split_geometry():
@@ -77,15 +81,21 @@ def test_colors_match_reference():
 
 
 def test_zero_loses_every_outside_bet():
-    """A pocket of 0 loses all bets that do not cover 0 (reference, sec. 5)."""
+    """A pocket of 0 loses all bets that do not cover 0 (reference, sec. 5).
+
+    Exactly 7 bets cover 0: straight 0, the 3 zero splits, the 2 zero trios
+    and the first four.  Every other bet — every outside bet included — must
+    NOT cover 0."""
+    covering = []
     for bet_type, sel in rl.all_bets():
         eng = Roulette(bet_type, sel)
-        if bet_type == "straight" and sel == 0:
-            assert 0 in eng.covered
-        elif bet_type == "split" and 0 in sel:
-            assert 0 in eng.covered
-        else:
-            assert 0 not in eng.covered, (bet_type, sel)
+        covers_zero = (bet_type == "straight" and sel == 0) or (
+            isinstance(sel, tuple) and 0 in sel
+        )
+        assert (0 in eng.covered) == covers_zero, (bet_type, sel)
+        if 0 in eng.covered:
+            covering.append((bet_type, sel))
+    assert len(covering) == 7
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +222,29 @@ def test_selection_order_normalized():
     assert Roulette("corner", (5, 1, 4, 2)).selection == (1, 2, 4, 5)
 
 
+def test_zero_trios_and_first_four():
+    """The mat is coherent about zero adjacency: having the zero splits, the
+    zero trios (street payout) and first four (corner payout) are legal too."""
+    for trio in ((0, 1, 2), (0, 2, 3)):
+        eng = Roulette("street", trio)
+        assert eng.coverage == 3
+        assert eng.multiplier == 12.0 and eng.payout_odds == 11
+        assert eng.rtp_exact == RTP_EXACT
+    ff = Roulette("corner", (0, 1, 2, 3))
+    assert ff.coverage == 4
+    assert ff.multiplier == 9.0 and ff.payout_odds == 8
+    assert ff.rtp_exact == RTP_EXACT
+    # Shapes that do NOT follow from the zero adjacency stay illegal.
+    with pytest.raises(ValueError):
+        Roulette("street", (0, 1, 3))      # not a trio (1 and 3 not adjacent via 0's corner)
+    with pytest.raises(ValueError):
+        Roulette("street", (0, 3, 4))
+    with pytest.raises(ValueError):
+        Roulette("corner", (0, 1, 2, 4))
+    with pytest.raises(ValueError):
+        Roulette("split", (0, 4))          # 0 borders only the first row
+
+
 # ---------------------------------------------------------------------------
 # (b) provably-fair single round
 # ---------------------------------------------------------------------------
@@ -275,6 +308,41 @@ def test_payouts_for_pockets():
     np.testing.assert_allclose(
         eng.payouts_for_pockets(pockets), [0.0, 3.0, 3.0, 0.0, 0.0]
     )
+
+
+def test_payouts_for_pockets_rejects_out_of_range():
+    """No silent wraparound: -1 must NOT settle as pocket 36 (numpy fancy
+    indexing would happily wrap it), and >= 37 / non-integer dtypes raise."""
+    eng = Roulette("red")
+    with pytest.raises(ValueError):
+        eng.payouts_for_pockets(np.array([-1]))
+    with pytest.raises(ValueError):
+        eng.payouts_for_pockets(np.array([0, 5, -3, 12]))
+    with pytest.raises(ValueError):
+        eng.payouts_for_pockets(np.array([37]))
+    with pytest.raises(TypeError):
+        eng.payouts_for_pockets(np.array([1.5]))
+    # Empty input is fine (settles to an empty payout array)
+    assert eng.payouts_for_pockets(np.array([], dtype=np.int64)).size == 0
+
+
+def test_settle_bets_multi_bet_basket():
+    """Shared-spin settlement of a simultaneous basket (multi-bet API)."""
+    basket = [Roulette("red"), Roulette("straight", 0), Roulette("dozen", 1)]
+    pockets = np.array([0, 1, 13, 36])
+    # pocket 0: straight-0 pays 36; pocket 1: red 2 + dozen1 3 = 5;
+    # pocket 13: nothing; pocket 36: red 2.
+    np.testing.assert_allclose(
+        rl.settle_bets(pockets, basket), [36.0, 5.0, 0.0, 2.0]
+    )
+    with pytest.raises(ValueError):
+        rl.settle_bets(pockets, [])
+    with pytest.raises(ValueError):
+        rl.settle_bets(np.array([-1]), basket)
+    # Basket EV is still 36/37 per unit staked: settle the basket over the
+    # full wheel (each pocket once) — total payout is 36 * n_bets exactly.
+    wheel = np.arange(37)
+    assert rl.settle_bets(wheel, basket).sum() == 36.0 * len(basket)
 
 
 def test_simulate_contract_and_reproducibility():

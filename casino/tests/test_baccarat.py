@@ -9,8 +9,12 @@ probabilities, and per-unit SDs).
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import subprocess
+import sys
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -226,13 +230,129 @@ def test_total_grid_is_exact_and_consistent():
 
 def test_full_payout_table_structure():
     table = bc.full_payout_table(8)
-    assert set(table) == set(bc.BET_TYPES)
+    # main bets AND the two 11:1 pair side bets (WoO's fifth column)
+    assert set(table) == set(bc.BET_TYPES) | set(bc.PAIR_BET_TYPES)
     for bet, row in table.items():
         assert set(row) >= {
             "rtp", "house_edge", "std_per_unit", "config",
             "payout_odds", "multiplier", "win_probability",
         }
         assert row["config"]["game"] == "baccarat"
+    for bet in bc.PAIR_BET_TYPES:
+        assert table[bet]["payout_odds"] == "11:1"
+        assert table[bet]["multiplier"] == 12.0
+        assert table[bet]["config"]["rank_based"] is True
+
+
+# ---------------------------------------------------------------------------
+# pair side bets (11:1) — rank-level analytics (references/woo/baccarat.md)
+# ---------------------------------------------------------------------------
+
+def test_card_ranks_follow_published_layout():
+    # published CARDS layout: 4 suits of each rank contiguous, ranks 2..A
+    for idx in range(52):
+        assert bc.card_rank(idx) == idx // 4
+        assert bc.CARD_RANKS[idx] == idx // 4
+    assert list(np.bincount(bc.CARD_RANKS, minlength=13)) == [4] * 13
+    # ranks are FINER than values: 10/J/Q/K distinct ranks, same value 0
+    assert len({bc.card_rank(i) for i in (32, 36, 40, 44)}) == 4
+    assert len({bc.card_value(i) for i in (32, 36, 40, 44)}) == 1
+    with pytest.raises(ValueError):
+        bc.card_rank(52)
+    with pytest.raises(ValueError):
+        bc.card_rank(-1)
+
+
+def test_pair_probability_exact_fractions():
+    # finite D-deck shoe: (4D-1)/(52D-1); infinite: 1/13
+    assert bc.pair_probability(8) == Fraction(31, 415)
+    assert bc.pair_probability(6) == Fraction(23, 311)
+    assert bc.pair_probability(1) == Fraction(1, 17)
+    assert bc.pair_probability(None) == Fraction(1, 13)
+    for decks in (0, -1, True, 2.5):
+        with pytest.raises(ValueError):
+            bc.pair_probability(decks)
+
+
+def test_pair_house_edges_match_woo_all_deck_counts():
+    # WoO pair column: 10.36% (8) / 11.25% (6) / 29.41% (1) / 7.69% (inf)
+    assert round(100 * float(bc.pair_house_edge(8)), 2) == 10.36
+    assert round(100 * float(bc.pair_house_edge(6)), 2) == 11.25
+    assert round(100 * float(bc.pair_house_edge(1)), 2) == 29.41
+    assert round(100 * float(bc.pair_house_edge(None)), 2) == 7.69
+    # WoO 8-deck pair RTP 89.64%; identities hold exactly
+    assert round(100 * float(bc.pair_rtp(8)), 2) == 89.64
+    for decks in (8, 6, 1, None):
+        p = bc.pair_probability(decks)
+        assert bc.pair_rtp(decks) == 12 * p
+        assert bc.pair_house_edge(decks) == 1 - 12 * p
+        assert bc.pair_std_per_unit(decks) == pytest.approx(
+            math.sqrt(float(144 * p * (1 - p)))
+        )
+
+
+def test_pair_payout_published_odds():
+    assert bc.PAIR_PAYOUT_ODDS == Fraction(11)
+    assert float(bc.PAIR_MULTIPLIER) == 12.0
+    with pytest.raises(ValueError):
+        bc.pair_summary(8, "dragon_pair")
+    s = bc.pair_summary(None, "banker_pair")
+    assert s["config"]["decks"] == "infinite"
+    assert s["win_probability"] == pytest.approx(1 / 13)
+
+
+def test_play_round_pair_flags_recompute_from_cards():
+    n_pairs = 0
+    for decks in (8, None):
+        eng = Baccarat("player", decks)
+        for nonce in range(150):
+            r = eng.play_round(SS, CS, nonce)
+            c = r["cards"]
+            assert r["player_pair"] == (c[0] // 4 == c[2] // 4)
+            assert r["banker_pair"] == (c[1] // 4 == c[3] // 4)
+            n_pairs += r["player_pair"] + r["banker_pair"]
+    assert n_pairs > 0    # ~1/13 per hand: 300 hands virtually surely hit
+
+
+def test_deal_cards_bit_identical_to_play_round():
+    for decks in (8, None):
+        rng = BulkRng(SS, CS, nonce_start=500)
+        cards = bc.deal_cards(rng, 60, decks)
+        eng = Baccarat("tie", decks)
+        for i in range(60):
+            assert list(cards[i]) == eng.play_round(SS, CS, 500 + i)["cards"]
+        assert rng.last_nonce_range == (500, 560)
+    with pytest.raises(ValueError):
+        bc.deal_cards(BulkRng(SS, CS, 0), 0, 8)
+
+
+def test_simulate_pairs_tracks_exact_rank_analytics():
+    n = 300_000
+    for decks in (8, None):
+        res = bc.simulate_pairs(n, decks=decks, bulk=BulkRng(SS, CS, 0),
+                                progress=False)
+        p = float(bc.pair_probability(decks))
+        se = math.sqrt(p * (1 - p) / n)
+        for bet in bc.PAIR_BET_TYPES:
+            r = res["bets"][bet]
+            assert abs(r["win_rate"] - p) < 4 * se, (decks, bet, r["z_score"])
+            assert r["rtp"] == pytest.approx(12 * r["win_rate"])
+            assert r["analytic_house_edge"] == pytest.approx(
+                float(bc.pair_house_edge(decks))
+            )
+        # rank uniformity: 13-bin chi2 per dealt position, df 12 — mean 12,
+        # generous ceiling (p ~ 2e-5) that a uniform shoe essentially
+        # never trips at a fixed seed
+        assert len(res["rank_chi2_per_position"]) == 6
+        assert all(x < 45.0 for x in res["rank_chi2_per_position"]), res[
+            "rank_chi2_per_position"
+        ]
+        counts = np.array(res["rank_counts"])
+        assert counts.shape == (6, 13)
+        assert (counts.sum(axis=1) == n).all()
+        assert res["pass"] and res["n_rounds"] == n
+    with pytest.raises(ValueError):
+        bc.simulate_pairs(0)
 
 
 def test_invalid_configs_rejected():
@@ -381,6 +501,85 @@ def test_payouts_for_outcomes_lookup():
     assert list(Baccarat("tie", 8).payouts_for_outcomes(outcomes)) == [
         0.0, 0.0, 9.0, 0.0, 9.0
     ]
+
+
+# ---------------------------------------------------------------------------
+# validation-script hardening: machine-readable summary must survive
+# argument errors and internal crashes (gauntlet round-4 gap)
+# ---------------------------------------------------------------------------
+
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "validate_baccarat.py"
+
+
+def _run_validator(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(_SCRIPT), *args],
+        capture_output=True, text=True, timeout=300,
+        cwd=str(_SCRIPT.parent.parent),
+    )
+
+
+def _json_line(stdout: str) -> dict:
+    lines = [l for l in stdout.splitlines()
+             if l.startswith("BACCARAT_VALIDATION_JSON: ")]
+    assert len(lines) == 1, "exactly one machine-readable summary line"
+    return json.loads(lines[0].split(": ", 1)[1])
+
+
+def test_validator_analytic_gates_pass_and_emit_json():
+    # --skip-sim runs gates 1-2 (payout-for-payout + WoO analytics) fast
+    proc = _run_validator("--skip-sim")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    j = _json_line(proc.stdout)
+    assert j["pass"] is True and j["failed"] == []
+    assert j["checks_passed"] == j["checks_total"] >= 46
+    assert j["game"] == "baccarat" and j["empirical"] is None
+    a = j["analytic"]
+    assert round(100 * a["banker"]["house_edge"], 2) == 1.06
+    assert round(100 * a["player"]["house_edge"], 2) == 1.24
+    assert round(100 * a["tie"]["house_edge"], 2) == 14.36
+    assert round(100 * a["player_pair"]["house_edge"], 2) == 10.36
+
+
+def test_validator_small_sim_reports_empirical_block():
+    proc = _run_validator("--rounds", "60000")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    j = _json_line(proc.stdout)
+    assert j["pass"] is True
+    emp = j["empirical"]
+    assert emp["n_rounds"] == 60000
+    assert set(emp["bets"]) == set(bc.BET_TYPES)
+    assert all(emp["bets"][b]["within_3se"] for b in bc.BET_TYPES)
+    assert set(emp["pair_bets"]) == set(bc.PAIR_BET_TYPES)
+    assert emp["verification"]["nonce_range"] == [0, 60000]
+
+
+def test_validator_rejects_bad_arguments():
+    for args in (("--rounds", "0"), ("--seed", "nothex"), ("--client", "")):
+        proc = _run_validator(*args)
+        assert proc.returncode == 2, args           # argparse usage error
+        assert "error:" in proc.stderr
+
+
+def test_validator_crash_still_emits_failing_json(tmp_path):
+    """A broken reference file must yield exit 1 + a pass:false JSON line,
+    never a bare traceback with no machine-readable verdict."""
+    code = (
+        "import sys, importlib.util, pathlib\n"
+        f"spec = importlib.util.spec_from_file_location('vb', {str(_SCRIPT)!r})\n"
+        "vb = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(vb)\n"
+        "vb.STAKE_MD = pathlib.Path('/nonexistent/baccarat.md')\n"
+        "sys.argv = ['validate_baccarat.py', '--skip-sim']\n"
+        "sys.exit(vb.main())\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 1
+    j = _json_line(proc.stdout)
+    assert j["pass"] is False
+    assert any("without exceptions" in name for name in j["failed"])
+    assert any("check-count floor" in name for name in j["failed"])
 
 
 def test_empirical_outcome_frequencies_track_exact_probabilities():

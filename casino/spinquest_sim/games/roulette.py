@@ -25,6 +25,16 @@ bytes of the first HMAC-SHA256 digest).  Both the scalar path
 :func:`spinquest_sim.rng.generate_floats`) and the vectorized path
 (:meth:`spinquest_sim.rng.BulkRng.roulette_pockets`) are the critic-verified
 RNG core — this module adds no randomness of its own.
+
+Lattice note: Stake's published float has exact granularity 1/2**32, and
+2**32 mod 37 == 7, so 7 of the 37 pockets carry one extra lattice point.
+The implemented wheel is therefore faithful to Stake's algorithm but not
+mathematically perfectly uniform: per-pocket probability is
+floor-or-ceil(2**32 / 37) / 2**32, a maximum relative deviation of
+37/2**32 ≈ 8.6e-9 from 1/37 (undetectable even at 10M spins — |ΔRTP| <
+1e-8).  The ``*_exact`` analytics in this module (``rtp_exact == 36/37``
+etc.) describe the IDEAL 37-pocket wheel, which is the published model;
+the lattice deviation is documented here rather than modeled.
 """
 
 from __future__ import annotations
@@ -48,12 +58,15 @@ __all__ = [
     "pocket_color",
     "all_splits",
     "all_streets",
+    "zero_trios",
     "all_corners",
+    "first_four",
     "all_lines",
     "dozen_pockets",
     "column_pockets",
     "all_bets",
     "full_payout_table",
+    "settle_bets",
     "Roulette",
 ]
 
@@ -120,6 +133,17 @@ def all_streets() -> List[Tuple[int, int, int]]:
     return [(3 * r + 1, 3 * r + 2, 3 * r + 3) for r in range(_GRID_ROWS)]
 
 
+def zero_trios() -> List[Tuple[int, int, int]]:
+    """The 2 zero trios on the single-zero mat: 0-1-2 and 0-2-3.
+
+    They follow from the SAME zero/first-row adjacency that legalizes the
+    zero splits (0-1, 0-2, 0-3): the chip sits on the corner shared by 0 and
+    two first-row numbers.  A trio covers 3 pockets and settles as a street
+    (11:1); the exact 36/coverage identity holds, so RTP is 36/37 like every
+    other bet."""
+    return [(0, 1, 2), (0, 2, 3)]
+
+
 def all_corners() -> List[Tuple[int, int, int, int]]:
     """All 22 corners: (n, n+1, n+3, n+4) for n in columns 1-2 of rows 1-11."""
     return [
@@ -127,6 +151,15 @@ def all_corners() -> List[Tuple[int, int, int, int]]:
         for r in range(_GRID_ROWS - 1)
         for n in (3 * r + 1, 3 * r + 2)
     ]
+
+
+def first_four() -> Tuple[int, int, int, int]:
+    """The first-four / basket bet, unique to single-zero mats: 0-1-2-3
+    (0 plus the whole first row).  Covers 4 pockets and settles as a corner
+    (8:1) — again exactly 36/coverage, RTP 36/37.  (Distinct from the
+    American five-number bet 0-00-1-2-3, which needs a double zero and is
+    deliberately not implemented.)"""
+    return (0, 1, 2, 3)
 
 
 def all_lines() -> List[Tuple[int, ...]]:
@@ -158,23 +191,27 @@ _EVEN_MONEY_POCKETS: Dict[str, Tuple[int, ...]] = {
     "high": tuple(range(19, 37)),         # 19-36
 }
 
-# Legal-selection lookup per multi-pocket inside bet type.
+# Legal-selection lookup per multi-pocket inside bet type.  The zero trios
+# settle as streets and the first four as a corner (coverage-matched odds:
+# 11:1 on 3 pockets, 8:1 on 4 pockets), completing the standard 157-bet
+# European catalogue.
 _LEGAL_SETS: Dict[str, Dict[frozenset, Tuple[int, ...]]] = {
     "split": {frozenset(s): s for s in all_splits()},
-    "street": {frozenset(s): s for s in all_streets()},
-    "corner": {frozenset(s): s for s in all_corners()},
+    "street": {frozenset(s): s for s in all_streets() + zero_trios()},
+    "corner": {frozenset(s): s for s in all_corners() + [first_four()]},
     "line": {frozenset(s): s for s in all_lines()},
 }
 
 
 def all_bets() -> List[Tuple[str, object]]:
-    """Every legal (bet_type, selection) — 154 bets total:
-    37 straight + 60 split + 12 street + 22 corner + 11 line
-    + 3 dozen + 3 column + 6 even-money."""
+    """Every legal (bet_type, selection) — the standard 157-bet European
+    catalogue: 37 straight + 60 split + (12 street + 2 zero trios)
+    + (22 corner + 1 first-four) + 11 line + 3 dozen + 3 column
+    + 6 even-money."""
     bets: List[Tuple[str, object]] = [("straight", n) for n in range(POCKETS)]
     bets += [("split", s) for s in all_splits()]
-    bets += [("street", s) for s in all_streets()]
-    bets += [("corner", s) for s in all_corners()]
+    bets += [("street", s) for s in all_streets() + zero_trios()]
+    bets += [("corner", s) for s in all_corners() + [first_four()]]
     bets += [("line", s) for s in all_lines()]
     bets += [("dozen", i) for i in (1, 2, 3)]
     bets += [("column", i) for i in (1, 2, 3)]
@@ -217,6 +254,46 @@ _CANONICAL: Dict[str, Tuple[str, object]] = {
     "low": ("low", None),
     "high": ("high", None),
 }
+
+
+def _validate_pockets(pockets: np.ndarray) -> np.ndarray:
+    """Range/dtype-check an array of spin results before settlement.
+
+    Rejects non-integer dtypes and any value outside 0..36.  Without the low
+    check, numpy fancy indexing would silently wrap negatives (-1 -> pocket
+    36) and settlement would fabricate wins for impossible outcomes."""
+    pockets = np.asarray(pockets)
+    if pockets.size == 0:
+        return pockets.astype(np.int64)
+    if not np.issubdtype(pockets.dtype, np.integer):
+        raise TypeError(
+            f"pockets must be an integer array, got dtype {pockets.dtype}"
+        )
+    lo, hi = int(pockets.min()), int(pockets.max())
+    if lo < 0 or hi >= POCKETS:
+        raise ValueError(
+            f"pockets must be in 0..36, got values in [{lo}, {hi}]"
+        )
+    return pockets
+
+
+def settle_bets(
+    pockets: np.ndarray, bets: Sequence["Roulette"]
+) -> np.ndarray:
+    """Settle a basket of simultaneous one-unit bets on shared spins.
+
+    This is how roulette is actually played: several chips on one spin.
+    Returns the TOTAL for-one payout per spin (total stake = ``len(bets)``
+    units per spin); mean(result) / len(bets) estimates the basket's RTP,
+    which is 36/37 regardless of composition (every component bet has
+    identical EV — bet choice moves only variance/covariance)."""
+    if not bets:
+        raise ValueError("bets must be a non-empty sequence of Roulette bets")
+    pockets = _validate_pockets(pockets)
+    total = np.zeros(pockets.shape, dtype=np.float64)
+    for bet in bets:
+        total += np.where(bet._mask[pockets], bet.multiplier, 0.0)
+    return total
 
 
 class Roulette:
@@ -312,7 +389,10 @@ class Roulette:
 
     @property
     def rtp_exact(self) -> Fraction:
-        """Exact analytic RTP: multiplier * P(win) = 36/37 for every bet."""
+        """Exact analytic RTP: multiplier * P(win) = 36/37 for every bet.
+
+        This is the ideal 37-pocket wheel; the implemented 2**32-lattice
+        float deviates by at most ~8.6e-9 relative (see module docstring)."""
         return self._mult_exact * self.win_probability_exact
 
     @property
@@ -396,8 +476,15 @@ class Roulette:
 
     def payouts_for_pockets(self, pockets: np.ndarray) -> np.ndarray:
         """Settle this bet against an array of spin results (for-one payout
-        per unit staked) — pure lookup, shared-spin evaluation across bets."""
-        return np.where(self._mask[pockets], self.multiplier, 0.0)
+        per unit staked) — pure lookup, shared-spin evaluation across bets.
+
+        Pockets are range-checked BOTH ways: values >= 37 would raise via
+        numpy anyway, but negative values would silently wrap (numpy fancy
+        indexing treats -1 as pocket 36) and pay out for an impossible
+        outcome, so they are rejected explicitly."""
+        return np.where(
+            self._mask[_validate_pockets(pockets)], self.multiplier, 0.0
+        )
 
     def simulate(
         self,

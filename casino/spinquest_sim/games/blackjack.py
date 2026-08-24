@@ -19,12 +19,15 @@ Details Stake does NOT publish (dealer soft-17 rule, double-after-split,
 resplit cap, surrender, hole-card/peek — reference section 4 closing note)
 are adopted from the matching Wizard of Odds infinite-deck expected-return
 rule set (references/woo/blackjack.md): dealer STANDS on soft 17, double on
-any first two cards, double after split allowed, split to at most 3 hands,
-aces split once and receive one card each, no surrender, dealer peeks for
-blackjack (player loses only the initial bet to a dealer natural; a player
-natural pushes it).  WoO's exact analysis of that rule set gives house edge
-0.511734% (player EV -0.511734%), the analytic and empirical target here,
-vs Stake's own published headline "Edge: 0.57%".
+any first two cards, double after split allowed, resplit non-ace pairs up
+to THREE times (at most 4 hands — WoO methodology note: "published tables
+cap resplits at three (aces excluded)"), aces split once and receive one
+card each, no surrender, dealer peeks for blackjack (player loses only the
+initial bet to a dealer natural; a player natural pushes it).  WoO's exact
+analysis of that rule set gives house edge 0.511734% (player EV
+-0.511734%); the exact analytics here reproduce it to < 5e-7 absolute, and
+it is the empirical target too, vs Stake's own published headline
+"Edge: 0.57%".
 
 The basic-strategy player is DERIVED, not hard-coded: with an infinite deck
 the EV of every action depends only on (total, softness, pair value) vs the
@@ -36,7 +39,7 @@ hitting soft 13 vs 5 and soft 15 vs 4 where the 4-deck chart doubles
 
 Engine contract:
   (a) exact analytic probability / RTP / variance — the full round-payout
-      distribution on the half-unit lattice -6 .. +6 units;
+      distribution on the half-unit lattice -8 .. +8 units;
   (b) provably-fair single-round play on the scalar RNG path
       (:meth:`Blackjack.play_round`);
   (c) a vectorized numpy simulator for 10M+ rounds on
@@ -46,8 +49,8 @@ Engine contract:
   (d) the standard result dict {rtp, house_edge, std_per_unit, config}.
 
 All payouts in this module are NET units per 1-unit initial bet (a 3:2
-blackjack win is +1.5, a doubled loss is -2, a 3-hand all-doubled sweep is
-+6 or -6); RTP = 1 + EV(net) and house edge = -EV(net), per WoO's
+blackjack win is +1.5, a doubled loss is -2, a 4-hand all-doubled sweep is
++8 or -8); RTP = 1 + EV(net) and house edge = -EV(net), per WoO's
 "loss per initial bet" definition.
 """
 
@@ -87,25 +90,27 @@ VALUES: Tuple[int, ...] = tuple(range(2, 12))  # 2..10, 11 = ace
 P_VALUE: Dict[int, float] = {v: (4.0 / 13.0 if v == 10 else 1.0 / 13.0) for v in VALUES}
 
 # Exact figure captured in references/woo/blackjack.md for this rule set
-# (infinite deck, S17, DAS, split to 3 hands, aces once/one card, no
-# surrender, optimal = total-dependent basic strategy).  The validation
-# script re-parses it from the reference file; this constant is for tests.
+# (infinite deck, S17, DAS, resplit non-aces to 4 hands, aces once/one
+# card, no surrender, optimal = total-dependent basic strategy).  The
+# validation script re-parses it from the reference file; this constant is
+# for tests.  The engine's exact analytics reproduce it to < 5e-7.
 WOO_INFINITE_DECK_HOUSE_EDGE = 0.00511734
 
 INSURANCE_PAYS = 2.0  # published: "Insurance bets pay 2:1"
 
-# Net-payout lattice: -6.0 .. +6.0 in half-unit steps (25 bins).  +-6 is the
-# extreme 3-hand all-doubled round; +1.5 is the blackjack payout.
-_LATTICE = np.arange(-12, 13, dtype=np.float64) / 2.0
-_NBINS = 25
+# Net-payout lattice: -8.0 .. +8.0 in half-unit steps (33 bins).  +-8 is the
+# extreme 4-hand all-doubled round; +1.5 is the blackjack payout.
+_LATTICE = np.arange(-16, 17, dtype=np.float64) / 2.0
+_NBINS = 33
+_LAT_OFF = 16  # bin index of net 0.0
 
 
 def _lat_idx(x: float) -> int:
-    """Lattice bin for a net payout (must be a multiple of 0.5 in [-6, 6])."""
+    """Lattice bin for a net payout (must be a multiple of 0.5 in [-8, 8])."""
     k = round(2.0 * x)
-    if abs(2.0 * x - k) > 1e-9 or not -12 <= k <= 12:
-        raise ValueError(f"payout {x} not on the half-unit lattice [-6, 6]")
-    return int(k) + 12
+    if abs(2.0 * x - k) > 1e-9 or not -_LAT_OFF <= k <= _LAT_OFF:
+        raise ValueError(f"payout {x} not on the half-unit lattice [-8, 8]")
+    return int(k) + _LAT_OFF
 
 
 def _add(t: int, s: bool, v: int) -> Tuple[int, bool]:
@@ -138,8 +143,8 @@ def hand_value(card_indices) -> Tuple[int, bool]:
 
 # Default per-bet float budget for the vectorized simulator: 24 floats = 3
 # HMAC digests.  A round consuming more than 24 cards requires a chain of
-# a dozen-plus aces/tiny cards across three split hands plus the dealer —
-# probability far below 1e-12 per round — and is handled exactly anyway by
+# a dozen-plus aces/tiny cards across four split hands plus the dealer —
+# probability far below 1e-10 per round — and is handled exactly anyway by
 # the scalar fallback in :meth:`Blackjack.simulate`.
 _DEFAULT_FLOAT_BUDGET = 24
 _SIM_CHUNK_ROUNDS = 500_000
@@ -155,8 +160,9 @@ class Blackjack:
     das:
         double after split allowed (default True, reference rule).
     max_hands:
-        2 or 3 (default 3, reference rule "split to 3 hands"); aces are
-        always split at most once regardless.
+        2, 3 or 4 (default 4 = three resplits, the WoO published-table
+        rule "resplits capped at three, aces excluded"); aces are always
+        split at most once regardless.
     bj_payout:
         net units paid for a winning natural (default 1.5 = 3:2, Stake's
         published payout).  Must be a multiple of 0.5.
@@ -166,11 +172,11 @@ class Blackjack:
         self,
         dealer_hits_soft_17: bool = False,
         das: bool = True,
-        max_hands: int = 3,
+        max_hands: int = 4,
         bj_payout: float = 1.5,
     ) -> None:
-        if max_hands not in (2, 3):
-            raise ValueError("max_hands must be 2 or 3")
+        if max_hands not in (2, 3, 4):
+            raise ValueError("max_hands must be 2, 3 or 4")
         if abs(2 * bj_payout - round(2 * bj_payout)) > 1e-9 or not 0 < bj_payout <= 2:
             raise ValueError("bj_payout must be a multiple of 0.5 in (0, 2]")
         self.h17 = bool(dealer_hits_soft_17)
@@ -300,11 +306,17 @@ class Blackjack:
                 self.DBL_SOFT[t, u] = ev_dbl(t, True) > ev_hs(t, True)
 
             # Split EVs.  Resolution model (mirrored exactly by the players
-            # in play_round/_play_chunk): after splitting (r, r), hand A
-            # draws; if it redraws r and a third hand is allowed, resplit
-            # immediately (three one-card-r hands, no further resplit);
-            # otherwise play hand A out, then hand B draws and may resplit
-            # the same way.  Aces: one card each, no resplit, no double.
+            # in play_round/_play_chunk): a queue of pending one-card-r
+            # hands, initially two, with max_hands - 2 further splits in
+            # budget.  The front hand draws its second card c; if c == r
+            # and budget remains, the hand splits immediately into two
+            # pending hands (the drawn r starts the new hand); otherwise
+            # the hand is played to completion before the next pending
+            # hand draws.  EV recursion g(m, b) over (pending hands m,
+            # split budget b); infinite deck makes hands independent, so
+            # g(m, b) = sum_c p_c * [g(m+1, b-1) if c == r and b > 0 else
+            # e_after(c) + g(m-1, b)].  Aces: one card each, no resplit,
+            # no double.
             ev_split: Dict[int, float] = {}
             for r in VALUES:
                 if r == 11:
@@ -318,15 +330,26 @@ class Blackjack:
                     for c, p in pv.items():
                         t2, s2 = _two(r, c)
                         e_after[c] = ev2(t2, s2, self.das)
-                    e0 = sum(pv[c] * e_after[c] for c in VALUES)
-                    s_ne = sum(pv[c] * e_after[c] for c in VALUES if c != r)
-                    pr = pv[r]
-                    if self.max_hands >= 3:
-                        ev_split[r] = (
-                            3.0 * pr * e0 + s_ne + (1.0 - pr) * (2.0 * pr * e0 + s_ne)
-                        )
-                    else:
-                        ev_split[r] = 2.0 * e0
+
+                    g_memo: Dict[Tuple[int, int], float] = {}
+
+                    def g(m: int, b: int, r=r, e_after=e_after) -> float:
+                        if m == 0:
+                            return 0.0
+                        key = (m, b)
+                        cached = g_memo.get(key)
+                        if cached is not None:
+                            return cached
+                        tot = 0.0
+                        for c, p in pv.items():
+                            if c == r and b > 0:
+                                tot += p * g(m + 1, b - 1)
+                            else:
+                                tot += p * (e_after[c] + g(m - 1, b))
+                        g_memo[key] = tot
+                        return tot
+
+                    ev_split[r] = g(2, self.max_hands - 2)
                 t0, s0 = _two(r, r)
                 self.SPLIT[r, u] = ev_split[r] > ev2(t0, s0, True)
                 self._ev_split_table[(r, u)] = ev_split[r]
@@ -382,12 +405,12 @@ class Blackjack:
                     else:
                         ft, dtot = f_idx + 4, 17 + dcat
                         res = w if ft > dtot else (-w if ft < dtot else 0)
-                    vec[2 * res + 12] += pf
+                    vec[2 * res + _LAT_OFF] += pf
                 return vec
 
             def conv(a: np.ndarray, b: np.ndarray) -> np.ndarray:
                 """Lattice convolution (sum of independent hand payouts)."""
-                return np.convolve(a, b)[12:37]
+                return np.convolve(a, b)[_LAT_OFF:_LAT_OFF + _NBINS]
 
             def split_dist(r: int) -> np.ndarray:
                 out = np.zeros(_NBINS)
@@ -397,31 +420,44 @@ class Blackjack:
                         t2, _ = _add(11, True, v)
                         fd[t2 - 4] += p
                     for dcat in range(6):
-                        g = paydist_given_d(fd, 1, dcat)
-                        out += d[dcat] * conv(g, g)
+                        g1 = paydist_given_d(fd, 1, dcat)
+                        out += d[dcat] * conv(g1, g1)
                     return out
-                pr = pv[r]
-                comps = []  # per second-card component: (weight, fd, w)
+                # Same pending-hand recursion as the EV (see ev_split
+                # above), on the payout lattice: gd(m, b) is the net
+                # distribution of m pending one-card-r hands with b splits
+                # left, conditioned on the dealer category.
+                pd_after: Dict[int, np.ndarray] = {}
+                comps = []  # per second-card component: (c, p, fd, w)
                 for c, p in pv.items():
                     t2, s2 = _two(r, c)
                     fd_c, w_c = hand_fd(t2, s2, self.das)
                     comps.append((c, p, fd_c, w_c))
+                delta0 = np.zeros(_NBINS)
+                delta0[_LAT_OFF] = 1.0
                 for dcat in range(6):
-                    g = np.zeros(_NBINS)  # unrestricted split hand
-                    h = np.zeros(_NBINS)  # split hand given second card != r
-                    for c, p, fd_c, w_c in comps:
-                        pd = paydist_given_d(fd_c, w_c, dcat)
-                        g += p * pd
-                        if c != r:
-                            h += p * pd
-                    h = h / (1.0 - pr)
-                    if self.max_hands >= 3:
-                        vec = pr * conv(conv(g, g), g) + (1.0 - pr) * conv(
-                            h, pr * conv(g, g) + (1.0 - pr) * h
-                        )
-                    else:
-                        vec = conv(g, g)
-                    out += d[dcat] * vec
+                    for c, _p, fd_c, w_c in comps:
+                        pd_after[c] = paydist_given_d(fd_c, w_c, dcat)
+
+                    gd_memo: Dict[Tuple[int, int], np.ndarray] = {}
+
+                    def gd(m: int, b: int, r=r, pd_after=pd_after) -> np.ndarray:
+                        if m == 0:
+                            return delta0
+                        key = (m, b)
+                        cached = gd_memo.get(key)
+                        if cached is not None:
+                            return cached
+                        acc = np.zeros(_NBINS)
+                        for c, p in pv.items():
+                            if c == r and b > 0:
+                                acc = acc + p * gd(m + 1, b - 1)
+                            else:
+                                acc = acc + p * conv(pd_after[c], gd(m - 1, b))
+                        gd_memo[key] = acc
+                        return acc
+
+                    out += d[dcat] * gd(2, self.max_hands - 2)
                 return out
 
             inner_ev = 0.0
@@ -649,30 +685,27 @@ class Blackjack:
                     t, _s = _add(11, True, card())
                     add_hand(t, 1, 2)
             else:
+                # Pending-hand queue: the front one-card-r hand draws its
+                # second card; drawing r with split budget left resplits
+                # immediately (the drawn r starts a new pending hand);
+                # otherwise the hand is played to completion before the
+                # next pending hand draws.  Mirrors ev_split/split_dist
+                # and _play_chunk exactly, card for card.
                 r = v1
                 actions.append(f"split {r}s")
-                c_a = card()
-                if c_a == r and self.max_hands >= 3:
-                    actions.append(f"resplit {r}s")
-                    for _ in range(3):
-                        t, s = _add(r, False, card())
-                        t, w, n = play(t, s, self.das)
-                        add_hand(t, w, n)
-                else:
-                    t, s = _add(r, False, c_a)
+                pending = 2
+                splits_left = self.max_hands - 2
+                while pending > 0:
+                    c = card()
+                    if c == r and splits_left > 0:
+                        splits_left -= 1
+                        pending += 1
+                        actions.append(f"resplit {r}s")
+                        continue
+                    t, s = _add(r, False, c)
                     t, w, n = play(t, s, self.das)
                     add_hand(t, w, n)
-                    c_b = card()
-                    if c_b == r and self.max_hands >= 3:
-                        actions.append(f"resplit {r}s")
-                        for _ in range(2):
-                            t, s = _add(r, False, card())
-                            t, w, n = play(t, s, self.das)
-                            add_hand(t, w, n)
-                    else:
-                        t, s = _add(r, False, c_b)
-                        t, w, n = play(t, s, self.das)
-                        add_hand(t, w, n)
+                    pending -= 1
         else:
             t, s = _two(v1, v2)
             t, w, n = play(t, s, True)
@@ -745,8 +778,9 @@ class Blackjack:
         net[d_bj & ~p_bj] = -1.0
         live = ~(p_bj | d_bj)
 
-        ft = np.zeros((n, 3), dtype=np.int16)  # final totals; > 21 = bust
-        wg = np.ones((n, 3), dtype=np.int16)
+        max_h = self.max_hands
+        ft = np.zeros((n, max_h), dtype=np.int16)  # final totals; > 21 = bust
+        wg = np.ones((n, max_h), dtype=np.int16)
         nh = np.zeros(n, dtype=np.int16)
 
         hit_hard, hit_soft = self.HIT_HARD, self.HIT_SOFT
@@ -802,48 +836,40 @@ class Blackjack:
 
         m_s = do_split & (v1 != 11)
         if m_s.any():
+            # Vectorized pending-hand queue, identical card order to
+            # play_round: per row, the front pending hand draws; a drawn r
+            # with split budget left resplits (pending += 1); otherwise
+            # the hand plays to completion (double/hits) before the next
+            # pending hand draws.  Per-row draw order is preserved because
+            # draw() advances per-row cursors independently.
             r = v1.astype(np.int16)
-            can_re = self.max_hands >= 3
-            c_a = draw(m_s)
-            rs = m_s & (c_a == r) & can_re
-            if rs.any():
-                for j in range(3):
-                    c = draw(rs)
+            pending = np.where(m_s, 2, 0).astype(np.int16)
+            left = np.where(m_s, max_h - 2, 0).astype(np.int16)
+            hidx = np.zeros(n, dtype=np.int64)
+            active = m_s & (pending > 0)
+            while active.any():
+                c = draw(active)
+                is_sp = active & (c == r) & (left > 0)
+                if is_sp.any():
+                    left[is_sp] -= 1
+                    pending[is_sp] += 1
+                resolve = active & ~is_sp
+                if resolve.any():
                     t = r.copy()
                     s = np.zeros(n, dtype=bool)
-                    vadd_masked(t, s, c, rs)
-                    play(rs, t, s, wg[:, j], self.das)
-                    ft[rs, j] = t[rs]
-                nh[rs] = 3
-            nrs = m_s & ~rs
-            if nrs.any():
-                t = r.copy()
-                s = np.zeros(n, dtype=bool)
-                vadd_masked(t, s, c_a, nrs)
-                play(nrs, t, s, wg[:, 0], self.das)
-                ft[nrs, 0] = t[nrs]
-                c_b = draw(nrs)
-                rs2 = nrs & (c_b == r) & can_re
-                if rs2.any():
-                    for j in (1, 2):
-                        c = draw(rs2)
-                        t = r.copy()
-                        s = np.zeros(n, dtype=bool)
-                        vadd_masked(t, s, c, rs2)
-                        play(rs2, t, s, wg[:, j], self.das)
-                        ft[rs2, j] = t[rs2]
-                    nh[rs2] = 3
-                nrs2 = nrs & ~rs2
-                if nrs2.any():
-                    t = r.copy()
-                    s = np.zeros(n, dtype=bool)
-                    vadd_masked(t, s, c_b, nrs2)
-                    play(nrs2, t, s, wg[:, 1], self.das)
-                    ft[nrs2, 1] = t[nrs2]
-                    nh[nrs2] = 2
+                    vadd_masked(t, s, c, resolve)
+                    wtmp = np.ones(n, dtype=np.int16)
+                    play(resolve, t, s, wtmp, self.das)
+                    rows = np.nonzero(resolve)[0]
+                    ft[rows, hidx[rows]] = t[rows]
+                    wg[rows, hidx[rows]] = wtmp[rows]
+                    hidx[rows] += 1
+                    pending[rows] -= 1
+                active = m_s & (pending > 0)
+            nh[m_s] = hidx[m_s]
 
         # --- dealer ----------------------------------------------------
-        hand_used = np.arange(3, dtype=np.int16)[None, :] < nh[:, None]
+        hand_used = np.arange(max_h, dtype=np.int16)[None, :] < nh[:, None]
         any_standing = (hand_used & (ft <= 21)).any(axis=1)
         md = live & any_standing
         dt = (up + hole).astype(np.int16)
@@ -862,7 +888,7 @@ class Blackjack:
 
         # --- settle ----------------------------------------------------
         d_bust = dt > 21
-        for j in range(3):
+        for j in range(max_h):
             hj = live & (nh > j)
             if not hj.any():
                 continue
@@ -907,9 +933,13 @@ class Blackjack:
         while done < n_rounds:
             step = min(chunk_rounds, n_rounds - done)
             chunk_nonce0 = rng.nonce_next
-            fm = rng.float_matrix(step, float_budget)
-            vals = CARD_VALUES[np.floor(fm * _DECK).astype(np.int64)]
-            del fm
+            # card_hands is BulkRng's per-bet blackjack/hilo method: ONE
+            # nonce per round, float_budget independent floor(f*52) draws
+            # from that round's stream — the event accounting lives in the
+            # RNG core, not re-derived here.
+            cards = rng.card_hands(float_budget, step)
+            vals = CARD_VALUES[cards]
+            del cards
             net, ov = self._play_chunk(vals)
             if ov.any():
                 for i in np.nonzero(ov)[0]:
@@ -919,10 +949,13 @@ class Blackjack:
                 n_overflow += int(ov.sum())
             s1 += float(net.sum())
             s2 += float((net * net).sum())
-            hist += np.bincount(
-                (np.rint(net * 2.0).astype(np.int64) + 12).clip(0, _NBINS - 1),
-                minlength=_NBINS,
-            )
+            bins = np.rint(net * 2.0).astype(np.int64) + _LAT_OFF
+            if bins.min() < 0 or bins.max() >= _NBINS:
+                bad = net[(bins < 0) | (bins >= _NBINS)]
+                raise AssertionError(
+                    f"net payout(s) off the [-8, 8] lattice: {bad[:5]}"
+                )
+            hist += np.bincount(bins, minlength=_NBINS)
             if keep_payouts:
                 kept.append(net)
             done += step

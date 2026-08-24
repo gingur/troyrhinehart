@@ -50,6 +50,19 @@ falling-factorial weights (finite shoe) or fixed weights (infinite deck),
 reduced to :class:`fractions.Fraction` probabilities — the same
 combinatorial method the Wizard of Odds names ("exact combinatorial
 analysis ... no simulation needed").
+
+Pair side bets (rank-level analytics): the Wizard's house-edge table
+carries a fifth column, "Pair bets (11:1)" — a side bet that a hand's
+FIRST TWO cards share a RANK (references/woo/baccarat.md: 10.36% at 8
+decks / 11.25% at 6 / 29.41% at 1 / 7.69% infinite; 8-deck RTP 89.64%).
+Rank identity lives one level below baccarat values (10/J/Q/K are four
+distinct ranks that all count 0), so this module exposes it explicitly:
+``CARD_RANKS`` (published card index // 4), exact
+:func:`pair_probability` = (4D-1)/(52D-1) for a D-deck shoe (1/13
+infinite), :func:`pair_house_edge` at the published 11:1 odds, and a
+rank-granular empirical path (:func:`deal_cards` / :func:`simulate_pairs`)
+that verifies the dealt CARD INDICES — not just their baccarat values —
+against those exact rank-level figures.
 """
 
 from __future__ import annotations
@@ -67,19 +80,31 @@ from spinquest_sim.rng import BulkRng
 
 __all__ = [
     "BET_TYPES",
+    "PAIR_BET_TYPES",
     "PAYOUT_ODDS",
     "MULTIPLIERS",
+    "PAIR_PAYOUT_ODDS",
+    "PAIR_MULTIPLIER",
     "EVENTS_PER_ROUND",
     "CARD_VALUES",
+    "CARD_RANKS",
     "BANKER_DRAW_TABLE",
     "card_value",
+    "card_rank",
     "banker_draws",
     "settle_values",
     "outcome_probabilities",
+    "pair_probability",
+    "pair_rtp",
+    "pair_house_edge",
+    "pair_std_per_unit",
+    "pair_summary",
     "total_grid",
     "full_payout_table",
+    "deal_cards",
     "deal_rounds",
     "simulate_all_bets",
+    "simulate_pairs",
     "Baccarat",
 ]
 
@@ -97,7 +122,16 @@ PAYOUT_ODDS: Dict[str, Fraction] = {
 # Total returned per 1 unit staked on a WIN (stake + winnings).
 MULTIPLIERS: Dict[str, Fraction] = {b: o + 1 for b, o in PAYOUT_ODDS.items()}
 
+# Pair side bets (references/woo/baccarat.md, house-edge table column
+# "Pair bets (11:1)"): the FIRST TWO cards of a hand share a rank.  Player
+# pair rides on the player's initial two cards, banker pair on the
+# banker's; the two bets are exactly symmetric by exchangeability.
+PAIR_BET_TYPES: Tuple[str, ...] = ("player_pair", "banker_pair")
+PAIR_PAYOUT_ODDS: Fraction = Fraction(11)                 # published 11:1
+PAIR_MULTIPLIER: Fraction = PAIR_PAYOUT_ODDS + 1          # 12.00 returned
+
 _DECK = 52
+_RANKS = 13
 _VALUES = 10  # baccarat card values 0..9
 
 # Baccarat value of each published card index 0..51 (rank = index // 4,
@@ -106,6 +140,15 @@ CARD_VALUES = np.array(
     [(r + 2 if r <= 7 else (0 if r <= 11 else 1)) for r in range(13)],
     dtype=np.int64,
 )[np.arange(_DECK) // 4]
+
+# Rank (0..12 = ranks 2..A) of each published card index — the published
+# CARDS layout groups the 4 suits of each rank contiguously, so rank is
+# exactly index // 4.  This is FINER than baccarat value: ranks 8..11
+# (10/J/Q/K) all collapse to value 0, but stay distinct here — pair bets
+# and the rank-level shoe checks live at this granularity.
+CARD_RANKS = np.arange(_DECK, dtype=np.int64) // 4
+CARD_RANKS.setflags(write=False)
+assert all(int(np.sum(CARD_RANKS == r)) == 4 for r in range(_RANKS))
 
 # Cards of each value in ONE deck: value 0 <- {10, J, Q, K} (16 cards),
 # values 1..9 <- 4 cards each.
@@ -133,6 +176,13 @@ def card_value(card_index: int) -> int:
     if not 0 <= card_index < _DECK:
         raise ValueError(f"card index must be in 0..51, got {card_index}")
     return int(CARD_VALUES[card_index])
+
+
+def card_rank(card_index: int) -> int:
+    """Rank (0..12, ranks 2..A) of a published card index 0..51."""
+    if not 0 <= card_index < _DECK:
+        raise ValueError(f"card index must be in 0..51, got {card_index}")
+    return card_index // 4
 
 
 def banker_draws(banker_total: int, player_third_value: Optional[int]) -> bool:
@@ -315,10 +365,78 @@ def outcome_probabilities(decks: Optional[int] = 8) -> Dict[str, Fraction]:
     }
 
 
+def pair_probability(decks: Optional[int] = 8) -> Fraction:
+    """Exact P(a hand's first two cards share a rank) — a rank-level
+    quantity (10/J/Q/K are distinct ranks despite all being value 0).
+
+    Finite D-deck shoe: after any first card, 4D-1 of the remaining
+    52D-1 cards match its rank -> (4D-1)/(52D-1); by exchangeability of
+    the without-replacement draw this applies identically to the Player
+    pair (dealt cards 1 & 3) and the Banker pair (cards 2 & 4).
+    Infinite decks (Stake's published mechanism, independent
+    ``floor(float * 52)`` draws): 4/52 = 1/13.
+    """
+    _shoe_params(decks)  # validates
+    if decks is None:
+        return Fraction(1, 13)
+    return Fraction(4 * decks - 1, 52 * decks - 1)
+
+
+def pair_rtp(decks: Optional[int] = 8) -> Fraction:
+    """Exact RTP of a pair side bet at the published 11:1 odds — 12 * p.
+    WoO 8-deck: 372/415 = 89.64%."""
+    return PAIR_MULTIPLIER * pair_probability(decks)
+
+
+def pair_house_edge(decks: Optional[int] = 8) -> Fraction:
+    """Exact pair-bet house edge: 1 - 12 * (4D-1)/(52D-1).  Reproduces
+    WoO's published column: 10.36% (8 decks), 11.25% (6), 29.41% (1),
+    7.69% (infinite)."""
+    return 1 - pair_rtp(decks)
+
+
+def pair_std_per_unit(decks: Optional[int] = 8) -> float:
+    """Per-unit SD of the pair-bet net result (+11 on a pair, -1
+    otherwise): sqrt(144 p (1-p))."""
+    p = pair_probability(decks)
+    return math.sqrt(float(144 * p * (1 - p)))
+
+
+def pair_summary(decks: Optional[int] = 8, bet: str = "player_pair") -> Dict[str, object]:
+    """Standard analytic result dict for one pair side bet (both pair bets
+    are exactly symmetric)."""
+    if bet not in PAIR_BET_TYPES:
+        raise ValueError(f"unknown pair bet {bet!r}; must be one of {PAIR_BET_TYPES}")
+    p = pair_probability(decks)
+    return {
+        "rtp": float(pair_rtp(decks)),
+        "house_edge": float(pair_house_edge(decks)),
+        "std_per_unit": pair_std_per_unit(decks),
+        "payout_odds": f"{float(PAIR_PAYOUT_ODDS):g}:1",
+        "multiplier": float(PAIR_MULTIPLIER),
+        "win_probability": float(p),
+        "push_probability": 0.0,
+        "config": {
+            "game": "baccarat",
+            "variant": "punto_banco",
+            "decks": decks if decks is not None else "infinite",
+            "bet_type": bet,
+            "payout_odds": f"{float(PAIR_PAYOUT_ODDS):g}:1",
+            "multiplier": float(PAIR_MULTIPLIER),
+            "rank_based": True,
+            "events_per_round": EVENTS_PER_ROUND,
+            "win_probability": float(p),
+            "push_probability": 0.0,
+        },
+    }
+
+
 def full_payout_table(decks: Optional[int] = 8) -> Dict[str, Dict[str, object]]:
     """Per bet: published odds, multiplier, exact probabilities, RTP, house
-    edge, per-unit SD — all analytic."""
-    return {
+    edge, per-unit SD — all analytic.  Covers the three main bets (Stake's
+    published spots) AND the two 11:1 pair side bets from WoO's table, so
+    every column of the published house-edge table is reproducible."""
+    table = {
         bet: Baccarat(bet, decks=decks).analytic_summary() | {
             "payout_odds": f"{float(PAYOUT_ODDS[bet]):g}:1",
             "multiplier": float(MULTIPLIERS[bet]),
@@ -327,6 +445,9 @@ def full_payout_table(decks: Optional[int] = 8) -> Dict[str, Dict[str, object]]:
         }
         for bet in BET_TYPES
     }
+    for bet in PAIR_BET_TYPES:
+        table[bet] = pair_summary(decks, bet)
+    return table
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +515,26 @@ def _settle_matrix(values: np.ndarray) -> np.ndarray:
 _OUTCOME_NAMES = ("player", "banker", "tie")
 
 
+def deal_cards(
+    rng: BulkRng, n_rounds: int, decks: Optional[int] = 8
+) -> np.ndarray:
+    """Deal ``n_rounds`` provably-fair rounds (one nonce each, 6 events
+    each) and return the (n, 6) CARD INDICES 0..51 in dealt order — full
+    rank identity (index // 4), not just baccarat values.  Row i is
+    bit-for-bit the ``cards`` list of :meth:`Baccarat.play_round` at nonce
+    ``start + i`` where ``start`` is ``rng.nonce_next`` before the call."""
+    if n_rounds <= 0:
+        raise ValueError("n_rounds must be positive")
+    if decks is None:
+        # Stake's published unlimited-deck mechanism: use BulkRng's own
+        # per-bet baccarat method — it reads the 6-event budget from
+        # EVENT_COUNTS['baccarat'] and consumes ONE nonce per coup, so this
+        # module cannot drift from the RNG core's event accounting.
+        return rng.baccarat_cards(n_rounds)
+    floats = rng.float_matrix(n_rounds, EVENTS_PER_ROUND)
+    return _cards_matrix(floats, decks)
+
+
 def deal_rounds(
     rng: BulkRng, n_rounds: int, decks: Optional[int] = 8
 ) -> np.ndarray:
@@ -401,9 +542,7 @@ def deal_rounds(
     each) and return outcome codes (0 player / 1 banker / 2 tie).  Row i is
     bit-for-bit reproducible with :meth:`Baccarat.play_round` at nonce
     ``start + i`` where ``start`` is ``rng.nonce_next`` before the call."""
-    floats = rng.float_matrix(n_rounds, EVENTS_PER_ROUND)
-    cards = _cards_matrix(floats, decks)
-    return _settle_matrix(CARD_VALUES[cards])
+    return _settle_matrix(CARD_VALUES[deal_cards(rng, n_rounds, decks)])
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +698,11 @@ class Baccarat:
             "banker_cards": [sq_rng.card_name(c) for c in banker_cards],
             "player_total": res["player_total"],
             "banker_total": res["banker_total"],
+            # 11:1 pair side bets: first two cards of the hand share a RANK
+            # (index // 4) — finer than value: e.g. ♦K + ♥K is a pair,
+            # ♦K + ♦10 is not, though both hands total 0.
+            "player_pair": cards[0] // 4 == cards[2] // 4,
+            "banker_pair": cards[1] // 4 == cards[3] // 4,
             "natural": res["natural"],
             "events_used": res["events_used"],
             "outcome": outcome,
@@ -687,6 +831,104 @@ def simulate_all_bets(
         "elapsed_s": elapsed,
         "rounds_per_sec": n_rounds / elapsed if elapsed > 0 else float("inf"),
         "pass": all(r["within_3se"] for r in per_bet.values()),
+        "verification": {
+            "server_seed_hash": rng.server_seed_hash,
+            "client_seed": rng.client_seed,
+            "nonce_range": (nonce_first, rng.nonce_next),
+        },
+    }
+
+
+def simulate_pairs(
+    n_rounds: int,
+    decks: Optional[int] = 8,
+    bulk: Optional[BulkRng] = None,
+    chunk_rounds: int = 1_000_000,
+    progress: bool = True,
+) -> Dict[str, object]:
+    """RANK-granular empirical campaign: deal ``n_rounds`` provably-fair
+    rounds and check the dealt CARD INDICES (not just their baccarat
+    values) against the exact rank-level analytics.
+
+    Measures (a) both 11:1 pair side bets — empirical win frequency and
+    RTP vs the exact :func:`pair_probability` / :func:`pair_rtp`, with
+    z-scores against the exact binomial SE — and (b) rank uniformity: a
+    13-bin count of card index // 4 for EACH of the 6 dealt positions
+    (every position is marginally uniform over ranks for both shoe
+    models), reported as per-position chi-squared statistics (df 12) and
+    the worst per-cell z.  Same seeds/nonces as :func:`simulate_all_bets`
+    deal the identical cards, so this audits the very shoe the main bets
+    settle on — at a granularity the value-level enumeration cannot see.
+    """
+    if n_rounds <= 0:
+        raise ValueError("n_rounds must be positive")
+    rng = bulk if bulk is not None else BulkRng()
+    nonce_first = rng.nonce_next
+    p_pairs = 0
+    b_pairs = 0
+    rank_counts = np.zeros((EVENTS_PER_ROUND, _RANKS), dtype=np.int64)
+    done = 0
+    t0 = time.perf_counter()
+    while done < n_rounds:
+        step = min(chunk_rounds, n_rounds - done)
+        cards = deal_cards(rng, step, decks)
+        ranks = cards // 4
+        p_pairs += int(np.sum(ranks[:, 0] == ranks[:, 2]))
+        b_pairs += int(np.sum(ranks[:, 1] == ranks[:, 3]))
+        for j in range(EVENTS_PER_ROUND):
+            rank_counts[j] += np.bincount(ranks[:, j], minlength=_RANKS)
+        done += step
+        if progress and n_rounds > chunk_rounds:
+            rate = done / (time.perf_counter() - t0)
+            print(
+                f"  baccarat pairs/ranks ({'inf' if decks is None else decks}"
+                f" decks): {done:,}/{n_rounds:,} rounds ({rate:,.0f}/s)",
+                flush=True,
+            )
+    elapsed = time.perf_counter() - t0
+
+    p_exact = pair_probability(decks)
+    pf = float(p_exact)
+    se_p = math.sqrt(pf * (1.0 - pf) / n_rounds)          # binomial SE
+    rtp_exact = float(pair_rtp(decks))
+    bets: Dict[str, Dict[str, object]] = {}
+    for bet, hits in (("player_pair", p_pairs), ("banker_pair", b_pairs)):
+        freq = hits / n_rounds
+        z = (freq - pf) / se_p if se_p > 0 else 0.0
+        bets[bet] = {
+            "rtp": float(PAIR_MULTIPLIER) * freq,
+            "house_edge": 1.0 - float(PAIR_MULTIPLIER) * freq,
+            "std_per_unit": math.sqrt(max(144.0 * freq * (1.0 - freq), 0.0)),
+            "config": pair_summary(decks, bet)["config"],
+            "n_rounds": n_rounds,
+            "wins": hits,
+            "win_rate": freq,
+            "analytic_win_probability": pf,
+            "analytic_rtp": rtp_exact,
+            "analytic_house_edge": 1.0 - rtp_exact,
+            "analytic_std_per_unit": pair_std_per_unit(decks),
+            "se_win_rate": se_p,
+            "z_score": z,
+            "within_3se": abs(z) <= 3.0,
+        }
+
+    # rank uniformity per dealt position: expected n/13 per cell
+    expected = n_rounds / _RANKS
+    dev = rank_counts - expected
+    chi2 = (dev * dev / expected).sum(axis=1)             # (6,) each df 12
+    se_cell = math.sqrt(n_rounds * (1 / _RANKS) * (1 - 1 / _RANKS))
+    max_cell_z = float(np.max(np.abs(dev)) / se_cell)
+    return {
+        "n_rounds": n_rounds,
+        "decks": decks if decks is not None else "infinite",
+        "bets": bets,
+        "rank_counts": rank_counts.tolist(),
+        "rank_chi2_per_position": [float(x) for x in chi2],
+        "rank_chi2_df": _RANKS - 1,
+        "max_rank_cell_z": max_cell_z,
+        "elapsed_s": elapsed,
+        "rounds_per_sec": n_rounds / elapsed if elapsed > 0 else float("inf"),
+        "pass": all(r["within_3se"] for r in bets.values()),
         "verification": {
             "server_seed_hash": rng.server_seed_hash,
             "client_seed": rng.client_seed,

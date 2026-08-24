@@ -31,6 +31,7 @@ import math
 import numbers
 import os
 import secrets
+import warnings
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -645,6 +646,9 @@ def blue_samurai_symbols(
 # ---------------------------------------------------------------------------
 
 _TWO32 = float(1 << 32)
+# GEMS as a numpy array for vectorized index -> name lookup (names=True on
+# the bulk Diamonds / Diamond Poker methods, matching the scalar helpers).
+_GEM_NAME_ARRAY = np.array(GEMS)
 # Blocks needing at least this many digests are fanned out across worker
 # processes (same digests, computed in parallel nonce sub-ranges — output is
 # byte-identical to the serial path by construction).
@@ -674,6 +678,15 @@ def _digest_block_star(args: Tuple[bytes, bytes, int, int, int]) -> bytes:
 # peak whole-call memory measured via tracemalloc: keno_hits(1M) 378 MB,
 # video_poker_decks(150k) 196 MB — see _fisher_yates_matrix docstring).
 _CHUNK_FLOAT_BUDGET = 8_000_000
+# Per-chunk POOL-CELL budget for the Fisher-Yates paths: the pool matrix is
+# (chunk_rows, pool_size), so chunking on draw_count alone leaves it unbounded
+# for large pools (pool 40,000 / 2 draws would put 4M rows -> a 160 GB pool
+# matrix in one chunk).  Chunk rows are additionally capped at
+# _POOL_CELL_BUDGET // pool_size, bounding the pool matrix at ~50M cells
+# (~100 MB at uint16, plus np.where temporaries of the same order).  The
+# real game pools (25/40/52) are already tighter-bound by the float budget,
+# so their chunk sizes — and outputs — are unchanged.
+_POOL_CELL_BUDGET = 50_000_000
 _PROGRESS_MIN_BETS = 2_000_000
 
 
@@ -697,8 +710,11 @@ class BulkRng:
     :attr:`last_nonce_range` holds the half-open ``(start, stop)`` range the
     call used.
 
-    Large calls are chunked internally (arrays stay well under 500 MB) and
-    print progress for campaigns of 2M+ bets.
+    Large calls are chunked internally on BOTH the float budget (~8M floats
+    per chunk) and, for the without-replacement games, the Fisher-Yates pool
+    budget (~50M pool cells per chunk), so per-chunk arrays stay well under
+    500 MB for any ``size`` AND any ``pool_size``; progress is printed for
+    campaigns of 2M+ bets.
 
     Throughput (measured on this shared 4-core container): ~0.43M digests/s
     serial, ~1.0-1.7M digests/s with the default process fan-out — real play
@@ -788,10 +804,24 @@ class BulkRng:
         k = raw.view(">u4").astype(np.float64)
         return k / _TWO32
 
-    def _chunks(self, size: int, floats_per_bet: int) -> Iterator[Tuple[int, int]]:
+    def _chunks(
+        self, size: int, floats_per_bet: int, pool_size: int = 0
+    ) -> Iterator[Tuple[int, int]]:
         """Yield (offset, chunk_size) keeping per-chunk arrays bounded, with
-        progress output for large campaigns."""
+        progress output for large campaigns.
+
+        Two budgets apply: ``_CHUNK_FLOAT_BUDGET`` bounds the float matrix
+        (rows x floats_per_bet), and — for Fisher-Yates callers, which pass
+        ``pool_size`` — ``_POOL_CELL_BUDGET`` bounds the pool matrix
+        (rows x pool_size).  Without the second bound a large-pool call like
+        ``draws_without_replacement(40000, 2, ...)`` would chunk on
+        draw_count only and materialize an effectively unbounded pool
+        matrix.  Chunk size never changes results (rows are independent
+        bets), only peak memory.
+        """
         chunk = max(1, _CHUNK_FLOAT_BUDGET // max(1, floats_per_bet))
+        if pool_size:
+            chunk = max(1, min(chunk, _POOL_CELL_BUDGET // pool_size))
         show = size >= _PROGRESS_MIN_BETS and size > chunk
         done = 0
         while done < size:
@@ -829,18 +859,32 @@ class BulkRng:
         swap-order): draw j scales column j by (pool_size - j) and removal
         shifts later elements left, exactly like list.pop.
 
-        Memory: measured (tracemalloc) whole-call peaks with the default
-        chunking are 378 MB for ``keno_hits(1_000_000)`` and 196 MB for
-        ``video_poker_decks(150_000)`` — under the 500 MB budget because
-        every caller goes through :meth:`_chunks` (~8M floats per chunk).
+        Memory: this method materializes a (rows, pool_size) pool matrix
+        plus np.where temporaries of the same order, so it must ONLY be fed
+        chunks produced by :meth:`_chunks` WITH ``pool_size`` passed — the
+        pool matrix is then capped at ``_POOL_CELL_BUDGET`` (~50M) cells per
+        chunk regardless of pool size.  Measured (tracemalloc) whole-call
+        peaks with the default chunking: 378 MB for ``keno_hits(1_000_000)``,
+        196 MB for ``video_poker_decks(150_000)``, and large pools stay
+        bounded too (draws_without_replacement(40000, 2, 200_000) peaks
+        ~0.3 GB instead of the unbounded growth chunking on draw_count alone
+        allowed).
         """
         size, draws = floats2d.shape
         if draws > pool_size:
             raise ValueError(
                 f"cannot draw {draws} without replacement from a pool of {pool_size}"
             )
+        # Pool dtype chosen from pool_size so it can never overflow: the old
+        # hardcoded int16 silently wrapped to NEGATIVE "indices" for
+        # pool_size > 32767 (e.g. draws_without_replacement(40000, 2, 3)).
+        # No Stake game exceeds a pool of 52, so the game methods stay on
+        # uint8 (same memory as before).  Correct VALUES for any pool size;
+        # bounded MEMORY comes from the caller chunking via
+        # _chunks(..., pool_size=...) — see the docstring above.
+        pool_dtype = np.min_scalar_type(max(pool_size - 1, 0))
         pool = np.broadcast_to(
-            np.arange(pool_size, dtype=np.int16), (size, pool_size)
+            np.arange(pool_size, dtype=pool_dtype), (size, pool_size)
         ).copy()
         out = np.empty((size, draws), dtype=np.int64)
         rows = np.arange(size)
@@ -868,7 +912,12 @@ class BulkRng:
             )
         nonce0 = self._take_nonces(size)
         out = np.empty((size, draw_count), dtype=np.int64)
-        for off, step in self._chunks(size, draw_count):
+        # pool_size passed so chunk rows are ALSO capped at
+        # _POOL_CELL_BUDGET // pool_size — the pool matrix stays ~100 MB
+        # even for huge pools (chunking on draw_count alone left it
+        # unbounded: pool 40,000 / 2 draws would have put 4M rows, a
+        # 160 GB pool matrix, in one chunk).
+        for off, step in self._chunks(size, draw_count, pool_size):
             block = self._float_block(nonce0 + off, step, draw_count)
             out[off:off + step] = self._fisher_yates_matrix(block, pool_size)
         return out
@@ -876,10 +925,80 @@ class BulkRng:
     # --- per-game events (each row = one bet = one nonce) --------------------
 
     def cards(self, size: int) -> np.ndarray:
+        """DEPRECATED trap: one nonce per CARD — a bet shape no Stake game
+        has (a baccarat coup is 6 cards from ONE nonce).  Use
+        :meth:`baccarat_cards` / :meth:`card_hands` for per-bet draws."""
+        warnings.warn(
+            "BulkRng.cards() burns one nonce per card (no Stake game bets "
+            "one card per nonce); use baccarat_cards(size) or "
+            "card_hands(n_cards, size) — one nonce per BET",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self.indices(_DECK, size)
 
     def gems(self, size: int) -> np.ndarray:
+        """DEPRECATED trap: one nonce per GEM — a bet shape no Stake game
+        has (Diamonds is 5 gems from ONE nonce).  Use
+        :meth:`diamonds_gems` / :meth:`diamond_poker_hands`."""
+        warnings.warn(
+            "BulkRng.gems() burns one nonce per gem (no Stake game bets one "
+            "gem per nonce); use diamonds_gems(size) or "
+            "diamond_poker_hands(size) — one nonce per BET",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self.indices(len(GEMS), size)
+
+    def card_hands(self, n_cards: int, size: int) -> np.ndarray:
+        """Blackjack / Hilo: (size, n_cards) independent card draws
+        (``floor(float * 52)``, unlimited decks) — one bet per row, ONE nonce
+        per bet, ``n_cards`` floats from that bet's stream.  Row i equals the
+        scalar :func:`card_draws` at nonce ``nonce0 + i``.  The stream is
+        open-ended (the doc reserves 13 digests = 104 floats per bet), so
+        ``n_cards`` is any positive count the hands need."""
+        if n_cards < 1:
+            raise ValueError("n_cards must be >= 1")
+        fm = self.float_matrix(size, n_cards)
+        return np.floor(fm * _DECK).astype(np.int64)
+
+    def baccarat_cards(self, size: int) -> np.ndarray:
+        """Baccarat: (size, 6) card indices — one coup (bet, nonce) per row,
+        the EVENT_COUNTS['baccarat'] = 6 card events a coup can ever need
+        (doc: "Baccarat only ever needs 6 game events"), independent draws
+        with replacement.  Row i equals the scalar :func:`baccarat_cards` at
+        nonce ``nonce0 + i``."""
+        return self.card_hands(EVENT_COUNTS["baccarat"], size)
+
+    def diamonds_gems(self, size: int, *, names: bool = False) -> np.ndarray:
+        """Diamonds: (size, 5) gems — one bet per row, ONE nonce per bet,
+        EVENT_COUNTS['diamonds'] = 5 floats.
+
+        By default returns gem INDICES 0..6 into :data:`GEMS` (the
+        simulation-friendly form); pass ``names=True`` to get the gem NAME
+        strings instead, so that row i equals the scalar
+        :func:`diamonds_gems` at nonce ``nonce0 + i`` element-for-element
+        (with the default indices, ``[GEMS[g] for g in row i]`` equals it).
+        """
+        fm = self.float_matrix(size, EVENT_COUNTS["diamonds"])
+        idx = np.floor(fm * len(GEMS)).astype(np.int64)
+        return _GEM_NAME_ARRAY[idx] if names else idx
+
+    def diamond_poker_hands(
+        self, size: int, *, names: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Diamond Poker: ``(dealer, player)`` — two (size, 5) gem matrices
+        from ONE nonce per bet, EVENT_COUNTS['diamond_poker'] = 10 floats:
+        FIRST 5 events to the DEALER, second 5 to the player (doc order).
+
+        By default the matrices hold gem INDICES 0..6 into :data:`GEMS`;
+        pass ``names=True`` for gem NAME strings, matching the scalar
+        :func:`diamond_poker_hands` row-wise element-for-element."""
+        fm = self.float_matrix(size, EVENT_COUNTS["diamond_poker"])
+        gems = np.floor(fm * len(GEMS)).astype(np.int64)
+        if names:
+            gems = _GEM_NAME_ARRAY[gems]
+        return gems[:, :5], gems[:, 5:]
 
     def dice_rolls(self, size: int) -> np.ndarray:
         return np.floor(self.floats(size) * 10001) / 100
@@ -919,7 +1038,7 @@ class BulkRng:
             raise ValueError("mine_count must be in 1..24")
         nonce0 = self._take_nonces(size)
         out = np.empty((size, mine_count), dtype=np.int64)
-        for off, step in self._chunks(size, EVENT_COUNTS["mines"]):
+        for off, step in self._chunks(size, EVENT_COUNTS["mines"], _MINES_TILES):
             block = self._float_block(nonce0 + off, step, EVENT_COUNTS["mines"])
             out[off:off + step] = self._fisher_yates_matrix(block, _MINES_TILES)[
                 :, :mine_count
@@ -964,7 +1083,7 @@ class BulkRng:
             raise ValueError("cards_needed must be in 1..52")
         nonce0 = self._take_nonces(size)
         out = np.empty((size, cards_needed), dtype=np.int64)
-        for off, step in self._chunks(size, EVENT_COUNTS["video_poker"]):
+        for off, step in self._chunks(size, EVENT_COUNTS["video_poker"], _DECK):
             block = self._float_block(nonce0 + off, step, EVENT_COUNTS["video_poker"])
             out[off:off + step] = self._fisher_yates_matrix(block, _DECK)[
                 :, :cards_needed

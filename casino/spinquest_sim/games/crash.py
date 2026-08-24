@@ -37,6 +37,23 @@ server-seed/client-seed/nonce stream.  Two provably-fair paths are provided:
   single-player provably-fair adaptation with the *identical* crash-point
   distribution (both mechanisms feed the same formula a uniform 32-bit int).
 
+**Commitment ordering** (the heart of the fairness guarantee): the reference
+says Stake chose "a future bitcoin block as a client seed so players can be
+certain that we did not pick one in the house's favor" — i.e. the terminating
+hash is published FIRST, and only then is the salt fixed, by a source the
+operator cannot control.  If the salt is known while the chain is being
+generated, the operator can grind secret seeds until the first rounds of a
+fully verifiable chain all bust early.  This module therefore enforces the
+order: ``STAKE_SALT`` (Bitcoin block 584,500, mined 2019-07-21) is accepted
+ONLY for replaying/verifying Stake's own published 2019 chain — pairing it
+with any newly generated chain raises :class:`CommitmentOrderError`; every
+chain-generating API requires an explicit salt bound AFTER the terminating
+hash exists (:meth:`HashChain.bind_salt`, or the two-phase auto protocol in
+:func:`simulate_chain_targets`); a salt attested to predate the commitment
+raises, a caller-supplied salt that provably existed before the chain was
+generated warns (:class:`CommitmentOrderWarning`, reproducible-simulation
+mode); and the verification dicts record the commitment order and timestamps.
+
 Analytic probabilities here are exact *under float64 semantics*: the largest
 ``int`` that still reaches a target is found by bisection over the published
 formula (monotone in ``int``), so analytic and simulated values share the
@@ -58,6 +75,8 @@ import hmac
 import math
 import secrets
 import time
+import warnings
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -73,6 +92,9 @@ __all__ = [
     "STAKE_SALT",
     "STAKE_TERMINATING_HASH",
     "STAKE_CHAIN_LENGTH",
+    "STAKE_SALT_BLOCK_TIME",
+    "CommitmentOrderError",
+    "CommitmentOrderWarning",
     "crash_int_from_hash",
     "crash_point_from_int",
     "crash_point_from_hash",
@@ -102,9 +124,55 @@ MAX_CASHOUT = 1_000_000.0       # "maximum cashout value of 1,000,000x"
 STAKE_TERMINATING_HASH = (
     "78a9757d3be42b74a3f70239078ad9317125fe9ee630d5bdada46de963e56752"
 )
-# Bitcoin block 584,500's hash — the public salt used for every game.
+# Bitcoin block 584,500's hash — the public salt used for every game of
+# STAKE'S OWN 2019 CHAIN.  The block was mined 2019-07-21, i.e. AFTER the
+# chain's terminating hash was published; that ordering — commitment first,
+# salt from an uncontrollable source second — is the entire guarantee.
+# Valid ONLY for replaying/verifying Stake's published chain: pairing it
+# with any chain generated today raises CommitmentOrderError.
 STAKE_SALT = "0000000000000000001b34dc6a1e86083f95500b096231436e9b25cbdd0075c4"
+# Reveal date of that salt (block 584,500 "mined July 21, 2019" per the
+# reference); midnight UTC is a conservative lower bound on the mine time.
+STAKE_SALT_BLOCK_TIME = datetime(2019, 7, 21, tzinfo=timezone.utc).timestamp()
 STAKE_CHAIN_LENGTH = 10_000_000  # "chain of 10,000,000 SHA256 hashes"
+
+
+class CommitmentOrderError(ValueError):
+    """A salt was bound to a chain in the wrong commitment order.
+
+    The provable-fairness guarantee requires the chain's terminating hash to
+    be published BEFORE the salt is fixed by a source the operator cannot
+    control ("a future bitcoin block ... so players can be certain that we
+    did not pick one in the house's favor").  A salt already known while the
+    chain is generated lets the operator grind secret seeds until the first
+    playable rounds of a fully verifiable chain all bust early.
+    """
+
+
+class CommitmentOrderWarning(UserWarning):
+    """A caller-supplied salt provably existed before the chain it salts.
+
+    Emitted (not raised) for reproducible-simulation use; the resulting
+    verification dict is marked ``fair_ordering: False``.
+    """
+
+
+def _reject_stake_salt_for_new_chain(salt: Optional[str]) -> None:
+    if salt == STAKE_SALT:
+        raise CommitmentOrderError(
+            "STAKE_SALT is Bitcoin block 584,500's hash (mined 2019-07-21). "
+            "It may only be used to replay/verify Stake's own published 2019 "
+            f"chain (terminating hash {STAKE_TERMINATING_HASH[:16]}...); "
+            "binding it to a newly generated chain inverts the commitment "
+            "order — the salt must come from a source revealed AFTER the "
+            "chain's terminating hash is published."
+        )
+
+
+def _iso(ts: Optional[float]) -> Optional[str]:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 # build_hash_chain stores every hex hash in memory (~130 bytes each); larger
 # campaigns must use the streaming simulator instead.
@@ -117,13 +185,17 @@ _CHAIN_PROGRESS_EVERY = 1_000_000
 # Published event-generation math (verbatim ports)
 # ---------------------------------------------------------------------------
 
-def crash_int_from_hash(game_hash: str, salt: str = STAKE_SALT) -> int:
+def crash_int_from_hash(game_hash: str, salt: str) -> int:
     """The round's uniform 32-bit event ``int`` from a game hash.
 
     Verbatim port of the published JS: the game hash (a hex *string*) is the
     HMAC-SHA256 key, the salt (Bitcoin block hash, hex string) is the
     message, and the first 8 hex characters of the digest are parsed as an
     unsigned integer — i.e. the big-endian first 4 bytes.
+
+    ``salt`` is required (no default): pass :data:`STAKE_SALT` explicitly to
+    replay/verify Stake's published 2019 chain, or the chain's own bound
+    salt for any other chain.
     """
     digest = hmac.new(
         game_hash.encode("utf-8"), salt.encode("utf-8"), hashlib.sha256
@@ -143,8 +215,11 @@ def crash_point_from_int(event_int: int) -> float:
     return max(1.0, (TWO32 / (event_int + 1)) * EDGE_MULTIPLIER)
 
 
-def crash_point_from_hash(game_hash: str, salt: str = STAKE_SALT) -> float:
-    """Crash point for one game hash (chain mechanism, both steps)."""
+def crash_point_from_hash(game_hash: str, salt: str) -> float:
+    """Crash point for one game hash (chain mechanism, both steps).
+
+    ``salt`` is required — see :func:`crash_int_from_hash`.
+    """
     return crash_point_from_int(crash_int_from_hash(game_hash, salt))
 
 
@@ -160,12 +235,6 @@ def crash_point_from_float(value: float) -> float:
     if not 0.0 <= value < 1.0:
         raise ValueError(f"stream float must be in [0, 1), got {value}")
     return crash_point_from_int(int(value * _TWO32_F))
-
-
-def _crash_points_from_ints(event_ints: np.ndarray) -> np.ndarray:
-    """Vectorized formula — identical IEEE-754 ops as the scalar port."""
-    k = event_ints.astype(np.float64)
-    return np.maximum(1.0, (_TWO32_F / (k + 1.0)) * EDGE_MULTIPLIER)
 
 
 # ---------------------------------------------------------------------------
@@ -218,25 +287,51 @@ def verify_game_hash(
 class HashChain:
     """A pre-committed crash hash chain, played newest-hash-first.
 
-    Publish :attr:`terminating_hash` before any round; each round pops the
-    next game hash (``chain[-2]`` first — the terminator itself is the public
-    commitment and is not played).  Every popped hash re-hashes to the
-    terminating hash in exactly ``game_index`` steps.
+    Honest protocol (the order Stake's 2019 seeding event followed):
+
+    1. ``hc = HashChain(length=...)`` — the chain is generated and
+       :attr:`terminating_hash` (the public commitment) exists from this
+       moment (:attr:`committed_at`).  Publish it.
+    2. ``hc.bind_salt(salt, ...)`` — AFTER publishing, bind a salt from a
+       source the operator cannot control (e.g. a future Bitcoin block's
+       hash).  ``STAKE_SALT`` is refused (it predates any new chain); a
+       ``revealed_at`` earlier than :attr:`committed_at` is refused.
+    3. Play: each round pops the next game hash (``chain[-2]`` first — the
+       terminator itself is the commitment and is not played).  Every popped
+       hash re-hashes to the terminating hash in exactly ``game_index``
+       steps.  Playing before a salt is bound raises ``RuntimeError``.
+
+    Passing ``salt=`` at construction is a *reproducible-simulation*
+    convenience: the salt provably existed before the chain, so a
+    :class:`CommitmentOrderWarning` is emitted and :attr:`commitment`
+    records ``fair_ordering: False``.
     """
 
     def __init__(
         self,
         secret_seed: Optional[str] = None,
         length: int = 10_001,
-        salt: str = STAKE_SALT,
+        salt: Optional[str] = None,
+        salt_source: Optional[str] = None,
     ) -> None:
         if secret_seed is None:
             secret_seed = secrets.token_hex(32)
         self.secret_seed = secret_seed
-        self.salt = salt
         self._chain = build_hash_chain(secret_seed, length)
         self.length = length
         self.games_played = 0
+        # The commitment exists as soon as the chain (hence its terminating
+        # hash) exists — any salt bound later is bound after this instant.
+        self.committed_at: float = time.time()
+        self.salt: Optional[str] = None
+        self.salt_source: Optional[str] = None
+        self.salt_bound_at: Optional[float] = None
+        self.salt_revealed_at: Optional[float] = None
+        self._salt_preexisting = False
+        if salt is not None:
+            # Convenience path: this salt was in the caller's hands while
+            # the chain was generated -> provably not a fair ordering.
+            self.bind_salt(salt, salt_source=salt_source, _preexisting=True)
 
     @property
     def terminating_hash(self) -> str:
@@ -247,8 +342,86 @@ class HashChain:
     def games_remaining(self) -> int:
         return self.length - 1 - self.games_played
 
+    @property
+    def fair_ordering(self) -> bool:
+        """True iff the salt was bound only after the commitment existed."""
+        return self.salt is not None and not self._salt_preexisting
+
+    @property
+    def commitment(self) -> Dict[str, object]:
+        """The commitment-order record (included in verification dicts)."""
+        return {
+            "terminating_hash": self.terminating_hash,
+            "terminating_hash_committed_at": _iso(self.committed_at),
+            "terminating_hash_committed_at_unix": self.committed_at,
+            "salt": self.salt,
+            "salt_source": self.salt_source,
+            "salt_bound_at": _iso(self.salt_bound_at),
+            "salt_bound_at_unix": self.salt_bound_at,
+            "salt_revealed_at": _iso(self.salt_revealed_at),
+            "order": (
+                "unbound (commitment published, awaiting salt)"
+                if self.salt is None
+                else "salt_preexisting_reproducible_mode"
+                if self._salt_preexisting
+                else "terminating_hash_first"
+            ),
+            "fair_ordering": self.fair_ordering,
+        }
+
+    def bind_salt(
+        self,
+        salt: str,
+        salt_source: Optional[str] = None,
+        revealed_at: Optional[float] = None,
+        _preexisting: bool = False,
+    ) -> None:
+        """Bind the public salt to the already-committed chain (one-time).
+
+        ``revealed_at`` (unix time), when known, attests when the salt's
+        source made it public; a value earlier than :attr:`committed_at`
+        raises :class:`CommitmentOrderError`.  ``STAKE_SALT`` always raises
+        (it was revealed 2019-07-21, before any chain generated by this
+        code).
+        """
+        if self.salt is not None:
+            raise CommitmentOrderError(
+                "a salt is already bound to this chain; a commitment binds "
+                "exactly one salt"
+            )
+        _reject_stake_salt_for_new_chain(salt)
+        if not salt:
+            raise ValueError("salt must be a non-empty string")
+        if revealed_at is not None and revealed_at < self.committed_at:
+            raise CommitmentOrderError(
+                f"salt reveal time {_iso(revealed_at)} predates the chain "
+                f"commitment {_iso(self.committed_at)}; the salt must come "
+                "from a source revealed after the terminating hash was "
+                "published"
+            )
+        if _preexisting:
+            warnings.warn(
+                "salt was supplied while the chain was generated "
+                "(reproducible-simulation mode): commitment ordering is NOT "
+                "fair — a real deployment must publish terminating_hash "
+                "first and bind_salt() afterwards",
+                CommitmentOrderWarning,
+                stacklevel=3,
+            )
+        self.salt = salt
+        self.salt_source = salt_source
+        self.salt_revealed_at = revealed_at
+        self._salt_preexisting = _preexisting
+        self.salt_bound_at = time.time()
+
     def pop_hash(self) -> Tuple[int, str]:
         """(1-indexed game number, game hash) for the next round."""
+        if self.salt is None:
+            raise RuntimeError(
+                "no salt bound: publish terminating_hash, then bind_salt() "
+                "with a salt revealed after the commitment — rounds cannot "
+                "be played before the salt exists"
+            )
         if self.games_remaining <= 0:
             raise RuntimeError("hash chain exhausted")
         self.games_played += 1
@@ -288,6 +461,28 @@ def _stream_chain_ints(
                 flush=True,
             )
     return out[::-1].copy(), hex_hash.decode()
+
+
+def _stream_chain_terminator(
+    secret_seed: str, n_rounds: int, progress: bool = True
+) -> str:
+    """Terminating hash of the ``n_rounds + 1``-hash chain, salt-free.
+
+    Constant-memory forward walk (SHA-256 only, no HMAC): this is the
+    COMMIT phase of the honest protocol — the terminating hash can be
+    computed and published before any salt exists.
+    """
+    hex_hash = hashlib.sha256(secret_seed.encode("utf-8")).hexdigest().encode()
+    t0 = time.perf_counter()
+    for i in range(n_rounds):
+        hex_hash = binascii.hexlify(hashlib.sha256(hex_hash).digest())
+        if progress and (i + 1) % _CHAIN_PROGRESS_EVERY == 0:
+            rate = (i + 1) / (time.perf_counter() - t0)
+            print(
+                f"  chain commit: {i + 1:,}/{n_rounds:,} hashes ({rate:,.0f}/s)",
+                flush=True,
+            )
+    return hex_hash.decode()
 
 
 # ---------------------------------------------------------------------------
@@ -494,8 +689,13 @@ class Crash:
 
     # --- (b) provably-fair single rounds ------------------------------------
 
-    def play_round(self, game_hash: str, salt: str = STAKE_SALT) -> Dict[str, object]:
-        """One round of Stake's actual mechanism, from a chain game hash."""
+    def play_round(self, game_hash: str, salt: str) -> Dict[str, object]:
+        """One round of Stake's actual mechanism, from a chain game hash.
+
+        ``salt`` is required: the chain's bound salt (``HashChain.salt``),
+        or :data:`STAKE_SALT` explicitly when replaying Stake's published
+        2019 chain.
+        """
         event_int = crash_int_from_hash(game_hash, salt)
         crash_point = crash_point_from_int(event_int)
         win = crash_point >= self.target
@@ -562,13 +762,19 @@ class Crash:
         self,
         n_rounds: int,
         secret_seed: Optional[str] = None,
-        salt: str = STAKE_SALT,
+        salt: Optional[str] = None,
+        salt_source: Optional[str] = None,
         progress: bool = True,
     ) -> Dict[str, object]:
-        """Simulate on a real streamed hash chain; standard result dict."""
+        """Simulate on a real streamed hash chain; standard result dict.
+
+        ``salt=None`` (default) runs the honest two-phase protocol: commit
+        the terminating hash first, then draw a fresh salt.  See
+        :func:`simulate_chain_targets`.
+        """
         res = simulate_chain_targets(
             [self.target], n_rounds, secret_seed=secret_seed,
-            salt=salt, progress=progress,
+            salt=salt, salt_source=salt_source, progress=progress,
         )
         out = res["targets"][0]
         out["verification"] = res["verification"]
@@ -649,11 +855,22 @@ def simulate_chain_targets(
     targets: Sequence[float],
     n_rounds: int,
     secret_seed: Optional[str] = None,
-    salt: str = STAKE_SALT,
+    salt: Optional[str] = None,
+    salt_source: Optional[str] = None,
     progress: bool = True,
 ) -> Dict[str, object]:
     """N rounds of Stake's ACTUAL mechanism: a fresh salted hash chain of
     ``n_rounds + 1`` hashes, streamed in constant memory, played newest-first.
+
+    Commitment ordering: with ``salt=None`` (default) the honest two-phase
+    protocol is run in-process — (1) walk the chain once, salt-free, to
+    COMMIT the terminating hash; (2) only then draw a fresh salt; (3) replay
+    the chain with the HMAC applied.  The verification dict records both
+    timestamps (``fair_ordering: True``).  A caller-supplied ``salt``
+    (reproducible-simulation mode) provably existed before the chain, so a
+    :class:`CommitmentOrderWarning` is emitted and the verification dict is
+    marked ``fair_ordering: False``.  ``STAKE_SALT`` is always refused —
+    it may only replay Stake's own published 2019 chain.
 
     Every round is individually verifiable: round g's game hash re-hashes to
     the returned terminating hash in exactly g steps.  ~250k rounds/s
@@ -663,9 +880,40 @@ def simulate_chain_targets(
         raise ValueError("n_rounds must be positive")
     if secret_seed is None:
         secret_seed = secrets.token_hex(32)
+    _reject_stake_salt_for_new_chain(salt)
     games = [Crash(w) for w in targets]
     t0 = time.perf_counter()
+    committed_hash: Optional[str] = None
+    committed_at: Optional[float] = None
+    if salt is None:
+        # COMMIT first (salt-free walk), then draw the salt — honest order.
+        committed_hash = _stream_chain_terminator(secret_seed, n_rounds, progress)
+        committed_at = time.time()
+        salt = secrets.token_hex(32)
+        if salt_source is None:
+            salt_source = "drawn after terminating-hash commitment"
+        salt_bound_at = time.time()
+        order = "terminating_hash_first"
+        fair = True
+    else:
+        warnings.warn(
+            "caller-supplied salt existed before this chain was generated "
+            "(reproducible-simulation mode): commitment ordering is NOT "
+            "fair — omit `salt` to run the honest two-phase protocol",
+            CommitmentOrderWarning,
+            stacklevel=2,
+        )
+        if salt_source is None:
+            salt_source = "caller-supplied (existed before chain generation)"
+        salt_bound_at = None
+        order = "salt_preexisting_reproducible_mode"
+        fair = False
     ints, terminating = _stream_chain_ints(secret_seed, n_rounds, salt, progress)
+    if committed_hash is not None and terminating != committed_hash:
+        raise RuntimeError(
+            "post-salt replay reached a different terminating hash than the "
+            "pre-salt commitment — chain walk is not deterministic"
+        )
     wins = []
     for game in games:
         # threshold in int domain: winning set is exactly {0..win_count-1}
@@ -678,5 +926,16 @@ def simulate_chain_targets(
             "terminating_hash": terminating,
             "salt": salt,
             "chain_length": n_rounds + 1,
+            "commitment": {
+                "terminating_hash": terminating,
+                "terminating_hash_committed_at": _iso(committed_at),
+                "terminating_hash_committed_at_unix": committed_at,
+                "salt": salt,
+                "salt_source": salt_source,
+                "salt_bound_at": _iso(salt_bound_at),
+                "salt_bound_at_unix": salt_bound_at,
+                "order": order,
+                "fair_ordering": fair,
+            },
         },
     )

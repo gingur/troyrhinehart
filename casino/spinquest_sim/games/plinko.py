@@ -138,6 +138,11 @@ class PlinkoEngine:
     >>> eng = PlinkoEngine(rows=16, risk="medium")
     >>> eng.result()["rtp"]            # doctest: +ELLIPSIS
     0.9898...
+
+    Besides the 27-config Stake/BGAMING grid, :meth:`from_table` builds an
+    engine from any explicit pocket multiplier array — the WoO page's
+    CryptoGames and BetFury tables, for instance — so its published RTP/SD
+    figures are directly checkable through the identical analytic formulas.
     """
 
     def __init__(self, rows: int, risk: str) -> None:
@@ -149,9 +154,36 @@ class PlinkoEngine:
         rows = int(rows)
         if not MIN_ROWS <= rows <= MAX_ROWS:
             raise ValueError(f"rows must be in {MIN_ROWS}..{MAX_ROWS}, got {rows}")
+        self._init_common(rows, risk, _full_table(PAYTABLES[(risk, rows)], rows))
+
+    @classmethod
+    def from_table(cls, payouts, label: str = "custom") -> "PlinkoEngine":
+        """Engine from an explicit full pocket multiplier array.
+
+        ``payouts`` is the length-(rows + 1) pocket array, edge to edge;
+        ``rows`` is inferred as ``len(payouts) - 1``.  Same binomial pocket
+        model and analytic surface as the grid configs (used to check the
+        WoO CryptoGames / BetFury published RTP + SD figures).  The
+        vectorized provably-fair simulator still requires 8..16 rows (the
+        verified rng contract); analytic math and the fast simulator work
+        for any rows >= 1.
+        """
+        arr = np.asarray(payouts, dtype=np.float64)
+        if arr.ndim != 1 or arr.size < 2:
+            raise ValueError(
+                f"payouts must be a 1-D array of >= 2 pocket multipliers, "
+                f"got shape {arr.shape}"
+            )
+        if not np.all(np.isfinite(arr)) or np.any(arr < 0):
+            raise ValueError("payouts must all be finite and >= 0")
+        self = object.__new__(cls)
+        self._init_common(int(arr.size - 1), str(label), arr.copy())
+        return self
+
+    def _init_common(self, rows: int, risk: str, payouts: np.ndarray) -> None:
         self.rows = rows
         self.risk = risk
-        self.payouts: np.ndarray = _full_table(PAYTABLES[(risk, rows)], rows)
+        self.payouts: np.ndarray = payouts
         self.payouts.setflags(write=False)
         # exact binomial pocket probabilities: C(rows, k) / 2**rows
         self._combinations = np.asarray(
@@ -207,7 +239,9 @@ class PlinkoEngine:
             "risk": self.risk,
             "rows": self.rows,
             "pockets": self.pockets,
-            "payouts": [float(x) for x in self.payouts],
+            # render exactly like the published tables: 110 not 110.0
+            "payouts": [int(x) if float(x).is_integer() else float(x)
+                        for x in self.payouts],
         }
 
     def result(self) -> Dict[str, object]:
@@ -233,6 +267,9 @@ class PlinkoEngine:
         """One verifiable drop: ``rows`` floats from cursor 0 of the bet's
         HMAC-SHA256 stream; ``direction = floor(float * 2)``; the landing
         pocket is the count of rights."""
+        bet = float(bet)
+        if not math.isfinite(bet) or bet < 0:
+            raise ValueError(f"bet must be a finite value >= 0, got {bet!r}")
         floats = sq_rng.generate_floats(
             server_seed, client_seed, nonce, cursor=0, count=self.rows
         )
@@ -295,6 +332,8 @@ class PlinkoEngine:
         """
         if n_rounds < 1:
             raise ValueError("n_rounds must be >= 1")
+        if chunk < 1:
+            raise ValueError(f"chunk must be >= 1, got {chunk}")
         gen = np.random.default_rng(seed)
         counts = np.zeros(self.pockets, dtype=np.int64)
         done = 0

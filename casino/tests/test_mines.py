@@ -209,6 +209,102 @@ class TestPlayRound:
 # (c) vectorized simulator
 # ---------------------------------------------------------------------------
 
+class TestValidatorHardening:
+    """The validation script's own gates and failure modes (round-3 gap)."""
+
+    @staticmethod
+    def _run_main(capsys, argv):
+        rc = VAL.main(argv)
+        out = capsys.readouterr().out
+        line = next(
+            ln for ln in out.splitlines()
+            if ln.startswith("MINES_VALIDATION_JSON:")
+        )
+        import json as _json
+        return rc, _json.loads(line.split(":", 1)[1]), out
+
+    def test_all_gates_pass_end_to_end_with_real_sim(self, capsys):
+        # Full script including a real (small, deterministic-seed) empirical
+        # run — every gate, sim included, is genuinely exercised.
+        rc, summary, out = self._run_main(
+            capsys, ["--rounds", "40000", "--configs", "3:3,24:1"]
+        )
+        assert rc == 0
+        assert summary["overall_pass"] is True
+        assert summary["empirical_skipped"] is False
+        assert summary["empirical"]["meets_10m_bar"] is False  # smoke run
+        assert len(summary["empirical"]["configs"]) == 2
+        for cfg in summary["empirical"]["configs"]:
+            assert cfg["n_rounds"] == 40000
+            assert cfg["within_3se"] is True
+        for gate in (
+            "stake_table_300_cells",
+            "published_spot_checks",
+            "exact_rtp_identity",
+            "scalar_bulk_bitmatch",
+            "woo_methodology",
+            "empirical_within_3se",
+        ):
+            assert summary["gates"][gate] is True, gate
+        assert "below the 10M bar" in out  # smoke run is flagged, not hidden
+
+    def test_skip_sim_is_flagged_not_silent(self, capsys):
+        rc, summary, out = self._run_main(capsys, ["--skip-sim"])
+        assert rc == 0
+        assert summary["overall_pass"] is True
+        assert summary["empirical_skipped"] is True
+        assert "analytic gates only" in out
+
+    def test_spot_check_gate(self):
+        res = VAL.check_spot_checks()
+        assert res["pass"] and len(res["checks"]) == 4
+
+    def test_exact_rtp_identity_gate(self):
+        res = VAL.check_exact_rtp_identity()
+        assert res["pass"] and res["cells_checked"] == 300
+        assert res["exact_failures"] == []
+
+    def test_scalar_bulk_bitmatch_gate(self):
+        res = VAL.check_scalar_bulk_bitmatch(n_rounds=200)
+        assert res["pass"]
+        for cfg in res["configs"]:
+            assert cfg["position_mismatches"] == 0
+            assert cfg["outcome_mismatches"] == 0
+
+    def test_parser_rejects_tampered_table(self, tmp_path):
+        # Drop one cell from a copied reference: structural check must fire.
+        text = (VAL.STAKE_MD).read_text()
+        tampered = text.replace("| 24 | 24.75x |", "| 24 | — |", 1)
+        assert tampered != text
+        bad = tmp_path / "mines.md"
+        bad.write_text(tampered)
+        with pytest.raises(VAL.ValidationError):
+            VAL.parse_stake_table(bad)
+
+    def test_parser_rejects_missing_file(self, tmp_path):
+        with pytest.raises(VAL.ValidationError):
+            VAL.parse_stake_table(tmp_path / "nope.md")
+        with pytest.raises(VAL.ValidationError):
+            VAL.parse_woo_table(tmp_path / "nope.md")
+
+    def test_parser_rejects_garbage_cell(self, tmp_path):
+        bad = tmp_path / "mines.md"
+        bad.write_text(
+            "| Gems picked | 1 mine |\n|---|---|\n| 1 | banana |\n"
+        )
+        with pytest.raises(VAL.ValidationError):
+            VAL.parse_stake_table(bad)
+
+    def test_config_arg_validation(self):
+        assert VAL._parse_configs("3:3, 24:1") == [(3, 3), (24, 1)]
+        with pytest.raises(SystemExit):
+            VAL._parse_configs("3-3")
+        with pytest.raises(ValueError):
+            VAL._parse_configs("25:1")   # invalid mines count
+        with pytest.raises(SystemExit):
+            VAL._parse_configs("")
+
+
 class TestSimulator:
     def test_bulk_simulation_bit_matches_scalar_rounds(self):
         n = 1000

@@ -60,6 +60,35 @@ WOO_MEDIUM_16 = [110, 41, 10, 5, 3, 1.5, 1, 0.5, 0.3,
 WOO_BETFURY_RED_16 = [1000, 130, 26, 9, 4, 2, 0.2, 0.2, 0.2,
                       0.2, 0.2, 2, 4, 9, 26, 130, 1000]
 
+# WoO CryptoGames tables (16 rows, 17 positions) with the page's published
+# RTP (%) and per-drop standard deviation (6 decimals) — the only SD figures
+# the reference publishes anywhere.
+WOO_CRYPTOGAMES = {
+    # name: (payout table, published RTP %, published SD)
+    "green": ([10, 8, 6, 3, 2, 1.3, 1, 0.8, 0.5, 0.8, 1, 1.3, 2, 3, 6, 8, 10],
+              98.37, 0.562711),
+    "red": ([20, 7, 5, 3, 2, 1.1, 1, 0.6, 1, 0.6, 1, 1.1, 2, 3, 5, 7, 20],
+            98.16, 0.517632),
+    "blue": ([50, 8, 3, 2, 1.4, 1.2, 1.1, 1, 0.4, 1, 1.1, 1.2, 1.4, 2, 3, 8, 50],
+             98.48, 0.464829),
+    "yellow": ([650, 30, 7, 3, 1.5, 1.2, 1, 0.7, 0.7, 0.7, 1, 1.2, 1.5, 3, 7,
+                30, 650],
+               98.09, 3.678698),
+}
+
+# WoO BetFury tables (16 rows) with the page's published RTP (%).
+WOO_BETFURY = {
+    "blue": ([16, 5, 2, 1.3, 1.2, 0.2, 1.1, 1.1, 1, 1.1, 1.1, 0.2, 1.2, 1.3,
+              2, 5, 16],
+             97.88),
+    "green": ([110, 41, 10, 5, 2.8, 1.5, 1, 0.5, 0.3, 0.5, 1, 1.5, 2.8, 5, 10,
+               41, 110],
+              97.88),
+    "red": ([1000, 130, 26, 9, 4, 2, 0.2, 0.2, 0.2, 0.2, 0.2, 2, 4, 9, 26,
+             130, 1000],
+            98.98),
+}
+
 # WoO BGAMING RTP grid (percent, 2 decimals). The Low column on the captured
 # page duplicates the Medium column row-for-row (a transcription artifact —
 # see validate_plinko.py), so exact-match assertions cover medium and high.
@@ -177,6 +206,96 @@ def test_variance_consistency(risk, rows):
     assert eng.house_edge() == pytest.approx(1 - mean, abs=1e-15)
 
 
+# ---------------------------------------------------------------------------
+# from_table: the WoO CryptoGames / BetFury published RTP + SD figures
+# (the 11 independently checkable numbers on the reference page)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", sorted(WOO_CRYPTOGAMES))
+def test_cryptogames_published_rtp_and_sd(name):
+    table, rtp_pct, sd = WOO_CRYPTOGAMES[name]
+    eng = PlinkoEngine.from_table(table, label=f"cryptogames-{name}")
+    assert eng.rows == 16 and eng.pockets == 17
+    # published RTP, exact at the printed 2 decimals
+    assert round(100 * eng.rtp(), 2) == pytest.approx(rtp_pct, abs=1e-9)
+    # published per-drop SD, exact at the printed 6 decimals
+    assert round(eng.std_per_unit(), 6) == pytest.approx(sd, abs=1e-9)
+
+
+@pytest.mark.parametrize("name", ["green", "red"])
+def test_betfury_published_rtp(name):
+    table, rtp_pct = WOO_BETFURY[name]
+    eng = PlinkoEngine.from_table(table, label=f"betfury-{name}")
+    assert round(100 * eng.rtp(), 2) == pytest.approx(rtp_pct, abs=1e-9)
+
+
+def test_betfury_blue_reference_self_inconsistency():
+    # The WoO page prints 97.88% beside its BetFury Blue table, but the
+    # table it prints evaluates to 97.501831...% — a defect in the
+    # reference page itself (its Blue row duplicates Green's RTP).  Pin
+    # what the printed table actually evaluates to, and that it does NOT
+    # reproduce the printed RTP.
+    table, printed_rtp = WOO_BETFURY["blue"]
+    eng = PlinkoEngine.from_table(table, label="betfury-blue")
+    assert round(100 * eng.rtp(), 4) == pytest.approx(97.5018, abs=1e-9)
+    assert round(100 * eng.rtp(), 2) != printed_rtp
+
+
+def test_betfury_red_is_stake_high_16():
+    # Same table => identical analytic surface through both constructors.
+    grid = PlinkoEngine(16, "high")
+    custom = PlinkoEngine.from_table(WOO_BETFURY["red"][0], label="betfury-red")
+    assert custom.payouts.tolist() == grid.payouts.tolist()
+    assert custom.rtp() == grid.rtp()
+    assert custom.variance() == grid.variance()
+    assert custom.std_per_unit() == grid.std_per_unit()
+    assert round(100 * custom.rtp(), 2) == 98.98  # WoO BetFury Red RTP
+
+
+def test_from_table_grid_equivalence_all_27():
+    for risk, rows in ALL_CONFIGS:
+        grid = PlinkoEngine(rows, risk)
+        custom = PlinkoEngine.from_table(grid.payouts, label=risk)
+        assert custom.rows == rows
+        assert np.array_equal(custom.payouts, grid.payouts)
+        assert custom.rtp() == grid.rtp()
+        assert custom.std_per_unit() == grid.std_per_unit()
+
+
+def test_from_table_play_and_sims_work():
+    table, _, _ = WOO_CRYPTOGAMES["yellow"]
+    eng = PlinkoEngine.from_table(table, label="cryptogames-yellow")
+    res = eng.play(SERVER, CLIENT, nonce=5)
+    assert res["multiplier"] == table[res["pocket"]]
+    sim = eng.simulate(200_000, seed=7)
+    assert sim["rounds"] == 200_000
+    pf = eng.simulate_provably_fair(
+        500, server_seed=SERVER, client_seed=CLIENT)
+    assert pf["rounds"] == 500
+
+
+@pytest.mark.parametrize("bad", [
+    [],                       # empty
+    [1.0],                    # single pocket (rows = 0)
+    [[1.0, 2.0]],             # wrong ndim
+    [1.0, -0.5, 1.0],         # negative multiplier
+    [1.0, float("nan"), 1.0], # non-finite
+    [1.0, float("inf"), 1.0],
+])
+def test_from_table_rejects_bad_tables(bad):
+    with pytest.raises(ValueError):
+        PlinkoEngine.from_table(bad)
+
+
+def test_from_table_copies_input():
+    src = np.array([2.0, 1.0, 2.0])
+    eng = PlinkoEngine.from_table(src)
+    src[0] = 99.0
+    assert eng.payouts[0] == 2.0
+    with pytest.raises(ValueError):
+        eng.payouts[0] = 1.0  # read-only
+
+
 def test_result_dict_contract():
     res = PlinkoEngine(16, "high").result()
     assert set(res) == {"rtp", "house_edge", "std_per_unit", "config"}
@@ -243,6 +362,29 @@ def test_play_scaled_bet():
     assert res["payout"] == pytest.approx(2.5 * res["multiplier"])
 
 
+@pytest.mark.parametrize("bad_bet", [-5, -0.01, float("nan"),
+                                     float("inf"), float("-inf")])
+def test_play_rejects_bad_bets(bad_bet):
+    eng = PlinkoEngine(8, "low")
+    with pytest.raises(ValueError):
+        eng.play(SERVER, CLIENT, nonce=0, bet=bad_bet)
+
+
+def test_play_zero_bet_allowed():
+    res = PlinkoEngine(8, "low").play(SERVER, CLIENT, nonce=0, bet=0)
+    assert res["bet"] == 0.0 and res["payout"] == 0.0
+
+
+def test_config_payouts_render_like_published_tables():
+    # published tables print 110, 41, 10 ... not 110.0, 41.0, 10.0
+    cfg = PlinkoEngine(16, "medium").config()
+    assert cfg["payouts"] == [110, 41, 10, 5, 3, 1.5, 1, 0.5, 0.3,
+                              0.5, 1, 1.5, 3, 5, 10, 41, 110]
+    types = [type(x) for x in cfg["payouts"]]
+    assert types[:5] == [int, int, int, int, int]
+    assert isinstance(cfg["payouts"][5], float)  # 1.5 stays a float
+
+
 @pytest.mark.parametrize("bad", [dict(rows=7), dict(rows=17), dict(rows=8.0),
                                  dict(rows=True)])
 def test_bad_rows_rejected(bad):
@@ -301,3 +443,18 @@ def test_sim_rejects_zero_rounds():
         eng.simulate(0)
     with pytest.raises(ValueError):
         eng.simulate_provably_fair(0)
+
+
+@pytest.mark.parametrize("bad_chunk", [0, -1, -1_000_000])
+def test_sim_rejects_nonpositive_chunk(bad_chunk):
+    # regression: chunk<=0 used to make the while-loop spin forever
+    eng = PlinkoEngine(8, "low")
+    with pytest.raises(ValueError):
+        eng.simulate(1000, seed=1, chunk=bad_chunk)
+
+
+def test_sim_small_chunk_terminates_and_is_exact():
+    eng = PlinkoEngine(8, "low")
+    sim = eng.simulate(10_001, seed=3, chunk=1000)
+    assert sim["rounds"] == 10_001
+    assert sum(sim["pocket_counts"]) == 10_001
