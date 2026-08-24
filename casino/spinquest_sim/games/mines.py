@@ -66,10 +66,21 @@ MIN_MINES = 1
 MAX_MINES = 24
 RTP_FACTOR = Fraction(99, 100)   # 0.99 — Stake's published 1% house edge
 
-# Keep per-chunk arrays small: 1M rounds x 24 mine cols x 8 bytes = 192 MB;
-# measured (tracemalloc) whole-call peak for a 1M-round chunk at the 24-mine
-# worst case is 416 MB, inside the 500 MB budget.
-_SIM_CHUNK_ROUNDS = 1_000_000
+# Chunk size for simulate(), sized against the project's 500 MB chunking
+# budget measured the honest way: peak PSS summed over the WHOLE process
+# tree (BulkRng fans digest work out to forked workers, and parent-only
+# tracemalloc is structurally blind to worker allocations and undercounts
+# the frombuffer/view/astype chain — it reported ~416 MB for a 1M-round
+# chunk whose true tree peak was ~600 MB PSS / ~2.4 GB RSS, which busted
+# the budget).  At 200k rounds the 24-mine worst-case chunk is a
+# 200_000 x 24 int64 matrix = 38 MB, and the measured whole-tree peak for
+# Mines(24, 1).simulate(2_000_000) at this default is ~215 MB PSS
+# (~525 MB tree RSS, inflated by fork copy-on-write double-counting that
+# PSS charges only once) — ~3.5x smaller than the old 1M default with NO
+# throughput loss (~140k rounds/s at either size; smaller chunks drop off
+# the parallel digest path and get ~30% slower).  scripts/validate_mines.py
+# re-measures this as a gate (peak tree PSS < 500 MB) on every run.
+_SIM_CHUNK_ROUNDS = 200_000
 
 
 def _validate(mines: int, picks: int) -> None:
@@ -137,6 +148,18 @@ def display_multiplier(mines: int, picks: int) -> float:
     NOT the exact rational — this reproduces every one of Stake's 300
     published table cells digit-for-digit, including the 7 cells whose
     displayed cent disagrees with round-half-even of the exact value.
+
+    Rounding MODE is a deliberate choice, not an accident: the reference's
+    §6 prose says the client displays ``multiplier.toFixed(2)``, but JS
+    ``toFixed`` breaks ties AWAY FROM ZERO while Python ``round`` breaks
+    them TO EVEN, and the two disagree on exactly 3 cells whose float64
+    reduce lands exactly on a half-cent — (3,1) and (19,1) (both reduce to
+    an exact ``x.125``) and (17,7) (exactly ``59486.625``).  The published
+    §7 table prints the half-even cent in all 3 (1.12x, 4.12x, 59,486.62x),
+    so the reference is internally inconsistent and we side with the table
+    (300 data points) over the prose (one parenthetical): a "more faithful"
+    switch to toFixed semantics would break those 3 cells.  Pinned by
+    ``tests/test_mines.py::TestStakeTable::test_tofixed_ties_away_would_break_three_cells``.
     """
     return round(multiplier_display_float(mines, picks), 2)
 
@@ -309,12 +332,23 @@ class Mines:
         on the vectorized :class:`BulkRng` stream and return the standard
         result dict.
 
-        Chunked so per-chunk arrays stay <200 MB even at 24 mines; prints
-        progress for long campaigns.  Row i of the campaign is bit-for-bit
-        verifiable against the scalar path at nonce ``nonce_start + i``.
+        Chunked so the whole-process-tree peak (chunk output matrix +
+        BulkRng worker fan-out + np.any/np.isin temporaries) stays inside
+        the 500 MB budget: at the default ``chunk_rounds`` the measured
+        peak is ~215 MB PSS over the tree at the 24-mine worst case
+        (see the note at ``_SIM_CHUNK_ROUNDS``; the validator re-measures
+        this as a gate).  Prints progress for long campaigns.  Row i of
+        the campaign is bit-for-bit verifiable against the scalar path at
+        nonce ``nonce_start + i``.
         """
         if n_rounds <= 0:
             raise ValueError("n_rounds must be positive")
+        if chunk_rounds < 1:
+            # chunk_rounds=0 would make step = min(0, remaining) = 0 and
+            # loop forever with no error and no output; negative values
+            # would only fail incidentally deeper in the RNG.  Same guard
+            # as roulette/plinko/keno.
+            raise ValueError(f"chunk_rounds must be >= 1, got {chunk_rounds}")
         rng = bulk if bulk is not None else BulkRng()
         order = self._pick_order(picks)
         pick_arr = np.asarray(order, dtype=np.int64)

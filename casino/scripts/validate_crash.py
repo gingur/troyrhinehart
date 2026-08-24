@@ -20,14 +20,37 @@
 3b. Commitment-ordering enforcement (the fairness guarantee itself): the
    reference binds the salt to "a future bitcoin block ... so players can
    be certain that we did not pick one in the house's favor" — terminating
-   hash FIRST, salt SECOND.  Gates: STAKE_SALT (block 584,500, mined
-   2019-07-21) is refused for any newly generated chain; chains cannot be
-   played before a salt is bound; a salt attested to predate the commitment
-   is refused; a caller-supplied (pre-existing) salt warns and is marked
-   ``fair_ordering: False``; the honest two-phase protocol (commit, then
-   draw salt) runs end-to-end and its verification dict records the order
-   with timestamps; replaying Stake's own published chain with an explicit
-   STAKE_SALT still works.
+   hash FIRST, salt from an EXTERNAL beacon SECOND.  The general rule is
+   "no external commitment => not fair", and a beacon CLAIM is never taken
+   at the operator's word: a structured ``salt_source``
+   ({"beacon":"bitcoin","height":N} / {"beacon":"drand","round":R}) is
+   validated structurally (64 hex chars; >= 8 leading zero nibbles for a
+   claimed Bitcoin block hash — true at every height since genesis),
+   requires a MANDATORY ``revealed_at`` strictly after the commitment and
+   not in the future, and even then is only recorded as ``order:
+   "external_commitment_claimed_unverified", fair_ordering: False``.
+   ``fair_ordering: True`` exists ONLY after the VERIFIER calls
+   ``verify_salt_against_beacon(resolved_value, resolved_time)`` with the
+   named beacon's value and publication time resolved out-of-band — a
+   byte-identical match published strictly after the commitment; any
+   failure refutes the claim permanently.  Gates: a salt the operator's
+   own process drew after the commitment (including the default two-phase
+   simulator path) is recorded as ``order:
+   "operator_drawn_after_commitment", fair_ordering: False``; the round-4
+   salt-grinding exploit is reproduced dressed in beacon claims (Bitcoin
+   dress refused structurally, drand dress refuted on resolution) and
+   shown NOT certified; the round-5 SEED-grinding exploit (grind the
+   secret seed against Bitcoin block 1's already-published hash, bind the
+   genuine block hash) is reproduced and shown dead on every path;
+   malformed beacon claims are rejected; STAKE_SALT (block 584,500, mined
+   2019-07-21; case-insensitive, 0x-stripped) is refused as a hint for any
+   newly generated chain; chains cannot be played before a salt is bound;
+   a salt attested to predate the commitment is refused; a caller-supplied
+   (pre-existing) salt warns and is marked ``fair_ordering: False``; the
+   claim -> out-of-band-verify path (exercised with a clearly labeled
+   SIMULATED resolution — this validator runs offline) grants
+   ``fair_ordering: True`` only after the verify step; and replaying
+   Stake's own published chain with an explicit STAKE_SALT still works.
 
 4. Empirical bar: 10M+ provably-fair rounds per mechanism —
    (a) vectorized BulkRng stream (critic-verified rng core), and
@@ -57,6 +80,7 @@ import json
 import math
 import re
 import sys
+import time
 import warnings
 from pathlib import Path
 from typing import Dict, List
@@ -82,6 +106,7 @@ from spinquest_sim.games.crash import (  # noqa: E402
     crash_int_from_hash,
     crash_point_from_int,
     instant_bust_probability,
+    is_external_commitment,
     next_chain_hash,
     simulate_chain_targets,
     simulate_targets,
@@ -301,17 +326,137 @@ def check_commitment_ordering() -> Dict[str, object]:
         lambda: hc.bind_salt(stale_salt, revealed_at=hc.committed_at - 86400.0)
     )
 
-    # (4) honest binding AFTER the commitment succeeds and is recorded.
-    hc.bind_salt(
-        hashlib.sha256(b"future-source salt for ordering demo").hexdigest(),
-        salt_source="demo source revealed after commitment",
-        revealed_at=hc.committed_at + 1.0,
+    # (3.5) STAKE_SALT disguises (uppercase, 0x prefix) are refused too —
+    # the refusal is a normalized hint, not a single equality test.
+    checks["stake_salt_uppercase_refused"] = _raises_commitment_error(
+        lambda: HashChain("grind-attempt", length=6).bind_salt(STAKE_SALT.upper())
     )
-    rec = hc.commitment
-    checks["honest_bind_fair_ordering_recorded"] = (
+    checks["stake_salt_0x_prefixed_refused"] = _raises_commitment_error(
+        lambda: HashChain("grind-attempt", length=6).bind_salt("0x" + STAKE_SALT)
+    )
+
+    # (4) THE GENERAL RULE — no external commitment => not fair — and a
+    # beacon CLAIM is never taken at the operator's word.
+    # (4a) claim -> out-of-band verify protocol.  The resolution below is
+    # SIMULATED (this validator runs offline and resolves no real beacon):
+    # it exercises the gate's mechanics and the stored record is labeled
+    # as such — a drand round can genuinely land milliseconds after a
+    # commitment (one round every few seconds), so the timing here is
+    # internally consistent, but the round number and value are synthetic.
+    demo_drand_value = hashlib.sha256(
+        b"simulated drand resolution for gate demo"
+    ).hexdigest()
+    time.sleep(0.005)  # the 'beacon' publishes strictly after the commitment
+    demo_reveal_time = time.time()
+    hc.bind_salt(
+        demo_drand_value,
+        salt_source={"beacon": "drand", "round": 3_366_570},
+        revealed_at=demo_reveal_time,
+    )
+    claim_rec = hc.commitment
+    checks["beacon_claim_alone_not_certified_fair"] = (
+        claim_rec["fair_ordering"] is False
+        and claim_rec["fair_ordering_claimed"] is True
+        and claim_rec["order"] == "external_commitment_claimed_unverified"
+        and "verify_salt_against_beacon" in str(claim_rec.get("note", ""))
+    )
+    rec = hc.verify_salt_against_beacon(demo_drand_value, demo_reveal_time)
+    checks["verify_gate_grants_fair_after_matching_resolution"] = (
         rec["fair_ordering"] is True
         and rec["order"] == "terminating_hash_first"
+        and rec["beacon_verification"]["verified"] is True
         and rec["salt_bound_at_unix"] >= rec["terminating_hash_committed_at_unix"]
+    )
+    rec = dict(rec)
+    rec["demo_note"] = (
+        "SIMULATED out-of-band resolution (offline mechanism demo): the "
+        "drand round number and value above are synthetic; a real verifier "
+        "must resolve the named round from the drand network itself — see "
+        "stake_2019_reference_event for the real-world exemplar"
+    )
+    checks["is_external_commitment_recognizes_beacons"] = (
+        is_external_commitment({"beacon": "bitcoin", "height": 900_000})
+        and is_external_commitment({"beacon": "drand", "round": 3_366_570})
+    )
+    # (4a-neg) the claim path's own guards.
+    fake_block_salt = "0" * 10 + hashlib.sha256(b"demo block").hexdigest()[10:]
+    btc_source = {"beacon": "bitcoin", "height": 1_000_000}
+    checks["beacon_claim_requires_revealed_at"] = _raises_commitment_error(
+        lambda: HashChain("guard-demo", length=6).bind_salt(
+            fake_block_salt, salt_source=btc_source
+        )
+    )
+    checks["future_dated_revealed_at_refused"] = _raises_commitment_error(
+        lambda: HashChain("guard-demo", length=6).bind_salt(
+            fake_block_salt, salt_source=btc_source,
+            revealed_at=time.time() + 3600.0,
+        )
+    )
+
+    def _impossible_block_hash():
+        h = HashChain("guard-demo", length=6)
+        time.sleep(0.002)
+        h.bind_salt(
+            hashlib.sha256(b"salt with no leading zeros").hexdigest(),
+            salt_source=btc_source, revealed_at=time.time(),
+        )
+
+    checks["bitcoin_claim_without_8_leading_zeros_refused"] = (
+        _raises_commitment_error(_impossible_block_hash)
+    )
+    # sanity anchor: the real block-584,500 salt easily clears the >=8
+    # leading-zero structural floor (it has 18).
+    checks["stake_salt_clears_bitcoin_structural_floor"] = (
+        len(STAKE_SALT) - len(STAKE_SALT.lstrip("0")) >= 8
+    )
+
+    def _mismatched_resolution():
+        h = HashChain("guard-demo-2", length=6)
+        time.sleep(0.002)
+        h.bind_salt(
+            hashlib.sha256(b"operator's claimed drand value").hexdigest(),
+            salt_source={"beacon": "drand", "round": 3_366_570},
+            revealed_at=time.time(),
+        )
+        try:
+            h.verify_salt_against_beacon(
+                hashlib.sha256(b"the actually published value").hexdigest(),
+                time.time(),
+            )
+        finally:
+            _mismatched_resolution.order = h.commitment["order"]  # type: ignore
+
+    checks["mismatched_resolution_refutes_claim"] = (
+        _raises_commitment_error(_mismatched_resolution)
+        and getattr(_mismatched_resolution, "order", None)
+        == "external_commitment_refuted"
+    )
+    # (4b) the SAME bind with only a free-text source (timestamps identical,
+    # revealed_at attested) is NOT certified — timestamp order is necessary
+    # but never sufficient.
+    hc_text = HashChain("ordering-demo-text", length=64)
+    hc_text.bind_salt(
+        hashlib.sha256(b"another demo salt").hexdigest(),
+        salt_source="free-text claim, not verifier-resolvable",
+        revealed_at=hc_text.committed_at + 1.0,
+    )
+    trec = hc_text.commitment
+    checks["textual_source_not_certified_fair"] = (
+        trec["fair_ordering"] is False
+        and trec["order"] == "operator_drawn_after_commitment"
+        and "external commitment" in str(trec.get("note", ""))
+    )
+    # (4c) malformed beacon claims are not external commitments.
+    checks["malformed_beacon_claims_rejected"] = not any(
+        is_external_commitment(bad)
+        for bad in (
+            None, "bitcoin height 1000000",
+            {"beacon": "urandom", "height": 5},
+            {"beacon": "bitcoin"}, {"beacon": "bitcoin", "round": 5},
+            {"beacon": "bitcoin", "height": 0},
+            {"beacon": "bitcoin", "height": True},
+            {"beacon": "drand", "height": 5},
+        )
     )
 
     # (5) caller-supplied (pre-existing) salt warns and is marked unfair.
@@ -328,18 +473,138 @@ def check_commitment_ordering() -> Dict[str, object]:
         res["verification"]["commitment"]["fair_ordering"] is False
     )
 
-    # (6) honest two-phase protocol end-to-end: commit -> draw salt -> play.
-    honest = simulate_chain_targets(
-        [2.0], 20_000, secret_seed="honest-two-phase-demo", progress=False
+    # (6) the two-phase simulator path SELF-DRAWS its salt (secrets.token_hex
+    # in the operator's own process): it must be recorded honestly as
+    # operator_drawn_after_commitment / fair_ordering False, with the
+    # one-sentence reproducible-simulation note — and it must refuse to dress
+    # a self-drawn salt in an external-beacon claim.
+    two_phase = simulate_chain_targets(
+        [2.0], 20_000, secret_seed="two-phase-demo", progress=False
     )
-    hrec = honest["verification"]["commitment"]
-    checks["two_phase_protocol_fair_ordering"] = (
-        hrec["fair_ordering"] is True
-        and hrec["order"] == "terminating_hash_first"
+    hrec = two_phase["verification"]["commitment"]
+    checks["self_drawn_salt_marked_operator_drawn_unfair"] = (
+        hrec["fair_ordering"] is False
+        and hrec["order"] == "operator_drawn_after_commitment"
+        and "external commitment" in str(hrec.get("note", ""))
         and hrec["terminating_hash_committed_at_unix"]
         <= hrec["salt_bound_at_unix"]
         and hrec["salt"] != STAKE_SALT
     )
+    checks["self_drawn_salt_cannot_claim_beacon"] = _raises_commitment_error(
+        lambda: simulate_chain_targets(
+            [2.0], 10, secret_seed="s",
+            salt_source={"beacon": "bitcoin", "height": 1_000_000},
+            progress=False,
+        )
+    )
+
+    # (6b) the round-4 exploit itself: grind candidate salts against a
+    # committed chain until the first 3 rounds all bust below 2x, bind the
+    # winner — the rig works, but the engine refuses to certify it fair,
+    # no matter how the ground salt's salt_source is dressed (the round-5
+    # critic's swap: replace the confession string with a beacon dict).
+    grind_secret = "validator-grind-target"
+    grind_len = 8
+    hc_grind = HashChain(grind_secret, length=grind_len)
+    grind_chain = build_hash_chain(grind_secret, grind_len)
+    first_three = grind_chain[-2:-5:-1]
+    rigged, tries = None, 0
+    while rigged is None:
+        cand = hashlib.sha256(f"validator grind {tries}".encode()).hexdigest()
+        tries += 1
+        if all(crash_point_from_hash(h, cand) < 2.0 for h in first_three):
+            rigged = cand
+    # bitcoin dress: a ground SHA-256 salt has ~0 leading zero nibbles —
+    # arithmetically impossible for any block, refused at bind.
+    def _btc_dress():
+        h = HashChain(grind_secret, length=grind_len)
+        time.sleep(0.002)
+        h.bind_salt(rigged, salt_source=btc_source, revealed_at=time.time())
+
+    checks["ground_salt_bitcoin_dress_refused"] = _raises_commitment_error(
+        _btc_dress
+    )
+    # drand dress: binds only as an UNVERIFIED claim (fair stays False);
+    # out-of-band resolution returns a different value -> refuted.
+    hc_drand = HashChain(grind_secret, length=grind_len)
+    time.sleep(0.002)
+    hc_drand.bind_salt(
+        rigged, salt_source={"beacon": "drand", "round": 3_366_570},
+        revealed_at=time.time(),
+    )
+    drand_dress_unverified = (
+        hc_drand.fair_ordering is False
+        and hc_drand.commitment["order"]
+        == "external_commitment_claimed_unverified"
+    )
+    drand_dress_refuted = _raises_commitment_error(
+        lambda: hc_drand.verify_salt_against_beacon(
+            hashlib.sha256(b"what round 3366570 really published").hexdigest(),
+            time.time(),
+        )
+    ) and hc_drand.commitment["order"] == "external_commitment_refuted"
+    checks["ground_salt_drand_dress_refuted_on_resolution"] = (
+        drand_dress_unverified and drand_dress_refuted
+    )
+    # confession-string source: recorded as operator-drawn, not certified.
+    hc_grind.bind_salt(rigged, salt_source=f"ground in {tries} candidates")
+    grind_points = hc_grind.crash_points(3)
+    checks["ground_salt_rig_not_certified_fair"] = (
+        all(p < 2.0 for p in grind_points)          # the rig itself worked...
+        and hc_grind.fair_ordering is False         # ...but is not certified
+        and hc_grind.commitment["order"] == "operator_drawn_after_commitment"
+    )
+
+    # (6c) the round-5 exploit: grind the SECRET SEED against an
+    # ALREADY-PUBLISHED beacon value (Bitcoin block 1's hash, mined
+    # 2009-01-09), so the bound salt genuinely IS the named beacon's value
+    # and a verifier's value lookup matches byte-for-byte.  Every
+    # certification path must be dead.
+    block1 = "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048"
+    block1_time = 1_231_469_665.0  # 2009-01-09 UTC
+    seed_tries, ground_seed = 0, None
+    while ground_seed is None:
+        cand = f"validator seed grind {seed_tries}"
+        cand_chain = build_hash_chain(cand, 5)
+        if all(
+            crash_point_from_hash(h, block1) < 2.0
+            for h in cand_chain[-2:-5:-1]
+        ):
+            ground_seed = cand
+        seed_tries += 1
+    hc_seed = HashChain(ground_seed, length=5)
+    block1_source = {"beacon": "bitcoin", "height": 1}
+    checks["seed_grind_claim_without_revealed_at_refused"] = (
+        _raises_commitment_error(
+            lambda: hc_seed.bind_salt(block1, salt_source=block1_source)
+        )
+    )
+    checks["seed_grind_honest_reveal_time_refused"] = _raises_commitment_error(
+        lambda: hc_seed.bind_salt(
+            block1, salt_source=block1_source, revealed_at=block1_time
+        )
+    )
+    time.sleep(0.002)
+    hc_seed.bind_salt(
+        block1, salt_source=block1_source, revealed_at=time.time()  # a LIE
+    )
+    seed_points = hc_seed.crash_points(3)
+    checks["seed_grind_lying_reveal_not_certified"] = (
+        all(p < 2.0 for p in seed_points)           # the rig itself worked...
+        and hc_seed.fair_ordering is False          # ...but is only a claim
+        and hc_seed.commitment["order"]
+        == "external_commitment_claimed_unverified"
+    )
+    checks["seed_grind_refuted_by_out_of_band_resolution"] = (
+        _raises_commitment_error(
+            lambda: hc_seed.verify_salt_against_beacon(block1, block1_time)
+        )
+        and hc_seed.fair_ordering is False
+        and hc_seed.commitment["order"] == "external_commitment_refuted"
+    )
+    checks["refuted_claim_cannot_be_revived"] = _raises_commitment_error(
+        lambda: hc_seed.verify_salt_against_beacon(block1, time.time())
+    ) and hc_seed.fair_ordering is False
 
     # (7) the one legitimate STAKE_SALT use — replay verification of a hash
     # claimed to belong to Stake's published 2019 chain — still works.
@@ -353,7 +618,48 @@ def check_commitment_ordering() -> Dict[str, object]:
 
     return {
         "checks": checks,
-        "honest_two_phase_commitment_record": hrec,
+        # The real-world exemplar of a fair record (all facts from
+        # references/stake/crash.md): commitment published 2019-07-08,
+        # salt = Bitcoin block 584,500 named IN ADVANCE and mined
+        # 2019-07-21 — 13 days later — with 18 leading zero nibbles.
+        "stake_2019_reference_event": {
+            "terminating_hash": STAKE_TERMINATING_HASH,
+            "terminating_hash_published": "2019-07-08 (bitcointalk post)",
+            "salt": STAKE_SALT,
+            "salt_source": {"beacon": "bitcoin", "height": 584_500},
+            "salt_revealed": "2019-07-21 (block 584,500 mined)",
+            "commit_to_reveal_gap_days": 13,
+            "salt_leading_zero_nibbles":
+                len(STAKE_SALT) - len(STAKE_SALT.lstrip("0")),
+        },
+        "beacon_claim_record_unverified": claim_rec,
+        # gate-mechanics demo with a SIMULATED resolution (see demo_note)
+        "beacon_verify_demo_record": rec,
+        "two_phase_commitment_record": hrec,
+        "grind_demo": {
+            "exploit": "round-4 salt grind (ground salt, chain fixed)",
+            "candidates_ground": tries,
+            "rigged_first_three_crash_points": grind_points,
+            "bitcoin_dress_verdict": "refused at bind (0 leading zero "
+            "nibbles: impossible for any block hash)",
+            "drand_dress_verdict": hc_drand.commitment["order"],
+            "engine_verdict_order": hc_grind.commitment["order"],
+            "engine_verdict_fair_ordering": hc_grind.fair_ordering,
+        },
+        "seed_grind_demo": {
+            "exploit": "round-5 seed grind vs already-published beacon "
+            "value (Bitcoin block 1's hash, mined 2009-01-09)",
+            "seeds_ground": seed_tries,
+            "rigged_first_three_crash_points": seed_points,
+            "no_revealed_at": "refused at bind (mandatory)",
+            "honest_revealed_at_2009": "refused at bind (predates commit)",
+            "lying_revealed_at": "binds as unverified claim only, "
+            "fair_ordering False",
+            "out_of_band_resolution": "refuted (block 1 published before "
+            "the commitment)",
+            "engine_verdict_order": hc_seed.commitment["order"],
+            "engine_verdict_fair_ordering": hc_seed.fair_ordering,
+        },
         "pass": all(checks.values()),
     }
 
@@ -554,13 +860,53 @@ def main(argv: List[str] | None = None) -> int:
     ordering = check_commitment_ordering()
     for name, ok in ordering["checks"].items():
         print(f"[order] {name}: {'PASS' if ok else 'FAIL'}")
-    hrec = ordering["honest_two_phase_commitment_record"]
+    sref = ordering["stake_2019_reference_event"]
     print(
-        f"[order] honest two-phase demo: terminating_hash "
-        f"{hrec['terminating_hash'][:16]}... committed at "
-        f"{hrec['terminating_hash_committed_at']}, salt "
-        f"{str(hrec['salt'])[:16]}... bound at {hrec['salt_bound_at']} "
-        f"({hrec['salt_source']}) -> "
+        f"[order] real-world exemplar (reference): commitment published "
+        f"{sref['terminating_hash_published']}, salt = bitcoin block "
+        f"584,500 named in advance, mined {sref['salt_revealed']} "
+        f"({sref['commit_to_reveal_gap_days']} days later, "
+        f"{sref['salt_leading_zero_nibbles']} leading zero nibbles)"
+    )
+    crec = ordering["beacon_claim_record_unverified"]
+    print(
+        f"[order] beacon-claim demo: salt {str(crec['salt'])[:16]}... "
+        f"claimed as {crec['salt_source']} -> order='{crec['order']}', "
+        f"fair_ordering={crec['fair_ordering']} (a claim certifies nothing)"
+    )
+    brec = ordering["beacon_verify_demo_record"]
+    print(
+        f"[order] verify-gate demo (SIMULATED out-of-band resolution): "
+        f"matching value + post-commit publication time -> "
+        f"order='{brec['order']}', fair_ordering={brec['fair_ordering']}"
+    )
+    hrec = ordering["two_phase_commitment_record"]
+    print(
+        f"[order] two-phase self-drawn demo: salt {str(hrec['salt'])[:16]}... "
+        f"drawn by the operator's own secrets.token_hex -> honestly recorded "
+        f"as order='{hrec['order']}', fair_ordering={hrec['fair_ordering']}"
+    )
+    grind = ordering["grind_demo"]
+    print(
+        f"[order] round-4 exploit replay: ground {grind['candidates_ground']} "
+        f"candidate salts to rig first 3 rounds "
+        f"{['%.2f' % p for p in grind['rigged_first_three_crash_points']]} "
+        f"(all < 2x) -> bitcoin dress refused (impossible block hash), "
+        f"drand dress '{grind['drand_dress_verdict']}', confession source "
+        f"'{grind['engine_verdict_order']}', fair_ordering="
+        f"{grind['engine_verdict_fair_ordering']} (rig NOT certified)"
+    )
+    sgrind = ordering["seed_grind_demo"]
+    print(
+        f"[order] round-5 exploit replay: ground {sgrind['seeds_ground']} "
+        f"candidate SEEDS vs bitcoin block 1's published hash, first 3 "
+        f"rounds "
+        f"{['%.2f' % p for p in sgrind['rigged_first_three_crash_points']]} "
+        f"(all < 2x) -> no revealed_at/honest 2009 reveal both refused at "
+        f"bind; lying reveal binds as unverified claim (fair_ordering "
+        f"False); out-of-band resolution refutes -> final verdict order="
+        f"'{sgrind['engine_verdict_order']}', fair_ordering="
+        f"{sgrind['engine_verdict_fair_ordering']} -> "
         f"{'PASS' if ordering['pass'] else 'FAIL'}"
     )
 

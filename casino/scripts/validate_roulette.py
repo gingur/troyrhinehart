@@ -46,11 +46,22 @@
       lucky committed seed: the default seed is reproducible but NOT
       load-bearing — pass ``--fresh-seed`` to prove it on a random one.
 
+   c. BASKET GATE — a 7-bet shared-spin basket (with deliberate overlaps,
+      pocket 0 paying 63) is settled through the public multi-bet
+      ``settle_bets`` path over the full campaign, and BOTH its mean and
+      its sample variance must land within 3 SE of the exact analytic
+      counterpart ``basket_analytics`` (Fraction EV / Var / mu4 over the
+      37 pockets; the variance SE uses the exact fourth central moment).
+      This is independent variance evidence: the basket variance depends
+      on the covariance between overlapping bets, which no per-bet
+      marginal statistic restates.
+
    Plus a chi-square uniformity check of the 37 pocket counts at the true
    99.99% quantile (scipy.stats.chi2.isf(1e-4, 36) = 76.36, not the
    mislabeled 79.0 of earlier rounds), and a first-chunk cross-check that
    the fast bincount settlement used for the 157-bet family agrees
-   bet-for-bet with the public settlement path.
+   bet-for-bet with the public settlement path (and that ``settle_bets``
+   agrees with the exact per-pocket basket totals).
 
 Prints a human-readable report plus a machine-readable JSON line prefixed
 ``ROULETTE_VALIDATION_JSON:``.  That line is ALWAYS emitted, exactly once —
@@ -69,6 +80,14 @@ Hardened (round 4): the verdict line survives argparse errors (SystemExit
 is caught); the empirical gates are seed-honest as described above; the
 stated 13-type bar runs through the public settlement API; statistical
 thresholds are computed from scipy, not hand-copied.
+
+Hardened (round 5): ``Roulette.simulate`` rejects non-Integral
+``n_rounds``/``chunk_rounds`` with a TypeError at the root (``inf`` used
+to pass the ``<= 0`` guard and loop forever; ``nan`` returned a
+green-looking zero-spin result; json.loads accepts bare Infinity/NaN, so
+JSON/MCP callers could feed both) — gated in GATE 4 alongside the
+chunk_rounds<=0 guard; and the empirical gate grew bar (c), the
+settle_bets basket mean+variance check against ``basket_analytics``.
 
 Usage:
     python scripts/validate_roulette.py [--rounds N] [--seed HEX64]
@@ -115,6 +134,16 @@ DEFAULT_SERVER_SEED = (
 DEFAULT_CLIENT_SEED = "spinquest-roulette-validation"
 
 N_BETS = 157            # full European catalogue (incl. zero trios + first four)
+# Shared-spin basket for the settle_bets empirical gate (round 5): 7
+# simultaneous one-unit bets with deliberate overlaps (pocket 0 pays
+# 36 + 18 + 9 = 63 total) so the gate exercises the covariance structure
+# of settle_bets, not just marginal RTP.  Ground truth comes from
+# rl.basket_analytics — exact Fraction EV / Var / mu4 over the 37 pockets.
+BASKET_SPEC = [
+    ("straight", 0), ("split", (0, 2)), ("corner", (0, 1, 2, 3)),
+    ("red", None), ("dozen", 1), ("column", 2),
+    ("line", (13, 14, 15, 16, 17, 18)),
+]
 MIN_EMPIRICAL_ROUNDS = 10_000_000
 # Family-wise empirical gate: same family error rate as a single two-sided
 # 3-sigma test (alpha = 0.0026998), Sidak-corrected across the 157 bets.
@@ -418,6 +447,92 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
         "payout)" + ("; " + "; ".join(robust) if robust else ""),
         failures,
     )
+    # simulate() robustness: chunk_rounds <= 0 must raise up front, never
+    # hang (chunk_rounds=0 previously made step = min(0, remaining) = 0 and
+    # looped forever with no error or output; negative values only raised
+    # incidentally from deeper in the RNG).
+    guard_bad = []
+    for bad_chunk in (0, -1):
+        try:
+            rl.Roulette("red").simulate(
+                10, bulk=BulkRng(args.seed, args.client, workers=1),
+                chunk_rounds=bad_chunk, progress=False,
+            )
+            guard_bad.append(f"chunk_rounds={bad_chunk} returned normally")
+        except ValueError:
+            pass
+        except Exception as unexpected:  # noqa: BLE001
+            guard_bad.append(
+                f"chunk_rounds={bad_chunk} raised "
+                f"{type(unexpected).__name__} (want ValueError)"
+            )
+    # Round 5: non-Integral counters must raise TypeError at the ROOT of
+    # simulate(), not die one comparison at a time.  n_rounds=inf passes an
+    # `<= 0` guard (inf <= 0 is False) and loops forever; n_rounds=nan makes
+    # every comparison False, so the loop body never runs and simulate would
+    # return a green-looking result (wins=0, within_3se=True) for a campaign
+    # that never happened.  json.loads accepts bare Infinity/NaN by default,
+    # so any JSON/MCP caller can feed both.
+    for label, kwargs in [
+        ("n_rounds=inf", {"n_rounds": float("inf")}),
+        ("n_rounds=nan", {"n_rounds": float("nan")}),
+        ("n_rounds=2.5", {"n_rounds": 2.5}),
+        ("n_rounds=1e6(float)", {"n_rounds": 1e6}),
+        ("n_rounds=True", {"n_rounds": True}),
+        ("chunk_rounds=0.5", {"n_rounds": 10, "chunk_rounds": 0.5}),
+        ("chunk_rounds=inf", {"n_rounds": 10,
+                              "chunk_rounds": float("inf")}),
+        ("chunk_rounds=nan", {"n_rounds": 10,
+                              "chunk_rounds": float("nan")}),
+        ("chunk_rounds=True", {"n_rounds": 10, "chunk_rounds": True}),
+    ]:
+        try:
+            rl.Roulette("red").simulate(
+                bulk=BulkRng(args.seed, args.client, workers=1),
+                progress=False, **kwargs,
+            )
+            guard_bad.append(f"{label} returned normally")
+        except TypeError:
+            pass
+        except Exception as unexpected:  # noqa: BLE001
+            guard_bad.append(
+                f"{label} raised {type(unexpected).__name__} "
+                "(want TypeError)"
+            )
+    # numpy integers must still be accepted (they are numbers.Integral).
+    try:
+        np_ok = rl.Roulette("red").simulate(
+            np.int64(16), bulk=BulkRng(args.seed, args.client, workers=1),
+            chunk_rounds=np.int32(8), progress=False,
+        )
+        if np_ok["n_rounds"] != 16:
+            guard_bad.append("np.int64 n_rounds mangled")
+    except Exception as unexpected:  # noqa: BLE001
+        guard_bad.append(
+            f"np.int64 n_rounds raised {type(unexpected).__name__}"
+        )
+    # Boundary just above the guard: chunk_rounds=1 must terminate and
+    # replay the exact same stream as one default-sized chunk.
+    tiny_a = rl.Roulette("red").simulate(
+        64, bulk=BulkRng(args.seed, args.client, workers=1),
+        chunk_rounds=1, progress=False,
+    )
+    tiny_b = rl.Roulette("red").simulate(
+        64, bulk=BulkRng(args.seed, args.client, workers=1), progress=False,
+    )
+    if (tiny_a["wins"] != tiny_b["wins"]
+            or (tiny_a["pocket_counts"] != tiny_b["pocket_counts"]).any()):
+        guard_bad.append("chunk_rounds=1 run != single-chunk run")
+    check(
+        not guard_bad, "simulate degenerate input guard",
+        "chunk_rounds 0 / -1 raise ValueError up front (no silent infinite "
+        "loop); non-Integral n_rounds/chunk_rounds (inf, nan, 2.5, 1e6, "
+        "True) all raise TypeError at the root; np.int64/np.int32 counters "
+        "accepted; chunk_rounds=1 terminates and replays the single-chunk "
+        f"run bit-for-bit ({tiny_a['wins']}/64 wins both ways)"
+        + ("; " + "; ".join(guard_bad) if guard_bad else ""),
+        failures,
+    )
     summary["gates"]["stream_agreement"] = len(failures) == prior
 
     # ------------------------------------------------------------------
@@ -429,6 +544,9 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
               "(public settlement path)")
         print(f"  bar (b): all {N_BETS} bets within the Sidak family bound "
               f"|z| <= {z_family:.3f} (family alpha = {FAMILY_ALPHA:.5f})")
+        print(f"  bar (c): {len(BASKET_SPEC)}-bet shared-spin basket via "
+              "settle_bets — mean AND variance within 3 SE of the exact "
+              "analytic counterpart (basket_analytics)")
         print("=" * 72)
         prior = len(failures)
         if args.rounds < MIN_EMPIRICAL_ROUNDS and not args.allow_short:
@@ -448,6 +566,13 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
         canonical = {bt: Roulette(*rl._CANONICAL[bt]) for bt in rl.BET_TYPES}
         counts = np.zeros(rl.POCKETS, dtype=np.int64)
         pay_totals = {bt: 0.0 for bt in rl.BET_TYPES}
+        basket_bets = [Roulette(bt, sel) for bt, sel in BASKET_SPEC]
+        basket_ana = rl.basket_analytics(basket_bets)
+        basket_totals = np.array(
+            [float(t) for t in basket_ana["pocket_totals_exact"]]
+        )
+        basket_s1 = 0.0
+        basket_s2 = 0.0
         crosscheck_bad: List[str] = []
         chunk = 2_000_000
         done = 0
@@ -461,7 +586,25 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
             # Stated bar settles through the PUBLIC settlement API.
             for bt, eng in canonical.items():
                 pay_totals[bt] += float(eng.payouts_for_pockets(pockets).sum())
+            # Basket gate settles the same spins through the PUBLIC
+            # multi-bet settle_bets path (sum + sum of squares for the
+            # mean/variance z-scores below).
+            basket_pay = rl.settle_bets(pockets, basket_bets)
+            basket_s1 += float(basket_pay.sum())
+            basket_s2 += float((basket_pay * basket_pay).sum())
             if first_chunk:
+                # settle_bets must agree with the exact per-pocket totals
+                # from basket_analytics on the first chunk (pointwise dot
+                # with the bincount).
+                basket_fast = float(chunk_counts @ basket_totals)
+                if not math.isclose(
+                    basket_fast, float(basket_pay.sum()),
+                    rel_tol=1e-9, abs_tol=1e-6,
+                ):
+                    crosscheck_bad.append(
+                        f"basket settle_bets {basket_pay.sum():.6f} != "
+                        f"pocket-totals dot {basket_fast:.6f}"
+                    )
                 # Cross-check: the fast bincount settlement used for the
                 # 157-bet family must agree bet-for-bet with the public path.
                 for bt, sel, eng in bets:
@@ -550,6 +693,33 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
             failures,
         )
 
+        # --- (c) BASKET GATE: settle_bets mean AND variance vs the exact ---
+        # analytic counterpart (rl.basket_analytics, Fraction arithmetic).
+        # This is genuinely independent variance evidence: the basket's
+        # variance depends on the covariance between overlapping bets, which
+        # no per-bet marginal statistic restates.
+        b_ev = basket_ana["ev"]
+        b_var = basket_ana["variance"]
+        b_mu4 = basket_ana["mu4"]
+        b_mean = basket_s1 / n
+        b_var_emp = basket_s2 / n - b_mean * b_mean
+        z_bmean = (b_mean - b_ev) / math.sqrt(b_var / n)
+        se_bvar = math.sqrt((b_mu4 - b_var * b_var) / n)
+        z_bvar = (b_var_emp - b_var) / se_bvar
+        print(f"  basket ({len(basket_bets)} bets, shared spins): "
+              f"mean {b_mean:.6f} vs exact {b_ev:.6f} "
+              f"(= {basket_ana['ev_exact']}) z={z_bmean:+.2f}; "
+              f"variance {b_var_emp:.6f} vs exact {b_var:.6f} "
+              f"z={z_bvar:+.2f} (SE via exact mu4 = {b_mu4:.3f})")
+        check(
+            abs(z_bmean) <= 3.0 and abs(z_bvar) <= 3.0,
+            "empirical basket mean+variance (settle_bets vs basket_analytics)",
+            f"mean z={z_bmean:+.2f}, variance z={z_bvar:+.2f}, both within "
+            f"3 SE over {n:,} shared spins; basket per-unit RTP exact "
+            f"{basket_ana['rtp_exact']} = 36/37",
+            failures,
+        )
+
         # --- pocket uniformity --------------------------------------------
         chi2_threshold = float(chi2_dist.isf(1e-4, 36))
         chi2 = float(((counts - n / 37) ** 2 / (n / 37)).sum())
@@ -565,6 +735,9 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
         summary["gates"]["empirical_3se_types"] = n_type_fail == 0
         summary["gates"]["empirical_family"] = (
             n_family_fail == 0 and not crosscheck_bad
+        )
+        summary["gates"]["empirical_basket"] = (
+            abs(z_bmean) <= 3.0 and abs(z_bvar) <= 3.0
         )
         summary["gates"]["empirical"] = len(failures) == prior
         summary["empirical"] = {
@@ -583,6 +756,16 @@ def run(args: argparse.Namespace, summary: Dict[str, object],
             "chi2_36dof": chi2,
             "chi2_threshold": chi2_threshold,
             "pocket0_freq": zero_freq,
+            "basket": {
+                "spec": [f"{bt} {sel}" for bt, sel in BASKET_SPEC],
+                "mean": b_mean,
+                "mean_exact": b_ev,
+                "z_mean": z_bmean,
+                "variance": b_var_emp,
+                "variance_exact": b_var,
+                "z_variance": z_bvar,
+                "mu4_exact": b_mu4,
+            },
             "rounds_per_sec": n / elapsed,
             "server_seed_hash": rng.server_seed_hash,
             "client_seed": rng.client_seed,

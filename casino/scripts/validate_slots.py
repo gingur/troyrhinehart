@@ -22,19 +22,24 @@
 
 3. Scarab exact analytics: total RTP within half an ULP of the published
    97.84% and printing exactly "97.84" / edge "2.16" (also carried as an
-   exact Fraction).  The reconstruction models Stake's published "random
-   wilds in the base game" as the calibrated wild-drop overlay over
-   descending-ladder strips (scripts/calibrate_slots.py derives every
-   constant deterministically; Stake does not publish strips or wild
-   frequencies — reference Sect. 7).  Par-sheet shape gates: counts
-   monotone non-increasing in 5-of-a-kind pay on every reel,
-   Spearman(pay, total count) <= -0.9 with the wild on ZERO strip stops,
-   no two reels sharing a count vector, per-reel count cv >= 0.4,
-   full-round SD inside the published slot band 5.18-13.45, and the
-   no-wild base game's any-line hit frequency in the neighbourhood of the
-   only published 20-line figure (Cleopatra 35.88%).  The factorized
-   analytics' no-wild component is cross-checked against the brute-force
-   30^4*41 stop enumeration (exact Fraction equality on first moments).
+   exact Fraction).  The reconstruction puts the King Tut wild ON the
+   reel strips ("random wilds in the base game" land from the reels — the
+   only mechanism the published 5-floats-per-spin event math permits) and
+   the whole model is the 13-column count matrix, derived exactly by
+   scripts/calibrate_slots.py (Stake does not publish the strips —
+   reference Sect. 7).  Par-sheet shape gates: counts monotone
+   non-increasing in 5-of-a-kind pay on every reel, Spearman(pay, total
+   count) <= -0.9 with the wild on 1-2 strip stops per reel, the wild's
+   own pay row carrying <= 20% of the line return (exact attribution via
+   a second LUT with the wild row removed), no two reels sharing a count
+   vector, per-reel count cv >= 0.4, full-round SD inside the published
+   slot band 5.18-13.45, the any-line hit frequency in the neighbourhood
+   of the only published 20-line figure (Cleopatra 35.88%), exactly 5
+   floats per spin (== rng.EVENT_COUNTS["scarab_spin"]), and every spin
+   (base or free) identically distributed — base-spin return == per-spin
+   average return (no fire/non-fire barbell).  The enumeration's first
+   moments are cross-checked against an independent count-marginal
+   big-integer contraction (exact Fraction equality).
 
 4. Empirical check: 10M+ provably-fair rounds per model on the vectorized
    BulkRng stream (one nonce per round; triggered rounds resolve their free
@@ -85,6 +90,7 @@ from spinquest_sim.games.slots import (  # noqa: E402
     SlotMachine,
     atkins_machine,
     scarab_machine,
+    tome_of_life_machine,
 )
 from spinquest_sim.rng import BulkRng  # noqa: E402
 
@@ -193,26 +199,40 @@ def check_stake_paytables() -> Dict[str, object]:
     rng_geom = tuple(sq_rng.SCARAB_SPIN_REELS)
     geometry_pass = geom_ok and eng_geom == (30, 30, 30, 30, 41) == rng_geom
     rtp_quoted = "97.84%" in text and "2.16" in text
-    fs_quoted = "15 bonus free spins" in text
+    fs_quoted = ("15 bonus free spins" in text
+                 and "15 free spins are awarded" in text)
     wilds_quoted = "random wilds in the base game" in text
     maxwin_quoted = "10,000" in text
+    # the Sect. 5 bonus rule set of the shared math model, verbatim
+    cap_quoted = ("Bonus rounds are capped at" in text
+                  and "180 free spins" in text and "180 times" in text)
+    mult_quoted = ("3x multiplier on winning combos" in text
+                   and "except when 5 WILD symbols are spun" in text)
+    double_quoted = ("Combinations where WILD symbols are used as another "
+                     "symbol pay double") in text
     result["geometry"] = {
         "reference_text_found": geom_ok,
         "engine_reels": list(eng_geom),
         "rng_core_reels": list(rng_geom),
         "published_rtp_9784_found": rtp_quoted,
         "published_15_free_spins_found": fs_quoted,
+        "published_180_cap_found": cap_quoted,
+        "published_3x_multiplier_found": mult_quoted,
+        "published_wild_doubling_found": double_quoted,
         "published_random_wilds_found": wilds_quoted,
         "published_max_win_found": maxwin_quoted,
-        "pass": (geometry_pass and rtp_quoted and fs_quoted
-                 and wilds_quoted and maxwin_quoted),
+        "pass": (geometry_pass and rtp_quoted and fs_quoted and cap_quoted
+                 and mult_quoted and double_quoted and wilds_quoted
+                 and maxwin_quoted),
     }
     result["pass"] = result["pass"] and bool(result["geometry"]["pass"])
     print(f"[stake] geometry 30/30/30/30/41 (engine==reference==rng core): "
           f"{'ok' if geometry_pass else 'MISMATCH'}; RTP 97.84%/edge 2.16% "
           f"quoted: {rtp_quoted}; 15 free spins quoted: {fs_quoted}; "
-          f"'random wilds in the base game' quoted: {wilds_quoted}; "
-          f"10,000x max win quoted: {maxwin_quoted}")
+          f"180-spin bonus cap quoted: {cap_quoted}; 3x multiplier + 5-wild "
+          f"exemption quoted: {mult_quoted}; wild-substitution doubling "
+          f"quoted: {double_quoted}; 'random wilds in the base game' "
+          f"quoted: {wilds_quoted}; 10,000x max win quoted: {maxwin_quoted}")
     return result
 
 
@@ -330,18 +350,24 @@ def check_scarab_enumeration() -> Tuple[Dict[str, object], object]:
           f"{printed['house_edge']['printed']!r} (want '97.84'/'2.16') "
           f"{'ok' if ok else 'FAIL'}; "
           f"P(trigger)={float(ex['p_bonus_trigger']):.6f}, "
-          f"E[spins/bonus]={ex['expected_bonus_spins']:.3f}, "
-          f"P(wild drop)={float(ex['overlay']['fire_prob']):.6f}")
+          f"E[spins/bonus]={ex['expected_bonus_spins']:.3f}")
 
-    # --- par-sheet shape gates (the round-4 must-pass set) ---
+    # --- published event math: exactly 5 floats per spin, verified core ---
+    floats_ok = (machine.floats_per_spin == 5
+                 == sq_rng.EVENT_COUNTS["scarab_spin"])
+
+    # --- par-sheet shape gates (the round-4/5 must-pass set) ---
     sd = float(ex["std_per_unit"])
     lo_sd, hi_sd = WOO_SLOT_SD_BAND
     sd_ok = lo_sd <= sd <= hi_sd
     ladder_ok = all(all(SCARAB_COUNTS[r][i] >= SCARAB_COUNTS[r][i + 1]
                         for i in range(10)) for r in range(5))
-    wild_off = all(SCARAB_WILD not in strip for strip in SCARAB_STRIPS)
+    wild_cap = SCARAB_SHAPE_GATES["wild_max_stops_per_reel"]
+    wild_counts = [strip.count(SCARAB_WILD) for strip in SCARAB_STRIPS]
+    wild_on_ok = all(1 <= c <= wild_cap for c in wild_counts)
     count_vecs = [tuple(strip.count(s) for s in range(13))
                   for strip in SCARAB_STRIPS]
+    counts_match_ok = count_vecs == [tuple(c) for c in SCARAB_COUNTS]
     distinct_ok = len(set(count_vecs)) == 5
     cvs = []
     for strip in SCARAB_STRIPS:
@@ -350,57 +376,150 @@ def check_scarab_enumeration() -> Tuple[Dict[str, object], object]:
     cv_ok = all(c >= SCARAB_SHAPE_GATES["per_reel_cv_min"] for c in cvs)
     pays = [SCARAB_LINE_PAYS[s][5] for s in range(12)]
     totals = [sum(SCARAB_COUNTS[r][s] for r in range(5)) for s in range(11)]
-    totals.append(sum(strip.count(SCARAB_WILD) for strip in SCARAB_STRIPS))
+    totals.append(sum(wild_counts))
     rho = _spearman(pays, totals)
     rho_ok = rho <= -SCARAB_SHAPE_GATES["spearman_abs_min"]
 
-    # --- brute-force cross-check of the no-wild component + base hit ---
-    base = SlotMachine(
-        name="scarab_base", symbols=SCARAB_SYMBOLS, strips=SCARAB_STRIPS,
-        line_pays=SCARAB_LINE_PAYS, wild=SCARAB_WILD, scatter=SCARAB_SCATTER,
-        scatter_pays=SCARAB_SCATTER_PAYS, scatter_pay_basis="line",
-        free_spins=15, free_spin_multiplier=1)
-    bex = base.enumerate_exact()
-    comp = ex["components"]["base"]
-    xcheck_ok = (comp["line_return"] == bex["line_return"]
-                 and comp["hit_frequency"] == bex["hit_frequency"]
-                 and ex["p_bonus_trigger"] == bex["p_bonus_trigger"]
-                 and ex["scatter_return"] == bex["scatter_return"])
-    h0 = float(bex["any_line_hit_frequency"])
+    # --- wild-as-itself share of the line return (exact attribution) ---
+    pays_nowild = {s: dict(r) for s, r in SCARAB_LINE_PAYS.items()
+                   if s != SCARAB_WILD}
+    nowild = SlotMachine(
+        name="scarab_nowildrow", symbols=SCARAB_SYMBOLS,
+        strips=SCARAB_STRIPS, line_pays=pays_nowild, wild=SCARAB_WILD,
+        scatter=SCARAB_SCATTER, scatter_pays=SCARAB_SCATTER_PAYS,
+        scatter_pay_basis="line", free_spins=15, free_spin_multiplier=3,
+        free_spin_cap=180, wild_substitution_double=True,
+        wild5_multiplier_exempt=True)
+    lr_full, _hit_full = machine.marginal_line_stats()
+    lr_nowild, _ = nowild.marginal_line_stats()
+    wild_share = float(1 - lr_nowild / lr_full)
+    share_ok = wild_share <= SCARAB_SHAPE_GATES["wild_line_return_share_max"]
+
+    # --- independent count-marginal cross-check (exact equality) ---
+    xcheck_ok = (lr_full == ex["line_return"]
+                 and _hit_full == ex["hit_frequency"])
+
+    # --- no barbell: every spin draws the same reels; free spins differ
+    # ONLY by the published 3x multiplier + pure-5-wild exemption ---
+    mu = float(ex["base_return"])
+    ey, ew = float(ex["e_y"]), float(ex["e_w"])
+    rules = SCARAB_SHAPE_GATES["published_bonus_rules"]
+    uniform_ok = (SCARAB_SHAPE_GATES["same_reels_every_spin"]
+                  and machine.free_spins == rules["free_spins"] == 15
+                  and machine.free_spin_cap == rules["free_spin_cap"] == 180
+                  and machine.free_spin_multiplier
+                  == rules["free_spin_multiplier"] == 3
+                  and machine.wild5_multiplier_exempt
+                  and machine.wild_substitution_double
+                  and ey < ew <= 3.0 * ey + 1e-15
+                  and 0.0 <= 3.0 * ey - ew < 1e-3)
+
+    # --- published capped retrigger chain (Sect. 5) ---
+    import numpy as _np
+    p_trig = float(ex["p_bonus_trigger"])
+    e_spins = float(ex["expected_bonus_spins"])
+    chain_pmf = ex["chain_pmf"]
+    chain_ok = (
+        ex["p_chain_exceeds_cap"] == 0.0
+        and len(chain_pmf) == machine.free_spin_cap + 1
+        and abs(float(_np.sum(chain_pmf)) - 1.0) < 1e-12
+        and machine.free_spins <= e_spins
+        <= SCARAB_SHAPE_GATES["expected_bonus_spins_max"]
+        and p_trig <= SCARAB_SHAPE_GATES["p_trigger_max"]
+        and machine.free_spins * p_trig
+        <= SCARAB_SHAPE_GATES["chain_load_max"])
+
+    # --- the published paytable carries the return: attribute every win
+    # (base and free spins) to the paytable row that pays it ---
+    kap = p_trig * e_spins
+    line_rows_share = (float(ex["line_return"])
+                       + kap * float(ex["bonus_line_return"])) / rtp
+    scatter_row_share = (float(ex["scatter_return"])
+                         + kap * float(ex["bonus_scatter_return"])) / rtp
+    feature_share = float(ex["bonus_return"]) / rtp
+    shares_ok = (
+        line_rows_share
+        >= SCARAB_SHAPE_GATES["line_rows_rtp_share_min"]
+        and scatter_row_share
+        <= SCARAB_SHAPE_GATES["scatter_row_rtp_share_max"]
+        and abs(line_rows_share + scatter_row_share - 1.0) < 1e-9)
+
+    h0 = float(ex["any_line_hit_frequency"])
     hit_ok = abs(h0 - WOO_CLEOPATRA_HIT_20LINE) < 0.15
 
-    shape_ok = (sd_ok and ladder_ok and wild_off and distinct_ok and cv_ok
-                and rho_ok and xcheck_ok and hit_ok)
+    shape_ok = (floats_ok and sd_ok and ladder_ok and wild_on_ok
+                and counts_match_ok and distinct_ok and cv_ok and rho_ok
+                and share_ok and xcheck_ok and uniform_ok and chain_ok
+                and shares_ok and hit_ok)
     ok = ok and shape_ok
+    print(f"[stake] scarab events: floats/spin "
+          f"{machine.floats_per_spin} == published 5 == rng core "
+          f"{sq_rng.EVENT_COUNTS['scarab_spin']} "
+          f"{'ok' if floats_ok else 'FAIL'}")
     print(f"[stake] scarab shape: SD {sd:.4f} in [{lo_sd}, {hi_sd}] "
           f"{'ok' if sd_ok else 'FAIL'}; ladder monotone "
           f"{'ok' if ladder_ok else 'FAIL'}; "
           f"Spearman(pay, count) {rho:+.4f} <= -0.9 "
-          f"{'ok' if rho_ok else 'FAIL'}; wild on strips: "
-          f"{'none (ok)' if wild_off else 'FAIL'}; distinct reel count "
-          f"vectors {'ok' if distinct_ok else 'FAIL'}; per-reel cv "
-          f"{['%.3f' % c for c in cvs]} >= 0.4 {'ok' if cv_ok else 'FAIL'}")
-    print(f"[stake] scarab base game (no drop): any-line hit {h0:.4f} vs "
-          f"published Cleopatra 20-line 35.88% "
+          f"{'ok' if rho_ok else 'FAIL'}; wild on strips {wild_counts} "
+          f"(1..{wild_cap}/reel) {'ok' if wild_on_ok else 'FAIL'}; "
+          f"counts==strips {'ok' if counts_match_ok else 'FAIL'}; distinct "
+          f"reel count vectors {'ok' if distinct_ok else 'FAIL'}; per-reel "
+          f"cv {['%.3f' % c for c in cvs]} >= 0.4 "
+          f"{'ok' if cv_ok else 'FAIL'}")
+    print(f"[stake] scarab published bonus rules: 15 spins, cap 180, 3x "
+          f"multiplier (pure-5-wild exempt), wild doubling, same reels "
+          f"every spin {'ok' if uniform_ok else 'FAIL'}; capped chain: "
+          f"P(trigger) {p_trig:.6f} <= "
+          f"{SCARAB_SHAPE_GATES['p_trigger_max']}, 15p "
+          f"{15 * p_trig:.4f} <= {SCARAB_SHAPE_GATES['chain_load_max']}, "
+          f"E[spins/bonus] {e_spins:.3f} <= 180, P(N > 180) = "
+          f"{ex['p_chain_exceeds_cap']} (support ends AT the published "
+          f"cap; P(N = 180) = {float(ex['p_chain_at_cap']):.5f}) "
+          f"{'ok' if chain_ok else 'FAIL'}")
+    print(f"[stake] scarab return attribution: paytable line rows "
+          f"{line_rows_share:.4f} >= "
+          f"{SCARAB_SHAPE_GATES['line_rows_rtp_share_min']} of RTP, "
+          f"scatter row {scatter_row_share:.4f} <= "
+          f"{SCARAB_SHAPE_GATES['scatter_row_rtp_share_max']} "
+          f"{'ok' if shares_ok else 'FAIL'} (round-5 shipped "
+          f"25.29%/74.71%); standard split: line "
+          f"{float(ex['line_return']):.4f} + scatter "
+          f"{float(ex['scatter_return']):.4f} + feature "
+          f"{float(ex['bonus_return']):.4f} (share {feature_share:.4f})")
+    print(f"[stake] scarab return split: wild-as-itself share of line "
+          f"return {wild_share:.4f} <= 0.20 {'ok' if share_ok else 'FAIL'}; "
+          f"any-line hit {h0:.4f} vs published Cleopatra 20-line 35.88% "
           f"{'ok' if hit_ok else 'FAIL'}; per-line hit "
-          f"{float(bex['hit_frequency']):.6f}; factorized-vs-brute-force "
-          f"cross-check (30^4*41 outcomes, {bex['elapsed_s']:.1f}s): "
+          f"{float(ex['hit_frequency']):.6f}; count-marginal vs "
+          f"enumeration ({ex['elapsed_s']:.1f}s, 30^4*41 outcomes): "
           f"{'EXACT MATCH' if xcheck_ok else 'MISMATCH'}")
     return ({"rtp": rtp, "rtp_fraction": str(ex["rtp_fraction"]),
              "published": pub, "diff": rtp - pub,
              "tol": STAKE_SCARAB_RTP_TOL, "printed": printed,
              "std_per_unit": sd, "sd_band": [lo_sd, hi_sd],
+             "floats_per_spin": machine.floats_per_spin,
              "shape": {"sd_in_band": sd_ok, "ladder_monotone": ladder_ok,
                        "spearman_pay_count": rho, "spearman_ok": rho_ok,
-                       "wild_on_strips": not wild_off,
+                       "wild_stops_per_reel": wild_counts,
+                       "wild_on_strips_ok": wild_on_ok,
+                       "counts_match_strips": counts_match_ok,
                        "distinct_reel_count_vectors": distinct_ok,
                        "per_reel_cv": cvs, "cv_ok": cv_ok,
-                       "base_any_line_hit": h0, "base_hit_ok": hit_ok,
-                       "factorized_vs_brute_force_exact": xcheck_ok},
-             "wild_drop": {
-                 "fire_prob": float(ex["overlay"]["fire_prob"]),
-                 "tile_prob": float(ex["overlay"]["tile_prob"]),
-                 "floats_per_spin": ex["overlay"]["floats_per_spin"]},
+                       "wild_line_return_share": wild_share,
+                       "wild_share_ok": share_ok,
+                       "any_line_hit": h0, "hit_ok": hit_ok,
+                       "published_rules_ok": uniform_ok,
+                       "p_trigger": p_trig,
+                       "chain_load_15p": 15 * p_trig,
+                       "expected_bonus_spins": e_spins,
+                       "p_chain_at_cap": float(ex["p_chain_at_cap"]),
+                       "p_chain_exceeds_cap": ex["p_chain_exceeds_cap"],
+                       "chain_ok": chain_ok,
+                       "line_rows_rtp_share": line_rows_share,
+                       "scatter_row_rtp_share": scatter_row_share,
+                       "feature_share": feature_share,
+                       "shares_ok": shares_ok,
+                       "marginal_vs_enumeration_exact": xcheck_ok},
              "pass": ok}, machine)
 
 

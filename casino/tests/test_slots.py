@@ -21,14 +21,14 @@ from spinquest_sim.games.slots import (  # noqa: E402
     N_LINES,
     PAYLINES_20,
     SCARAB_COUNTS,
+    SCARAB_FLOATS_PER_SPIN,
     SCARAB_LINE_PAYS,
     SCARAB_SCATTER,
     SCARAB_SCATTER_PAYS,
+    SCARAB_SCATTER_POS,
     SCARAB_SHAPE_GATES,
     SCARAB_STRIPS,
     SCARAB_WILD,
-    SCARAB_WILD_FIRE_K,
-    SCARAB_WILD_TILE_K,
     STAKE_SCARAB_PRINTED,
     STAKE_SCARAB_PUBLISHED,
     STAKE_SCARAB_RTP_TOL,
@@ -46,7 +46,6 @@ from spinquest_sim.rng import BulkRng  # noqa: E402
 
 SEED = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 CLIENT = "slots-test-client"
-TWO32 = 1 << 32
 
 
 @pytest.fixture(scope="module")
@@ -70,20 +69,19 @@ def scarab_exact(scarab):
 
 
 @pytest.fixture(scope="module")
-def scarab_base_machine():
-    """The Scarab strips WITHOUT the wild drop — exercises the brute-force
-    stop-enumeration path on the same par sheet (the no-wild mixture
-    component), used to cross-check the factorized analytics."""
+def scarab_nowildrow_machine():
+    """The Scarab par sheet with the wild's OWN pay row removed (the wild
+    still substitutes) — the exact attribution of the wild-as-itself share
+    of the line return (SCARAB_SHAPE_GATES['wild_line_return_share_max'])."""
+    pays = {s: dict(r) for s, r in SCARAB_LINE_PAYS.items()
+            if s != SCARAB_WILD}
     return SlotMachine(
-        name="scarab_base", symbols=S.SCARAB_SYMBOLS, strips=SCARAB_STRIPS,
-        line_pays=SCARAB_LINE_PAYS, wild=SCARAB_WILD, scatter=SCARAB_SCATTER,
-        scatter_pays=SCARAB_SCATTER_PAYS, scatter_pay_basis="line",
-        free_spins=15, free_spin_multiplier=1)
-
-
-@pytest.fixture(scope="module")
-def scarab_base_exact(scarab_base_machine):
-    return scarab_base_machine.enumerate_exact()
+        name="scarab_nowildrow", symbols=S.SCARAB_SYMBOLS,
+        strips=SCARAB_STRIPS, line_pays=pays, wild=SCARAB_WILD,
+        scatter=SCARAB_SCATTER, scatter_pays=SCARAB_SCATTER_PAYS,
+        scatter_pay_basis="line", free_spins=15, free_spin_multiplier=3,
+        free_spin_cap=180, wild_substitution_double=True,
+        wild5_multiplier_exempt=True)
 
 
 # ---------------------------------------------------------------------------
@@ -136,24 +134,51 @@ def test_scarab_paytable_payout_for_payout():
 
 
 def test_scarab_published_rules_carried(scarab):
-    """Published Sect. 4 facts beyond the paytable: 15 free spins on 3
-    scatters, 10,000x max win, random wilds in the base game."""
+    """Published facts beyond the paytable, all carried by the engine: 15
+    free spins on 3 scatters, retriggers hard-capped at 180 total free
+    spins, the 3x bonus multiplier with its pure-5-wild exemption, wild-
+    substitution doubling (the Sect. 5 rule set of the shared math model),
+    10,000x max win, random wilds in the base game (King Tut on the reel
+    strips), and the Sect. 3a event math: EXACTLY 5 floats per base spin —
+    the verified RNG core's own event count."""
     assert scarab.free_spins == STAKE_SCARAB_PUBLISHED["free_spins"] == 15
     assert scarab.trigger_count == 3
+    assert scarab.free_spin_cap \
+        == STAKE_SCARAB_PUBLISHED["free_spin_cap"] == 180
+    assert scarab.free_spin_multiplier \
+        == STAKE_SCARAB_PUBLISHED["free_spin_multiplier"] == 3
+    assert scarab.wild5_multiplier_exempt \
+        == STAKE_SCARAB_PUBLISHED["wild5_multiplier_exempt"] is True
+    assert scarab.wild_substitution_double \
+        == STAKE_SCARAB_PUBLISHED["wild_substitution_double"] is True
     assert scarab.max_win == STAKE_SCARAB_PUBLISHED["max_win"] == 10_000.0
-    assert scarab.overlay and STAKE_SCARAB_PUBLISHED["random_wilds"]
-    assert scarab.floats_per_spin == 21
+    assert STAKE_SCARAB_PUBLISHED["random_wilds"]
+    assert any(SCARAB_WILD in strip for strip in scarab.strips)
+    assert scarab.floats_per_spin == SCARAB_FLOATS_PER_SPIN == 5
+    assert scarab.floats_per_spin == sq_rng.EVENT_COUNTS["scarab_spin"]
 
 
 def test_tome_of_life_shares_scarab_model(scarab):
+    """Reference Sect. 5: Tome of Life is the same math model as Scarab
+    Spin (same paytable ladder, same 2.16% edge, same event math) — the
+    engine runs the identical par sheet AND the identical published bonus
+    rule set (15 spins, 180-spin cap, 3x multiplier with the 5-wild
+    exemption, wild-substitution doubling) under re-skinned names, so the
+    one calibrated sheet prints 97.84 as Scarab AND as Tome — the joint
+    solve."""
     tome = tome_of_life_machine()
     assert tome.symbols[11] == "Tome of Life (Wild)"
     assert tome.strips == scarab.strips
-    # same strips + paytable + wild drop => identical math without
-    # re-running the analytics
+    # same strips + paytable + rules => identical math without re-running
+    # the analytics
     assert tome._lut_cents.tolist() == scarab._lut_cents.tolist()
-    assert tome.wild_drop_fire_k == scarab.wild_drop_fire_k
-    assert tome.wild_drop_tile_k == scarab.wild_drop_tile_k
+    assert tome._lut_cents_bonus.tolist() == scarab._lut_cents_bonus.tolist()
+    assert tome.free_spins == scarab.free_spins == 15
+    assert tome.free_spin_cap == scarab.free_spin_cap == 180
+    assert tome.free_spin_multiplier == scarab.free_spin_multiplier == 3
+    assert tome.wild_substitution_double and scarab.wild_substitution_double
+    assert tome.wild5_multiplier_exempt and scarab.wild5_multiplier_exempt
+    assert tome.floats_per_spin == scarab.floats_per_spin == 5
     assert tome.max_win == scarab.max_win
 
 
@@ -182,12 +207,19 @@ def _spearman(x, y):
 
 
 def test_scarab_counts_match_strips():
-    """SCARAB_COUNTS is exactly the per-reel content of SCARAB_STRIPS."""
+    """SCARAB_COUNTS (13 columns: 11 line symbols + wild + scatter) is
+    exactly the per-reel content of SCARAB_STRIPS."""
     for r, strip in enumerate(SCARAB_STRIPS):
-        for s in range(11):
+        assert sum(SCARAB_COUNTS[r]) == len(strip)
+        for s in range(13):
             assert strip.count(s) == SCARAB_COUNTS[r][s], (r, s)
-        assert strip.count(SCARAB_WILD) == 0
-        assert strip.count(SCARAB_SCATTER) == 1
+        # scatters sit at the committed positions, spaced >= 3 (a 3-row
+        # window never shows two scatters of one reel)
+        pos = tuple(i for i, s in enumerate(strip) if s == SCARAB_SCATTER)
+        assert pos == SCARAB_SCATTER_POS[r]
+        ext = sorted(pos)
+        for a, b in zip(ext, ext[1:] + [ext[0] + len(strip)]):
+            assert b - a >= 3, (r, pos)
 
 
 def test_scarab_ladder_monotone_in_pay():
@@ -202,10 +234,9 @@ def test_scarab_ladder_monotone_in_pay():
 
 def test_scarab_ladder_spearman():
     """Spearman(5-of-a-kind pay, total strip count) over all 12 paying
-    symbols (wild included, at its 0 strip stops) must be <= -0.9: higher
-    pay => fewer stops.  (Equivalently >= +0.9 against the pay rank taken
-    in DESCENDING order — the inverted round-2/3 sheet scored -0.88 on that
-    convention with the 500x wild the most common symbol on the machine.)"""
+    symbols (wild included, at its real strip stops) must be <= -0.9:
+    higher pay => fewer stops.  (The inverted round-2/3 sheet had the 500x
+    wild as the MOST common symbol on the machine.)"""
     pays = [SCARAB_LINE_PAYS[s][5] for s in range(12)]  # incl wild 500x
     totals = [sum(SCARAB_COUNTS[r][s] for r in range(5)) for s in range(11)]
     totals.append(sum(strip.count(SCARAB_WILD) for strip in SCARAB_STRIPS))
@@ -213,12 +244,31 @@ def test_scarab_ladder_spearman():
     assert rho <= -SCARAB_SHAPE_GATES["spearman_abs_min"], rho
 
 
-def test_scarab_wild_not_on_strips():
-    """The King Tut wild is the published RANDOM overlay ("random wilds in
-    the base game") — it must not occupy any strip stop."""
-    assert not SCARAB_SHAPE_GATES["wild_on_strips"]
+def test_scarab_wild_on_strips():
+    """The King Tut wild OCCUPIES strip stops — Stake's "random wilds in
+    the base game" land from the reels (the only mechanism the published
+    5-floats-per-spin event math permits) — but stays rare: 1-2 stops per
+    reel, and its own paytable row is a paytable row with reel presence
+    (the round-4 sheet had a 500x row with ZERO stops)."""
+    assert SCARAB_SHAPE_GATES["wild_on_strips"]
+    cap = SCARAB_SHAPE_GATES["wild_max_stops_per_reel"]
     for strip in SCARAB_STRIPS:
-        assert SCARAB_WILD not in strip
+        assert 1 <= strip.count(SCARAB_WILD) <= cap, strip
+
+
+def test_scarab_wild_line_return_share(scarab, scarab_exact,
+                                       scarab_nowildrow_machine):
+    """The wild's own row (0.50/10/100/500) may carry at most 20% of the
+    line return (round 4 measured 91.4% for the overlay model).  Exact:
+    compare the line return against the same par sheet with the wild row
+    removed (wild still substitutes) — both by independent count-marginal
+    contraction."""
+    full, _ = scarab.marginal_line_stats()
+    nowild, _ = scarab_nowildrow_machine.marginal_line_stats()
+    share = 1 - nowild / full
+    assert full == scarab_exact["line_return"]
+    assert 0 < share <= SCARAB_SHAPE_GATES["wild_line_return_share_max"], \
+        float(share)
 
 
 def test_scarab_no_duplicate_reel_count_vectors():
@@ -248,33 +298,95 @@ def test_scarab_sd_inside_published_band(scarab_exact):
     assert lo <= sd <= hi, sd
 
 
-def test_scarab_base_hit_frequency_sane(scarab_base_exact, scarab_exact):
-    """Without the wild drop, the fraction of spins with any line win must
-    sit in the neighbourhood of the only published 20-line hit frequency
-    (Cleopatra 35.88%) — not the 92.16% of the inverted round-3 sheet.
-    The drop fires on only ~4.7% of spins, so the round-total stays close."""
-    h0 = float(scarab_base_exact["any_line_hit_frequency"])
+def test_scarab_hit_frequency_sane(scarab_exact):
+    """The fraction of spins with any line win must sit in the
+    neighbourhood of the only published 20-line hit frequency (Cleopatra
+    35.88%) — not the 92.16% of the inverted round-3 sheet, and not the
+    54.69% of the round-4 overlay's fire spins."""
+    h0 = float(scarab_exact["any_line_hit_frequency"])
     assert 0.15 <= h0 <= 0.50, h0
     assert abs(h0 - WOO_CLEOPATRA_HIT_20LINE) < 0.15
-    pi = float(scarab_exact["overlay"]["fire_prob"])
-    assert pi < 0.10  # the drop is a feature, not the norm
 
 
-def test_scarab_factorized_matches_brute_force(scarab_exact, scarab_base_exact):
-    """The factorized analytics' no-wild component must equal the
-    brute-force 30^4*41 stop enumeration of the same strips: exact Fraction
-    equality on the first moments, float64 agreement on the second."""
-    base = scarab_exact["components"]["base"]
-    assert base["line_return"] == scarab_base_exact["line_return"]
-    assert base["hit_frequency"] == scarab_base_exact["hit_frequency"]
-    unit2 = (100 * 20) ** 2
-    assert math.isclose(base["e_y2_cents2"] / unit2,
-                        scarab_base_exact["e_y2"], rel_tol=1e-11)
-    assert math.isclose(base["e_yz_cents"] / (100 * 20),
-                        scarab_base_exact["e_yz"], rel_tol=1e-11)
-    # scatter machinery identical
-    assert scarab_exact["p_bonus_trigger"] == scarab_base_exact["p_bonus_trigger"]
-    assert scarab_exact["scatter_return"] == scarab_base_exact["scatter_return"]
+def test_scarab_every_spin_same_reels_published_multiplier(scarab,
+                                                          scarab_exact):
+    """No barbell, no overlay: base and free spins draw stops from the
+    IDENTICAL reels through the identical 5-float event math — a free spin
+    differs from a base spin ONLY by the published 3x multiplier (with its
+    published pure-5-wild exemption).  Exact consequence, verified from
+    the enumeration: 3*E[Y] - E[W] equals exactly twice the pure-5-wild
+    line return (the sole exempted combination), a tiny non-negative
+    correction."""
+    assert SCARAB_SHAPE_GATES["same_reels_every_spin"]
+    ey = float(scarab_exact["base_return"])          # base eval, same stops
+    ew = float(scarab_exact["e_w"])                  # bonus eval, same stops
+    # multiplier bounds: the exemption can only LOWER the tripled value,
+    # and never below pay-1x
+    assert ey < ew <= 3.0 * ey + 1e-15
+    gap = 3.0 * ey - ew
+    assert 0.0 <= gap < 1e-3                         # exemption correction
+    # and the free-spin package is exactly E[N] * E[W] of the SAME spin
+    # value — no separate feature distribution anywhere
+    assert math.isclose(float(scarab_exact["expected_bonus_win"]),
+                        float(scarab_exact["expected_bonus_spins"]) * ew,
+                        rel_tol=1e-12)
+
+
+def test_scarab_capped_chain_exact(scarab, scarab_exact):
+    """The published bonus rules, exactly: P(chain > 180) = 0
+    STRUCTURALLY (pmf support ends at the published cap), E[spins/bonus]
+    <= 180, the exact pmf sums to 1, and the chain support starts at the
+    published 15 free spins."""
+    cap = scarab.free_spin_cap
+    assert cap == 180
+    pmf = scarab_exact["chain_pmf"]
+    assert len(pmf) == cap + 1
+    assert scarab_exact["p_chain_exceeds_cap"] == 0.0
+    assert math.isclose(float(np.sum(pmf)), 1.0, abs_tol=1e-12)
+    assert float(np.sum(pmf[:scarab.free_spins])) == 0.0   # N >= 15 always
+    en = float(scarab_exact["expected_bonus_spins"])
+    assert scarab.free_spins <= en <= cap
+    # exact fraction consistency
+    en_frac = scarab_exact["expected_bonus_spins_fraction"]
+    assert isinstance(en_frac, Fraction)
+    assert math.isclose(en, float(en_frac), rel_tol=1e-15)
+    # pmf mean equals the exact E[N] (float DP vs big-integer DP)
+    mean_pmf = float(np.dot(np.arange(cap + 1), pmf))
+    assert math.isclose(mean_pmf, en, rel_tol=1e-9)
+
+
+def test_capped_retrigger_hard_stop_end_to_end():
+    """A machine whose windows ALWAYS show 3 scatters (scatter every 3rd
+    stop on reels 1-3) retriggers on every free spin; without the
+    published cap the chain would never end — with it, play_round runs
+    EXACTLY 180 free spins and stops."""
+    strips = []
+    for i, L in enumerate((30, 30, 30, 30, 41)):
+        strip = []
+        for pos in range(L):
+            if i < 3 and pos % 3 == 0:
+                strip.append(SCARAB_SCATTER)
+            else:
+                strip.append((pos + i) % 3)     # cheap commons filler
+        strips.append(strip)
+    m = SlotMachine(
+        name="always_retrigger", symbols=S.SCARAB_SYMBOLS, strips=strips,
+        line_pays=SCARAB_LINE_PAYS, wild=SCARAB_WILD, scatter=SCARAB_SCATTER,
+        scatter_pays=SCARAB_SCATTER_PAYS, scatter_pay_basis="line",
+        free_spins=15, free_spin_multiplier=3, free_spin_cap=180,
+        wild_substitution_double=True, wild5_multiplier_exempt=True)
+    for i in range(3):
+        assert all(int(c) >= 1 for c in m._scnt[i])   # every window: scatter
+    r = m.play_round(SEED, CLIENT, 0)
+    assert r["triggered"] and r["bonus_spins"] == 180
+    # analytics agree: P(N = cap) = 1, E[N] = cap
+    ex = m.enumerate_exact()
+    assert float(ex["chain_pmf"][180]) == 1.0
+    assert float(ex["expected_bonus_spins"]) == 180.0
+    # and the vectorized simulator walks the identical capped chain
+    bulk = BulkRng(server_seed=SEED, client_seed=CLIENT, nonce_start=0)
+    sim = m.simulate(50, bulk=bulk, progress=False)
+    assert sim["n_bonus_spins"] == 50 * 180
 
 
 # ---------------------------------------------------------------------------
@@ -310,11 +422,49 @@ def test_lut_matches_scalar_rule(atkins, scarab):
     for m in (atkins, scarab):
         n = m.n_symbols
         lut = m._lut_cents
+        lut_b = m._lut_cents_bonus
         strides = [n ** (4 - i) for i in range(5)]
         for _ in range(500):
             tup = tuple(int(x) for x in rng.integers(0, n, size=5))
             idx = sum(t * s for t, s in zip(tup, strides))
             assert lut[idx] == m._line_pay_cents_scalar(tup), tup
+            assert lut_b[idx] == m._line_pay_cents_scalar(tup, bonus=True), tup
+    # Atkins (no exemption, no doubling): the bonus table is exactly the
+    # base table tripled — the published "all wins tripled" free spins
+    assert (atkins._lut_cents_bonus == 3 * atkins._lut_cents).all()
+
+
+def test_scarab_wild_doubling_and_bonus_rule_hand_examples(scarab):
+    """Published Sect. 5 line rules, by hand: wild-substitution combos pay
+    double (base AND bonus); every bonus win is tripled EXCEPT a pure
+    5-wild line, which pays its 500x unmultiplied."""
+    W = SCARAB_WILD
+    pay, bpay = scarab.line_pay, scarab.bonus_line_pay
+    # doubling: W,Cat,Cat = 3-oak Cat 0.25 -> 0.50; tripled in the bonus
+    assert pay((W, 0, 0, 4, 5)) == 0.50
+    assert bpay((W, 0, 0, 4, 5)) == 1.50
+    # no wild used -> no doubling
+    assert pay((0, 0, 0, 4, 5)) == 0.25
+    assert bpay((0, 0, 0, 4, 5)) == 0.75
+    # wild mid-run doubles too
+    assert pay((0, W, 0, 4, 5)) == 0.50
+    # best interpretation AFTER doubling: W,W,RedGem,RedGem,RedGem =
+    # 5-oak RedGem 37.50 doubled = 75 > pure-wild 2-oak 0.50
+    assert pay((W, W, 9, 9, 9)) == 75.0
+    assert bpay((W, W, 9, 9, 9)) == 225.0
+    # 4 wilds + RedGem: wild's own 4-oak 100 beats RedGem 5-oak doubled 75;
+    # in the bonus the wild 4-oak IS tripled (only 5 wilds are exempt)
+    assert pay((W, W, W, W, 9)) == 100.0
+    assert bpay((W, W, W, W, 9)) == 300.0
+    # pure 5 wilds: 500x, and NOT tripled in the bonus (published
+    # exemption: "except when 5 WILD symbols are spun")
+    assert pay((W,) * 5) == 500.0
+    assert bpay((W,) * 5) == 500.0
+    # the wild's own row never doubles (doubling is for wilds used AS
+    # another symbol)
+    assert pay((W, W, 3, 9, 9)) == max(0.50, 2 * 0.25)  # wild2 vs Spade-3 dbl
+    # scatter breaks runs and is never substituted
+    assert pay((SCARAB_SCATTER, 0, 0, 0, 0)) == 0.0
 
 
 def test_scatter_pays_interior_hole_carries_forward():
@@ -391,10 +541,17 @@ def test_scarab_reproduces_published_rtp(scarab_exact):
         <= STAKE_SCARAB_RTP_TOL
     assert abs(float(scarab_exact["house_edge"])
                - STAKE_SCARAB_PUBLISHED["house_edge"]) <= STAKE_SCARAB_RTP_TOL
-    # the exact rational RTP is carried alongside the float
+    # The exact rational RTP is carried alongside the float: E[Y] +
+    # p * E[N] * E[W] with E[N] the exact capped-chain expectation — every
+    # factor a Fraction.  The RTP comes from the integer count matrix
+    # under the PUBLISHED bonus rules (no fitted threshold, no free
+    # amplification knob), quantized by the count lattice: the shipped
+    # sheet lands within 3e-5 of the published 0.9784, inside the half-ULP
+    # window of the printed "97.84" (5e-5), and prints exactly.
     rtp_frac = scarab_exact["rtp_fraction"]
     assert isinstance(rtp_frac, Fraction)
-    assert abs(rtp_frac - Fraction(9784, 10000)) < Fraction(1, 10 ** 8)
+    assert abs(rtp_frac - Fraction(9784, 10000)) < Fraction(3, 10 ** 5)
+    assert format(100 * float(rtp_frac), ".2f") == "97.84"
 
 
 def test_scarab_prints_published_figures(scarab_exact):
@@ -409,28 +566,15 @@ def test_no_duplicate_reels():
 
 
 def test_marginals_cross_check_enumeration(atkins, atkins_exact,
-                                           scarab_base_machine,
-                                           scarab_base_exact):
+                                           scarab, scarab_exact):
     """Per-line return/hit-frequency computed from symbol COUNTS alone
-    (independent code path, no windows, no paylines) must equal the full
-    joint enumeration exactly — Fraction equality, not approximate."""
-    for m, ex in ((atkins, atkins_exact),
-                  (scarab_base_machine, scarab_base_exact)):
+    (independent code path, no windows, no paylines, exact big-integer
+    contraction) must equal the full joint enumeration exactly — Fraction
+    equality, not approximate."""
+    for m, ex in ((atkins, atkins_exact), (scarab, scarab_exact)):
         L, H = m.marginal_line_stats()
         assert L == ex["line_return"]
         assert H == ex["hit_frequency"]
-
-
-def test_scarab_mixture_marginals(scarab, scarab_exact):
-    """The wild-drop machine's marginal stats are the exact fire-probability
-    mixture of the component contractions."""
-    L, H = scarab.marginal_line_stats()
-    assert L == scarab_exact["line_return"]
-    assert H == scarab_exact["hit_frequency"]
-    pi = Fraction(SCARAB_WILD_FIRE_K, TWO32)
-    comp = scarab_exact["components"]
-    assert L == (1 - pi) * comp["base"]["line_return"] \
-        + pi * comp["fire"]["line_return"]
 
 
 def test_scatter_distribution_cross_check(atkins, atkins_exact):
@@ -442,17 +586,36 @@ def test_scatter_distribution_cross_check(atkins, atkins_exact):
 
 
 def test_bonus_recursion_consistency(atkins_exact, scarab_exact):
-    for ex, F, m in ((atkins_exact, 10, 3.0), (scarab_exact, 15, 1.0)):
-        p = float(ex["p_bonus_trigger"])
-        mu = float(ex["base_return"])
-        assert math.isclose(ex["expected_bonus_spins"], F / (1 - F * p),
-                            rel_tol=1e-12)
-        assert math.isclose(ex["expected_bonus_win"],
-                            F * m * mu / (1 - F * p), rel_tol=1e-12)
-        assert math.isclose(float(ex["rtp"]),
-                            mu + p * float(ex["expected_bonus_win"]),
-                            rel_tol=1e-12)
-        assert float(ex["variance_per_unit"]) > 0
+    # Atkins: uncapped geometric chain, closed form (unchanged)
+    ex, F, m = atkins_exact, 10, 3.0
+    p = float(ex["p_bonus_trigger"])
+    mu = float(ex["base_return"])
+    assert math.isclose(ex["expected_bonus_spins"], F / (1 - F * p),
+                        rel_tol=1e-12)
+    assert math.isclose(ex["expected_bonus_win"],
+                        F * m * mu / (1 - F * p), rel_tol=1e-12)
+    assert math.isclose(float(ex["rtp"]),
+                        mu + p * float(ex["expected_bonus_win"]),
+                        rel_tol=1e-12)
+    assert float(ex["variance_per_unit"]) > 0
+    # Scarab/Tome: published CAPPED chain — E[N] from the exact DP (never
+    # the uncapped geometric formula), E[T] = E[N]*E[W], RTP = E[Y]+p*E[T]
+    ex = scarab_exact
+    F = 15
+    p = float(ex["p_bonus_trigger"])
+    mu = float(ex["base_return"])
+    en = float(ex["expected_bonus_spins"])
+    uncapped = F / (1 - F * p)
+    assert en < uncapped          # the cap strictly truncates the chain
+    assert math.isclose(ex["expected_bonus_win"],
+                        en * float(ex["e_w"]), rel_tol=1e-12)
+    assert math.isclose(float(ex["rtp"]),
+                        mu + p * float(ex["expected_bonus_win"]),
+                        rel_tol=1e-12)
+    # exact rational composition agrees with the float
+    assert math.isclose(float(ex["rtp_fraction"]), float(ex["rtp"]),
+                        rel_tol=1e-15)
+    assert float(ex["variance_per_unit"]) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -469,54 +632,61 @@ def test_play_round_stops_come_from_verified_stream(atkins, scarab):
         assert r2["stops"] == sq_rng.scarab_spin(SEED, CLIENT, nonce)
 
 
-def _independent_line_cents(tup, wild):
-    """Independent re-implementation of the published line rule: highest
-    left-aligned interpretation, wild substitutes for all but scatter."""
+def _independent_line_cents(tup, wild, bonus=False):
+    """Independent re-implementation of the published line rules: highest
+    left-aligned interpretation, wild substitutes for all but scatter,
+    wild-substitution combinations pay DOUBLE (Sect. 5), and in the bonus
+    every interpretation is tripled except a pure 5-wild line (Sect. 5:
+    "all wins during the bonus rounds are tripled, except when 5 WILD
+    symbols are spun")."""
     best = 0
     for s_id, pays in SCARAB_LINE_PAYS.items():
         run = 0
+        wild_used = False
         for s in tup:
             if s == s_id or (s == wild and s_id != wild):
+                if s == wild and s_id != wild:
+                    wild_used = True
                 run += 1
             else:
                 break
-        best = max(best, round(100 * pays.get(min(run, 5), 0.0)))
+        cents = round(100 * pays.get(min(run, 5), 0.0))
+        if bonus and not (s_id == wild and run >= 5):
+            cents *= 3
+        if wild_used:
+            cents *= 2
+        best = max(best, cents)
     return best
 
 
-def test_scarab_wild_drop_replay():
-    """Replay Scarab base spins byte-for-byte from the published stream: 21
-    floats — 5 stops, drop-arm float 5 vs SCARAB_WILD_FIRE_K, tile floats
-    6..20 vs SCARAB_WILD_TILE_K reel-major — through an INDEPENDENT line
-    evaluator; every nonce must match play_round exactly."""
+def test_scarab_base_spin_replay_five_floats():
+    """Replay Scarab base spins byte-for-byte from the published stream:
+    EXACTLY 5 floats -> 5 central stops (floor(f * L), the Sect. 3a rule)
+    -> 3x5 window off the strips -> 20 lines + scatter count, through an
+    INDEPENDENT line evaluator; every nonce must match play_round exactly.
+    Wilds appear when a strip stop brings King Tut into the window — no
+    other floats exist to consume."""
     m = scarab_machine()
-    fired = 0
+    wild_seen = 0
     for nonce in range(400):
-        f = sq_rng.generate_floats(SEED, CLIENT, nonce, 0, 21)
+        f = sq_rng.generate_floats(SEED, CLIENT, nonce, 0, 5)
         stops = [math.floor(f[i] * L) for i, L in
                  zip(range(5), (30, 30, 30, 30, 41))]
-        fire = f[5] < SCARAB_WILD_FIRE_K / TWO32
         grid = [[SCARAB_STRIPS[i][(stops[i] + r - 1) % len(SCARAB_STRIPS[i])]
                  for i in range(5)] for r in range(3)]
-        if fire:
-            fired += 1
-            for i in range(5):
-                for r in range(3):
-                    if (f[6 + 3 * i + r] < SCARAB_WILD_TILE_K / TWO32
-                            and grid[r][i] != SCARAB_SCATTER):
-                        grid[r][i] = SCARAB_WILD
+        wild_seen += sum(row.count(SCARAB_WILD) for row in grid)
         cents = 0
         for line in PAYLINES_20:
             tup = tuple(grid[line[i]][i] for i in range(5))
             cents += _independent_line_cents(tup, SCARAB_WILD)
-        k = sum(1 for r in range(3) for i in range(5)
-                if SCARAB_STRIPS[i][(stops[i] + r - 1) % len(SCARAB_STRIPS[i])]
-                == SCARAB_SCATTER)
+        k = sum(row.count(SCARAB_SCATTER) for row in grid)
         cents += {2: 200, 3: 600, 4: 5000, 5: 50000}.get(k, 0)
         r = m.play_round(SEED, CLIENT, nonce)
-        assert r["stops"] == stops and r["wild_drop"] == fire, nonce
+        assert r["stops"] == stops, nonce
+        assert r["stops"] == sq_rng.scarab_spin(SEED, CLIENT, nonce), nonce
+        assert r["scatters"] == k, nonce
         assert math.isclose(r["base_win"], cents / 2000.0, abs_tol=1e-12), nonce
-    assert fired > 5   # the drop actually fires at ~4.7%
+    assert wild_seen > 5   # wilds do land in the base game, from the reels
 
 
 def test_bonus_spins_consume_same_nonce_stream_atkins(atkins):
@@ -547,8 +717,12 @@ def test_bonus_spins_consume_same_nonce_stream_atkins(atkins):
 
 
 def test_bonus_spins_consume_same_nonce_stream_scarab(scarab):
-    """Scarab bonus spin j uses floats 21(j+1)..21(j+1)+20 (84-byte cursor
-    strides) of the same nonce — wild drop included in free spins."""
+    """Scarab bonus spin j uses floats 5(j+1)..5(j+1)+4 (20-byte cursor
+    strides) of the same nonce — "the incremental number is only utilised
+    for bonus rounds"; each free spin is again exactly 5 floats through
+    the published stop mapping, evaluated by the INDEPENDENT line rule
+    (3x with the 5-wild exemption, wild doubling) plus tripled scatter
+    pays, with the published 180-spin retrigger cap."""
     nonce = next(n for n in range(3000)
                  if scarab.play_round(SEED, CLIENT, n)["triggered"])
     r = scarab.play_round(SEED, CLIENT, nonce)
@@ -556,17 +730,24 @@ def test_bonus_spins_consume_same_nonce_stream_scarab(scarab):
     unit = 100 * scarab.n_lines
     total = 0
     remaining, spin = scarab.free_spins, 0
-    while remaining > 0:
-        f = sq_rng.generate_floats(SEED, CLIENT, nonce, 84 * (1 + spin), 21)
-        stops = [math.floor(x * L) for x, L in zip(f[:5], scarab.reel_lengths)]
-        fire, tiles = scarab._overlay_from_floats(f)
-        cents, k, _ = scarab._spin_cents(stops, fire, tiles)
+    while remaining > 0 and spin < 180:
+        f = sq_rng.generate_floats(SEED, CLIENT, nonce, 20 * (1 + spin), 5)
+        stops = sq_rng.scarab_spin_stops(f)
+        grid = [[SCARAB_STRIPS[i][(stops[i] + rr - 1)
+                                  % len(SCARAB_STRIPS[i])]
+                 for i in range(5)] for rr in range(3)]
+        cents = sum(_independent_line_cents(
+            tuple(grid[line[i]][i] for i in range(5)), SCARAB_WILD,
+            bonus=True) for line in PAYLINES_20)
+        k = sum(row.count(SCARAB_SCATTER) for row in grid)
+        cents += 3 * {2: 200, 3: 600, 4: 5000, 5: 50000}.get(k, 0)
         total += cents
         if k >= 3:
             remaining += scarab.free_spins
         remaining -= 1
         spin += 1
-    assert spin == r["bonus_spins"]
+        remaining = min(remaining, 180 - spin)     # published cap
+    assert spin == r["bonus_spins"] <= 180
     assert math.isclose(total / unit, r["bonus_win"], abs_tol=1e-12)
     assert math.isclose(r["payout"], r["base_win"] + r["bonus_win"],
                         abs_tol=1e-12)
@@ -592,9 +773,9 @@ def test_max_win_cap():
         name="tiny_cap", symbols=S.SCARAB_SYMBOLS, strips=SCARAB_STRIPS,
         line_pays=SCARAB_LINE_PAYS, wild=SCARAB_WILD, scatter=SCARAB_SCATTER,
         scatter_pays=SCARAB_SCATTER_PAYS, scatter_pay_basis="line",
-        free_spins=15, free_spin_multiplier=1,
-        wild_drop_fire_k=SCARAB_WILD_FIRE_K,
-        wild_drop_tile_k=SCARAB_WILD_TILE_K, max_win=0.05)
+        free_spins=15, free_spin_multiplier=3, max_win=0.05,
+        free_spin_cap=180, wild_substitution_double=True,
+        wild5_multiplier_exempt=True)
     capped = 0
     for nonce in range(200):
         r = tiny.play_round(SEED, CLIENT, nonce)
@@ -610,6 +791,21 @@ def test_max_win_cap():
     tot = sum(tiny.play_round(SEED, CLIENT, k)["payout"] for k in range(200))
     assert math.isclose(sim["rtp"], tot / 200, abs_tol=1e-9)
     assert sim["n_capped"] == capped
+
+
+def test_published_max_win_reachable(scarab, scarab_exact):
+    """Round-5 item: the published 10,000x max win must be reachable.
+    Under the published rules the ceiling is live: with the 3x multiplier
+    a single free spin can pay hundreds of total bets, and a 180-spin
+    bonus of maximal spins clears 10,000x by an order of magnitude — the
+    cap binds with positive probability (every spin outcome has positive
+    probability on fixed reels)."""
+    unit = 100 * scarab.n_lines
+    max_bonus_spin = float(scarab_exact["max_bonus_spin_cents"]) / unit
+    max_base_spin = float(scarab_exact["max_spin_cents"]) / unit
+    assert max_bonus_spin > 60.0            # one free spin, x total bet
+    assert 180 * max_bonus_spin + max_base_spin > 10_000.0
+    assert scarab.max_win == 10_000.0
 
 
 # ---------------------------------------------------------------------------
@@ -632,17 +828,23 @@ def test_simulate_bit_matches_scalar_play_scarab(scarab):
     sim = scarab.simulate(n, bulk=bulk, progress=False)
     total = sum(scarab.play_round(SEED, CLIENT, k)["payout"] for k in range(n))
     assert math.isclose(sim["rtp"], total / n, abs_tol=1e-9)
-    assert sim["n_wild_drops"] > 0
+    assert sim["n_triggered"] > 0 and sim["n_bonus_spins"] > 0
 
 
-def test_simulate_within_3se_fixed_seed(scarab):
+def test_simulate_within_3se_fixed_seed(scarab, scarab_exact):
     # deterministic seed -> deterministic z; 200k rounds catches a broken
-    # payout path (SE ~ 0.019 at SD 8.59)
+    # payout path
     bulk = BulkRng(server_seed=SEED, client_seed=CLIENT, nonce_start=0)
     sim = scarab.simulate(200_000, bulk=bulk, progress=False)
     assert sim["within_3se"], (sim["rtp"], sim["analytic_rtp"], sim["z_score"])
     assert sim["n_triggered"] > 0 and sim["n_bonus_spins"] > 0
-    assert 0.04 < sim["wild_drop_rate"] < 0.055
+    # trigger rate near the exact p (SE of p-hat ~ 0.0005 at 200k rounds)
+    p = float(scarab_exact["p_bonus_trigger"])
+    assert abs(sim["trigger_rate"] - p) < 0.002
+    # no bonus can exceed the published 180-spin cap; with the exact
+    # P(N = 180) ~ a few percent, 200k rounds contain capped chains but
+    # never longer ones
+    assert sim["n_bonus_spins"] <= sim["n_triggered"] * 180
 
 
 def test_standard_result_dicts(atkins):
@@ -655,17 +857,14 @@ def test_standard_result_dicts(atkins):
     assert cfg["reel_strips"] == [list(s) for s in ATKINS_STRIPS]
     assert cfg["wild"] == ATKINS_SYMBOLS[ATKINS_WILD]
     assert cfg["scatter"] == ATKINS_SYMBOLS[ATKINS_SCATTER]
-    assert cfg["wild_drop"] is None
+    assert cfg["floats_per_spin"] == 5
 
 
-def test_scarab_config_declares_wild_drop(scarab):
+def test_scarab_config_declares_five_floats(scarab):
     cfg = scarab.analytic_summary()["config"]
-    wd = cfg["wild_drop"]
-    assert wd["fire_threshold_k"] == SCARAB_WILD_FIRE_K
-    assert wd["tile_threshold_k"] == SCARAB_WILD_TILE_K == 2 ** 31
-    assert wd["floats_per_spin"] == 21
-    assert wd["never_covers_scatter"]
+    assert cfg["floats_per_spin"] == 5 == sq_rng.EVENT_COUNTS["scarab_spin"]
     assert cfg["max_win"] == 10_000.0
+    assert cfg["reel_lengths"] == [30, 30, 30, 30, 41]
 
 
 def test_input_validation():
@@ -678,11 +877,10 @@ def test_input_validation():
                     ATKINS_LINE_PAYS, ATKINS_WILD, ATKINS_SCATTER,
                     {3: 5}, "nope", 10, 3)
     with pytest.raises(ValueError):
-        # wild drop needs both thresholds
+        # max_win must be positive
         SlotMachine("bad", S.SCARAB_SYMBOLS, SCARAB_STRIPS,
                     SCARAB_LINE_PAYS, SCARAB_WILD, SCARAB_SCATTER,
-                    SCARAB_SCATTER_PAYS, "line", 15, 1,
-                    wild_drop_fire_k=100, wild_drop_tile_k=0)
+                    SCARAB_SCATTER_PAYS, "line", 15, 1, max_win=-1.0)
     with pytest.raises(ValueError):
         m = atkins_machine()
         m.simulate(0)

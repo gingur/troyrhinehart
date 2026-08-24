@@ -31,14 +31,25 @@
    the vectorized BulkRng stream; empirical RTP must land within 3 SE of
    the analytic 99%.
 
+6. Memory-budget gate: ``Mines(24, 1).simulate()`` at the SHIPPED default
+   chunk size is run in a fresh subprocess while this process samples the
+   peak PSS summed over the subprocess's WHOLE process tree (child plus
+   BulkRng's forked digest workers) every 20 ms; the peak must stay under
+   the project's 500 MB chunking budget.  PSS (shared pages charged once)
+   over the tree is the honest number — parent-only tracemalloc is blind
+   to worker allocations and under-reported the old budget-busting 1M
+   default as 416 MB when its true tree peak was ~600 MB PSS / 2.4 GB RSS.
+
 Prints a human-readable report plus a machine-readable JSON line prefixed
-``MINES_VALIDATION_JSON:`` (contains a named ``gates`` map).  Exit code 0
-iff every gate passes; any unexpected exception exits nonzero with a FAIL
-summary rather than a bare traceback.
+``MINES_VALIDATION_JSON:`` (contains a named ``gates`` map).  A gate that
+was skipped on the command line is reported as ``null`` in the ``gates``
+map — never as a vacuous ``true``.  Exit code 0 iff every non-skipped gate
+passes; any unexpected exception exits nonzero with a FAIL summary rather
+than a bare traceback.
 
 Usage:
     python scripts/validate_mines.py [--rounds N] [--configs m:k,m:k,...]
-                                     [--skip-sim]
+                                     [--skip-sim] [--mem-rounds N] [--skip-mem]
 """
 
 from __future__ import annotations
@@ -46,8 +57,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 import traceback
 from fractions import Fraction
 from pathlib import Path
@@ -80,6 +94,12 @@ WOO_MD = _ROOT / "references" / "woo" / "mines.md"
 
 DEFAULT_CONFIGS: List[Tuple[int, int]] = [(1, 1), (3, 3), (5, 5), (10, 10), (24, 1)]
 DEFAULT_ROUNDS = 10_000_000
+
+# Memory gate: project chunking budget, and how many rounds the probe runs
+# (>= 2 default chunks so chunk-to-chunk overlap — the old array still
+# referenced while the next is built — is inside the measured window).
+MEM_BUDGET_MB = 500.0
+DEFAULT_MEM_ROUNDS = 800_000
 
 # Deterministic, reproducible campaign seeds (any string is a valid server
 # seed for the verifier; this one is a fixed 64-hex string like Stake's).
@@ -395,6 +415,126 @@ def check_woo_methodology() -> Dict[str, object]:
     }
 
 
+def _tree_pss_rss_mb(root_pid: int) -> Tuple[float, float]:
+    """(PSS MB, RSS MB) summed over ``root_pid`` and all live descendants.
+
+    Descendants are found by a ppid walk over /proc (so BulkRng's forked
+    ProcessPoolExecutor workers are included); memory comes from each
+    pid's ``/proc/<pid>/smaps_rollup``.  PSS charges pages shared between
+    parent and forked workers once — the honest tree-wide figure — while
+    the RSS sum double-counts every copy-on-write page per worker.
+    """
+    ppids: Dict[int, int] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as fh:
+                stat = fh.read()
+            # ppid is the 4th field; comm (field 2) may contain spaces, so
+            # split after the closing paren.
+            ppids[int(entry)] = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    tree = {root_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, ppid in ppids.items():
+            if ppid in tree and pid not in tree:
+                tree.add(pid)
+                changed = True
+    pss_kb = rss_kb = 0
+    for pid in tree:
+        try:
+            with open(f"/proc/{pid}/smaps_rollup") as fh:
+                for line in fh:
+                    if line.startswith("Pss:"):
+                        pss_kb += int(line.split()[1])
+                    elif line.startswith("Rss:"):
+                        rss_kb += int(line.split()[1])
+        except OSError:
+            continue  # pid exited between the walk and the read
+    return pss_kb / 1024.0, rss_kb / 1024.0
+
+
+def check_memory_budget(
+    n_rounds: int = DEFAULT_MEM_ROUNDS, budget_mb: float = MEM_BUDGET_MB
+) -> Dict[str, object]:
+    """Gate: peak whole-tree PSS of a simulate() call at the SHIPPED default
+    chunk size must stay under the 500 MB chunking budget.
+
+    Runs ``Mines(24, 1).simulate(n_rounds)`` — 24 mines is the widest
+    positions matrix, i.e. the worst case — in a FRESH subprocess with the
+    module's own default ``chunk_rounds``, and samples PSS/RSS summed over
+    that subprocess's whole process tree every 20 ms until it exits.
+    Measuring a fresh tree from outside is deliberate: parent-only
+    tracemalloc under-reported the old 1M-round default as 416 MB when its
+    true tree peak was ~600 MB PSS / ~2.4 GB RSS (it cannot see forked
+    worker allocations), which is exactly how a budget-busting constant
+    once shipped behind a confident in-code comment.
+    """
+    child_code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_ROOT)!r})\n"
+        "from spinquest_sim.games.mines import Mines, _SIM_CHUNK_ROUNDS\n"
+        "from spinquest_sim.rng import BulkRng\n"
+        "res = Mines(24, 1).simulate(\n"
+        f"    {int(n_rounds)},\n"
+        f"    bulk=BulkRng(server_seed={SIM_SERVER_SEED!r},\n"
+        f"                 client_seed={SIM_CLIENT_SEED!r}),\n"
+        "    progress=False,\n"
+        ")\n"
+        "print('MEM_CHILD', res['n_rounds'], res['wins'], _SIM_CHUNK_ROUNDS,\n"
+        "      '%.0f' % res['rounds_per_sec'], flush=True)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    peak_pss = peak_rss = 0.0
+    samples = 0
+    try:
+        while proc.poll() is None:
+            pss, rss = _tree_pss_rss_mb(proc.pid)
+            if pss > 0:
+                samples += 1
+                peak_pss = max(peak_pss, pss)
+                peak_rss = max(peak_rss, rss)
+            time.sleep(0.02)
+    finally:
+        out = proc.communicate()[0] or ""
+    chunk_rounds = rounds_per_sec = None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 5 and parts[0] == "MEM_CHILD":
+            chunk_rounds = int(parts[3])
+            rounds_per_sec = float(parts[4])
+    ok = (
+        proc.returncode == 0
+        and chunk_rounds is not None
+        and samples > 0
+        and peak_pss < budget_mb
+    )
+    return {
+        "n_rounds": int(n_rounds),
+        "config": {"mines": 24, "picks": 1},
+        "chunk_rounds": chunk_rounds,
+        "budget_mb": budget_mb,
+        "peak_tree_pss_mb": peak_pss,
+        "peak_tree_rss_mb": peak_rss,
+        "samples": samples,
+        "rounds_per_sec": rounds_per_sec,
+        "child_exit_code": proc.returncode,
+        "method": "PSS summed over the whole process tree via "
+                  "/proc/<pid>/smaps_rollup, sampled every 20 ms; "
+                  "gate is on PSS (RSS double-counts fork CoW pages)",
+        "pass": ok,
+    }
+
+
 def run_empirical(configs: List[Tuple[int, int]], n_rounds: int) -> Dict[str, object]:
     results = []
     ok = True
@@ -462,9 +602,23 @@ def main(argv: List[str] | None = None) -> int:
         help="comma-separated mines:picks pairs",
     )
     ap.add_argument("--skip-sim", action="store_true")
+    ap.add_argument(
+        "--mem-rounds",
+        type=int,
+        default=DEFAULT_MEM_ROUNDS,
+        help="rounds for the memory-budget probe (peak is per-chunk, so a "
+             "few default chunks suffice)",
+    )
+    ap.add_argument(
+        "--skip-mem",
+        action="store_true",
+        help="skip the memory-budget gate (reported as null, not true)",
+    )
     args = ap.parse_args(argv)
     if args.rounds < 1:
         raise SystemExit("--rounds must be >= 1")
+    if args.mem_rounds < 1:
+        raise SystemExit("--mem-rounds must be >= 1")
     configs = _parse_configs(args.configs)
 
     print("=" * 72)
@@ -483,7 +637,8 @@ def main(argv: List[str] | None = None) -> int:
         f"[table] display float64 reduce vs exact rational: worst relative "
         f"drift {table['display_vs_exact_worst_rel_drift']:.2e} "
         f"(payout math stays exact; max |exact - published| = "
-        f"{table['max_abs_diff']:.6f}, the documented half-cent cells)"
+        f"{table['max_abs_diff']!r}, full precision, the documented "
+        f"half-cent cells)"
     )
     print(
         f"[table] reference's {len(table['asymmetric_pairs'])} internally "
@@ -563,7 +718,8 @@ def main(argv: List[str] | None = None) -> int:
         )
 
     if args.skip_sim:
-        sim = {"configs": [], "pass": True, "skipped": True}
+        # pass=None, not True: nothing was run, so nothing "passed".
+        sim = {"configs": [], "pass": None, "skipped": True}
         print("[sim]   skipped (--skip-sim) — empirical gate NOT exercised")
     else:
         if args.rounds < DEFAULT_ROUNDS:
@@ -576,15 +732,40 @@ def main(argv: List[str] | None = None) -> int:
         sim["skipped"] = False
         sim["meets_10m_bar"] = args.rounds >= DEFAULT_ROUNDS
 
+    if args.skip_mem:
+        mem = {"pass": None, "skipped": True}
+        print("[mem]   skipped (--skip-mem) — memory-budget gate NOT exercised")
+    else:
+        print(
+            f"[mem]   probing peak memory: Mines(24,1).simulate"
+            f"({args.mem_rounds:,}) at the shipped default chunk size, "
+            f"in a fresh subprocess, PSS sampled over the whole process "
+            f"tree ...",
+            flush=True,
+        )
+        mem = check_memory_budget(args.mem_rounds)
+        mem["skipped"] = False
+        print(
+            f"[mem]   default chunk_rounds={mem['chunk_rounds']:,}: peak "
+            f"tree PSS = {mem['peak_tree_pss_mb']:.1f} MB, peak tree RSS = "
+            f"{mem['peak_tree_rss_mb']:.1f} MB (RSS double-counts fork CoW "
+            f"pages) over {mem['samples']} samples at "
+            f"{mem['rounds_per_sec'] or 0:,.0f} rounds/s -> gate: peak PSS "
+            f"< {mem['budget_mb']:.0f} MB budget: "
+            f"{'PASS' if mem['pass'] else 'FAIL'}"
+        )
+
+    # A skipped gate is reported as None (JSON null), never a vacuous true.
     gates = {
         "stake_table_300_cells": bool(table["pass"]),
         "published_spot_checks": bool(spots["pass"]),
         "exact_rtp_identity": bool(exact["pass"]),
         "scalar_bulk_bitmatch": bool(bitmatch["pass"]),
         "woo_methodology": bool(woo["pass"]),
-        "empirical_within_3se": bool(sim["pass"]),
+        "empirical_within_3se": None if args.skip_sim else bool(sim["pass"]),
+        "memory_budget_500mb": None if args.skip_mem else bool(mem["pass"]),
     }
-    overall = all(gates.values())
+    overall = all(v for v in gates.values() if v is not None)
     summary = {
         "game": "mines",
         "overall_pass": overall,
@@ -607,6 +788,8 @@ def main(argv: List[str] | None = None) -> int:
         ),
         "empirical": sim,
         "empirical_skipped": bool(sim.get("skipped", False)),
+        "memory": mem,
+        "memory_skipped": bool(mem.get("skipped", False)),
         "sim_seeds": {
             "server_seed": SIM_SERVER_SEED,
             "client_seed": SIM_CLIENT_SEED,
@@ -618,6 +801,8 @@ def main(argv: List[str] | None = None) -> int:
         verdict += " (analytic gates only — empirical sim skipped)"
     elif overall and not sim.get("meets_10m_bar", True):
         verdict += " (smoke-level empirical rounds, below the 10M bar)"
+    if overall and summary["memory_skipped"]:
+        verdict += " (memory gate skipped)"
     print(f"OVERALL: {verdict}")
     return 0 if overall else 1
 

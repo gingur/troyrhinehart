@@ -40,6 +40,7 @@ the lattice deviation is documented here rather than modeled.
 from __future__ import annotations
 
 import math
+import numbers
 import time
 from fractions import Fraction
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -67,6 +68,7 @@ __all__ = [
     "all_bets",
     "full_payout_table",
     "settle_bets",
+    "basket_analytics",
     "Roulette",
 ]
 
@@ -296,6 +298,55 @@ def settle_bets(
     return total
 
 
+def basket_analytics(bets: Sequence["Roulette"]) -> Dict[str, object]:
+    """Exact analytic counterpart of :func:`settle_bets`.
+
+    Let T be the total for-one payout of the basket on one spin.  T is a
+    deterministic function of the pocket, so its exact moments are the
+    uniform average of the 37 per-pocket totals, computed here in
+    ``Fraction`` arithmetic (covariance between overlapping bets is
+    automatic — no independence assumption anywhere):
+
+        EV      = E[T]            (always ``len(bets) * 36/37``: every
+                                   component bet has EV 36/37, so basket
+                                   composition moves only variance)
+        Var     = E[T^2] - EV^2
+        mu4     = E[(T - EV)^4]   (needed for the SE of the sample
+                                   variance: Var(s^2) ~= (mu4 - Var^2)/n)
+
+    Returned dict carries the exact ``Fraction`` values plus float
+    conversions, so a simulation of ``settle_bets`` can be z-scored on both
+    its mean AND its variance against closed-form truth."""
+    if not bets:
+        raise ValueError("bets must be a non-empty sequence of Roulette bets")
+    totals = [
+        sum(
+            (bet.multiplier_exact for bet in bets if pocket in bet.covered),
+            Fraction(0),
+        )
+        for pocket in range(POCKETS)
+    ]
+    ev = sum(totals, Fraction(0)) / POCKETS
+    e2 = sum((t * t for t in totals), Fraction(0)) / POCKETS
+    var = e2 - ev * ev
+    mu4 = sum(((t - ev) ** 4 for t in totals), Fraction(0)) / POCKETS
+    rtp = ev / len(bets)                       # per unit staked: 36/37 always
+    return {
+        "n_bets": len(bets),
+        "pocket_totals_exact": totals,
+        "ev_exact": ev,
+        "variance_exact": var,
+        "mu4_exact": mu4,
+        "rtp_exact": rtp,
+        "ev": float(ev),
+        "variance": float(var),
+        "std": math.sqrt(float(var)),
+        "mu4": float(mu4),
+        "rtp": float(rtp),
+        "house_edge": float(1 - rtp),
+    }
+
+
 class Roulette:
     """Roulette engine for ONE bet of one unit on the single-zero wheel.
 
@@ -498,8 +549,39 @@ class Roulette:
         dict.  Chunked so per-chunk arrays stay small (2M spins -> ~32 MB);
         row i of the campaign is bit-for-bit verifiable against the scalar
         path at nonce ``nonce_start + i``."""
+        # Root type guard (round 5).  Both counters drive the
+        # ``while done < n_rounds`` loop, and ordering comparisons against a
+        # non-integer are the root of the round-4 bug class:
+        # ``n_rounds=float('inf')`` passes ``n_rounds <= 0`` (inf <= 0 is
+        # False) and the loop never terminates, while ``n_rounds=float('nan')``
+        # makes EVERY comparison False, so the loop body never runs and the
+        # method would return a normal-looking result dict (wins=0,
+        # within_3se=True) for a campaign that never happened.  json.loads
+        # accepts bare Infinity/NaN by default, so any JSON/MCP caller can
+        # feed both.  Reject every non-Integral (and bool) up front with a
+        # TypeError instead of guarding one comparison at a time; this also
+        # keeps chunk_rounds=True from dying with a raw numpy "an integer is
+        # required" deep inside BulkRng.
+        for name, value in (("n_rounds", n_rounds),
+                            ("chunk_rounds", chunk_rounds)):
+            if isinstance(value, bool) or not isinstance(
+                value, numbers.Integral
+            ):
+                raise TypeError(
+                    f"{name} must be an integer, got "
+                    f"{value!r} ({type(value).__name__})"
+                )
+        n_rounds = int(n_rounds)
+        chunk_rounds = int(chunk_rounds)
         if n_rounds <= 0:
             raise ValueError("n_rounds must be positive")
+        if chunk_rounds < 1:
+            # chunk_rounds=0 would make step = min(0, remaining) = 0 and
+            # loop forever with no error or output; negative values only
+            # raised incidentally from deeper in the RNG.  Guard both here.
+            raise ValueError(
+                f"chunk_rounds must be >= 1, got {chunk_rounds}"
+            )
         rng = bulk if bulk is not None else BulkRng()
         nonce_first = rng.nonce_next
         wins = 0

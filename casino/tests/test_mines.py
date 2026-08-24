@@ -136,6 +136,36 @@ class TestStakeTable:
             assert VAL.render_cell(m2, k2) == cell2
             assert display_multiplier(m1, k1) != display_multiplier(m2, k2)
 
+    # The reference is internally inconsistent about rounding MODE: its §6
+    # prose says the client shows multiplier.toFixed(2) (JS toFixed breaks
+    # ties AWAY from zero), but its §7 table was generated with ties-to-even
+    # — the two disagree on exactly 3 cells whose float64 reduce lands
+    # exactly on a half-cent, and the published table prints the half-even
+    # cent in all 3.  We deliberately side with the table (300 data points)
+    # over the prose; this pins the choice so a "more faithful" switch to
+    # toFixed semantics cannot silently break those cells.
+    TOFIXED_SENSITIVE_CELLS = [(3, 1), (19, 1), (17, 7)]
+
+    def test_tofixed_ties_away_would_break_three_cells(self):
+        from decimal import Decimal, ROUND_HALF_EVEN, ROUND_HALF_UP
+
+        ref = VAL.parse_stake_table()
+        cent = Decimal("0.01")
+        disagree = []
+        for (m, k) in ref:
+            d = Decimal(mines_mod.multiplier_display_float(m, k))
+            up = d.quantize(cent, rounding=ROUND_HALF_UP)      # JS toFixed
+            ev = d.quantize(cent, rounding=ROUND_HALF_EVEN)    # what we ship
+            if up != ev:
+                disagree.append((m, k))
+                # each disputed cell is an EXACT half-cent tie of the reduce
+                assert (d * 100) % 1 == Decimal("0.5"), (m, k)
+                # the published table prints the half-even cent, and so do we
+                assert f"{float(ev):,.2f}x" == ref[(m, k)] == VAL.render_cell(m, k)
+                assert f"{float(up):,.2f}x" != ref[(m, k)]
+        # the rounding-mode choice matters on exactly these 3 cells
+        assert sorted(disagree) == sorted(self.TOFIXED_SENSITIVE_CELLS)
+
 
 class TestWooMethodology:
     def test_probabilities_match_woo_published_column(self):
@@ -277,9 +307,12 @@ class TestValidatorHardening:
 
     def test_all_gates_pass_end_to_end_with_real_sim(self, capsys):
         # Full script including a real (small, deterministic-seed) empirical
-        # run — every gate, sim included, is genuinely exercised.
+        # run AND a real subprocess memory probe — every gate, sim and
+        # memory included, is genuinely exercised.
         rc, summary, out = self._run_main(
-            capsys, ["--rounds", "40000", "--configs", "3:3,24:1"]
+            capsys,
+            ["--rounds", "40000", "--configs", "3:3,24:1",
+             "--mem-rounds", "400000"],
         )
         assert rc == 0
         assert summary["overall_pass"] is True
@@ -296,16 +329,42 @@ class TestValidatorHardening:
             "scalar_bulk_bitmatch",
             "woo_methodology",
             "empirical_within_3se",
+            "memory_budget_500mb",
         ):
             assert summary["gates"][gate] is True, gate
         assert "below the 10M bar" in out  # smoke run is flagged, not hidden
+        # the memory gate really measured something, at the shipped default
+        mem = summary["memory"]
+        assert mem["skipped"] is False
+        assert mem["samples"] > 0
+        assert mem["chunk_rounds"] == mines_mod._SIM_CHUNK_ROUNDS
+        assert 0 < mem["peak_tree_pss_mb"] < 500.0
 
     def test_skip_sim_is_flagged_not_silent(self, capsys):
-        rc, summary, out = self._run_main(capsys, ["--skip-sim"])
+        rc, summary, out = self._run_main(capsys, ["--skip-sim", "--skip-mem"])
         assert rc == 0
         assert summary["overall_pass"] is True
         assert summary["empirical_skipped"] is True
         assert "analytic gates only" in out
+        assert "memory gate skipped" in out
+        # skipped gates must be null in the gates map, never a vacuous true
+        assert summary["gates"]["empirical_within_3se"] is None
+        assert summary["gates"]["memory_budget_500mb"] is None
+
+    def test_memory_budget_gate_measures_real_tree_pss(self):
+        # Direct probe of the shipped default: run 2 default-size chunks of
+        # the 24-mine worst case in a fresh subprocess and sample PSS over
+        # its whole process tree.  This is the gate the old tracemalloc
+        # comment could not honestly claim (the 1M default peaked at ~600 MB
+        # tree PSS / ~2.4 GB tree RSS; the 200k default peaks at ~215 MB).
+        res = VAL.check_memory_budget(
+            n_rounds=2 * mines_mod._SIM_CHUNK_ROUNDS
+        )
+        assert res["pass"] is True
+        assert res["child_exit_code"] == 0
+        assert res["samples"] > 0
+        assert res["chunk_rounds"] == mines_mod._SIM_CHUNK_ROUNDS
+        assert 0 < res["peak_tree_pss_mb"] < res["budget_mb"] == 500.0
 
     def test_spot_check_gate(self):
         res = VAL.check_spot_checks()
@@ -388,6 +447,26 @@ class TestSimulator:
         res = game.simulate(200_000, bulk=bulk, progress=False)
         assert abs(res["z_score"]) < 5.0
         assert res["analytic_rtp"] == pytest.approx(0.99)
+
+    def test_chunk_rounds_zero_or_negative_raise_instead_of_hanging(self):
+        # chunk_rounds=0 used to make step = min(0, remaining) = 0 and spin
+        # forever with no error and no output; same guard as
+        # roulette/plinko/keno.
+        game = Mines(3, 3)
+        for bad in (0, -1, -1000):
+            with pytest.raises(ValueError, match="chunk_rounds"):
+                game.simulate(100, chunk_rounds=bad, progress=False)
+
+    def test_default_chunk_is_sized_for_the_500mb_budget(self):
+        # The shipped default must stay at the measured-safe 200k (the old
+        # 1M default peaked at ~600 MB tree PSS / ~2.4 GB tree RSS at 24
+        # mines, busting the 500 MB budget; 200k peaks at ~215 MB PSS with
+        # no throughput loss).  The real end-to-end measurement gate lives
+        # in validate_mines.check_memory_budget / the validator's [mem]
+        # section; this pins the constant against silent regression.
+        assert mines_mod._SIM_CHUNK_ROUNDS == 200_000
+        worst_chunk_bytes = mines_mod._SIM_CHUNK_ROUNDS * 24 * 8
+        assert worst_chunk_bytes <= 40 * 1024 * 1024  # 24-mine int64 matrix
 
     def test_chunking_is_seamless(self):
         game = Mines(2, 2)

@@ -63,6 +63,30 @@ infinite), :func:`pair_house_edge` at the published 11:1 odds, and a
 rank-granular empirical path (:func:`deal_cards` / :func:`simulate_pairs`)
 that verifies the dealt CARD INDICES — not just their baccarat values —
 against those exact rank-level figures.
+
+Derived WoO conventions (references/woo/baccarat.md, notes section) are
+also reachable: :func:`house_edge_excluding_ties` gives the alternate
+"resolved hands only" convention (house_edge / (1 - P(tie)); ~1.17%
+Banker / ~1.36% Player at 8 decks), and the tie payout is a constructor
+parameter (``tie_odds``, default the published ``Fraction(8)``) so the
+9:1 tie variant some casinos offer (~4.84% house edge) falls out of the
+same enumeration.  Both appear in :func:`full_payout_table`.
+
+Stake's headline "1.10% overall / 98.90% RTP" (references/stake/baccarat.md
+§6) is a PORTFOLIO figure — a wager-weighted blend of the per-bet edges
+whose weighting Stake does not publish — not any single bet's edge (no
+natural single formula lands on it: banker alone is 1.0579%, player
+1.2351%, their arithmetic mean 1.1465%).  The blend of a bet mix is
+ordinary exact engine math, so it is surfaced explicitly:
+:func:`portfolio_house_edge` (exact ``sum w_i * edge_i`` over a weight
+vector), its exact inverse :func:`implied_banker_weight` (the unique
+zero-tie banker/player mix hitting a target edge), and
+:func:`overall_house_edge_summary` — the ``"overall"`` block of
+:func:`full_payout_table` — which reports the achievable blend range
+(1.0579% .. 1.2351% at 8 decks) and DERIVES, assumption named, that the
+published 1.10%/98.90% corresponds exactly to a 76.24% banker / 23.76%
+player mix (``STAKE_OVERALL_HOUSE_EDGE`` = 11/1000 is the published input;
+the weights, range and exact round-trip are computed, never asserted).
 """
 
 from __future__ import annotations
@@ -100,6 +124,12 @@ __all__ = [
     "pair_std_per_unit",
     "pair_summary",
     "total_grid",
+    "house_edge_excluding_ties",
+    "STAKE_OVERALL_HOUSE_EDGE",
+    "STAKE_OVERALL_RTP",
+    "portfolio_house_edge",
+    "implied_banker_weight",
+    "overall_house_edge_summary",
     "full_payout_table",
     "deal_cards",
     "deal_rounds",
@@ -130,6 +160,18 @@ PAIR_BET_TYPES: Tuple[str, ...] = ("player_pair", "banker_pair")
 PAIR_PAYOUT_ODDS: Fraction = Fraction(11)                 # published 11:1
 PAIR_MULTIPLIER: Fraction = PAIR_PAYOUT_ODDS + 1          # 12.00 returned
 
+# Stake's headline "overall" figure (references/stake/baccarat.md §6):
+# "a house edge of just 1.10% overall, meaning that the theoretical return
+# to player percentage (RTP) in this game is 98.90%".  Like PAYOUT_ODDS
+# this is a published INPUT, not a computed output: it is a PORTFOLIO
+# (bet-mix) figure whose weighting Stake does not publish, so the engine
+# never asserts it as any bet's edge — it inverts it exactly instead
+# (see portfolio_house_edge / implied_banker_weight /
+# overall_house_edge_summary).
+STAKE_OVERALL_HOUSE_EDGE: Fraction = Fraction(11, 1000)     # published 1.10%
+STAKE_OVERALL_RTP: Fraction = 1 - STAKE_OVERALL_HOUSE_EDGE  # published 98.90%
+assert STAKE_OVERALL_RTP == Fraction(989, 1000)
+
 _DECK = 52
 _RANKS = 13
 _VALUES = 10  # baccarat card values 0..9
@@ -140,6 +182,7 @@ CARD_VALUES = np.array(
     [(r + 2 if r <= 7 else (0 if r <= 11 else 1)) for r in range(13)],
     dtype=np.int64,
 )[np.arange(_DECK) // 4]
+CARD_VALUES.setflags(write=False)
 
 # Rank (0..12 = ranks 2..A) of each published card index — the published
 # CARDS layout groups the 4 suits of each rank contiguously, so rank is
@@ -258,6 +301,16 @@ def _shoe_params(decks: Optional[int]) -> Tuple[Tuple[int, ...], Optional[int]]:
     return tuple(c * decks for c in _VALUE_COUNTS_PER_DECK), _DECK * decks
 
 
+def _shoe_mechanism(decks: Optional[int]) -> str:
+    """Config tag naming HOW cards are drawn for this shoe model: Stake's
+    published independent ``floor(float * 52)`` draws (infinite decks) vs
+    the without-replacement partial Fisher-Yates over the finite shoe."""
+    return (
+        "independent_floor_52" if decks is None
+        else "fisher_yates_without_replacement"
+    )
+
+
 @lru_cache(maxsize=None)
 def _enumerate(decks: Optional[int]) -> Tuple[Tuple[Tuple[int, ...], ...], int]:
     """Exact enumeration of every deal.
@@ -365,6 +418,189 @@ def outcome_probabilities(decks: Optional[int] = 8) -> Dict[str, Fraction]:
     }
 
 
+def house_edge_excluding_ties(bet: str, decks: Optional[int] = 8) -> Fraction:
+    """Exact Player/Banker house edge under the alternate convention many
+    sources use — average loss per RESOLVED bet, i.e. ties excluded from
+    the denominator (a tied hand pushes, so it is not a resolved bet):
+
+        house_edge_exact / (1 - P(tie))
+
+    Reproduces the WoO note (references/woo/baccarat.md): ~1.17% Banker /
+    ~1.36% Player at 8 decks (exactly 1.1692% / 1.3650%) vs the headline
+    1.06% / 1.24% that count ties as resolved pushes.  Only the player and
+    banker bets have this convention — the tie bet never pushes, so its
+    edge is identical under both conventions and this raises for it.
+    """
+    if bet not in ("player", "banker"):
+        raise ValueError(
+            f"excluding-ties edge is defined for 'player'/'banker' only, got {bet!r}"
+        )
+    probs = outcome_probabilities(decks)
+    edge = 1 - (MULTIPLIERS[bet] * probs[bet] + probs["tie"])
+    return edge / (1 - probs["tie"])
+
+
+def _exact_number(x: Union[int, Fraction], name: str) -> Fraction:
+    """Validate an exact-math scalar: int or Fraction (bool and float are
+    rejected — this module's blend/inverse identities hold EXACTLY, and a
+    binary float target like 0.011 would silently break them; wrap floats
+    explicitly, e.g. ``Fraction('1.10') / 100``)."""
+    if isinstance(x, bool) or not isinstance(x, (int, Fraction)):
+        raise ValueError(
+            f"{name} must be an int or Fraction for exact math "
+            f"(wrap floats explicitly, e.g. Fraction('1.10')/100), got {x!r}"
+        )
+    return Fraction(x)
+
+
+def _bet_edge_exact(
+    bet: str, decks: Optional[int], tie_odds: Union[int, Fraction]
+) -> Fraction:
+    """Exact house edge of one bettable spot (main bets via the engine,
+    pair side bets via the rank-level closed form)."""
+    if bet in BET_TYPES:
+        return Baccarat(bet, decks=decks, tie_odds=tie_odds).house_edge_exact
+    if bet in PAIR_BET_TYPES:
+        return pair_house_edge(decks)
+    raise ValueError(
+        f"unknown bet {bet!r}; must be one of {BET_TYPES + PAIR_BET_TYPES}"
+    )
+
+
+def portfolio_house_edge(
+    weights,
+    decks: Optional[int] = 8,
+    tie_odds: Union[int, Fraction] = PAYOUT_ODDS["tie"],
+) -> Fraction:
+    """Exact blended house edge of a bet MIX (portfolio): ``sum_i w_i *
+    edge_i`` over a mapping ``{bet: weight}`` of nonnegative exact weights
+    (int/Fraction) summing to exactly 1, where each ``edge_i`` is the
+    engine's exact per-bet edge for the configured shoe (main bets honor
+    ``tie_odds``; the 11:1 pair side bets are accepted too).
+
+    This is the convention behind Stake's headline "1.10% overall": a
+    wager-weighted average of the per-bet edges.  With weight 1 on a
+    single bet it reduces exactly to that bet's ``house_edge_exact``.
+    """
+    try:
+        items = dict(weights)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"weights must be a mapping of bet -> weight, got {weights!r}"
+        ) from None
+    if not items:
+        raise ValueError("weights must be a non-empty mapping")
+    total = Fraction(0)
+    edge = Fraction(0)
+    for bet, w in items.items():
+        wf = _exact_number(w, f"weight[{bet!r}]")
+        if wf < 0:
+            raise ValueError(f"weight[{bet!r}] must be nonnegative, got {wf}")
+        total += wf
+        edge += wf * _bet_edge_exact(bet, decks, tie_odds)  # validates bet
+    if total != 1:
+        raise ValueError(f"weights must sum to exactly 1, got {total}")
+    return edge
+
+
+def implied_banker_weight(
+    target: Union[int, Fraction], decks: Optional[int] = 8
+) -> Fraction:
+    """Exact inverse of the two-bet banker/player blend: the unique banker
+    weight ``w`` (player weight ``1 - w``, tie weight 0) with
+
+        w * edge_banker + (1 - w) * edge_player == target
+        =>  w = (edge_player - target) / (edge_player - edge_banker)
+
+    ``target`` is a house edge as an exact fraction of the stake (Stake's
+    headline 1.10% is ``STAKE_OVERALL_HOUSE_EDGE`` = 11/1000).  Raises for
+    a target outside the achievable zero-tie range
+    ``[edge_banker, edge_player]`` — such a target would need a negative
+    weight, i.e. it is not a banker/player portfolio figure at all.
+    The round trip is an EXACT identity:
+    ``portfolio_house_edge({'banker': w, 'player': 1 - w}, decks) ==
+    target`` as Fractions.
+    """
+    t = _exact_number(target, "target")
+    edge_b = Baccarat("banker", decks=decks).house_edge_exact
+    edge_p = Baccarat("player", decks=decks).house_edge_exact
+    if not edge_b <= t <= edge_p:
+        raise ValueError(
+            f"target {t} (~{float(t):.6%}) is outside the achievable "
+            f"banker/player blend range [{float(edge_b):.6%}, "
+            f"{float(edge_p):.6%}] for this shoe"
+        )
+    return (edge_p - t) / (edge_p - edge_b)
+
+
+def overall_house_edge_summary(
+    decks: Optional[int] = 8,
+    target: Union[int, Fraction] = STAKE_OVERALL_HOUSE_EDGE,
+) -> Dict[str, object]:
+    """The "overall" block of :func:`full_payout_table`: Stake's headline
+    blended figure (default the published 1.10% edge / 98.90% RTP) mapped
+    onto the engine's exact portfolio math.
+
+    Reports the achievable blend range (banker-only .. player-only,
+    1.0579% .. 1.2351% at 8 decks), the DERIVED weights — under the named
+    zero-tie-weight assumption the published 1.10% is exactly the
+    76.24% banker / 23.76% player mix — and the exact round-trip check
+    ``portfolio_house_edge(implied_weights) == target``.  Every number
+    except the published target itself is computed, not asserted; if the
+    target falls outside the achievable range the weights are reported as
+    None instead of fabricated.
+    """
+    t = _exact_number(target, "target")
+    edge_b = Baccarat("banker", decks=decks).house_edge_exact
+    edge_p = Baccarat("player", decks=decks).house_edge_exact
+    edge_t = Baccarat("tie", decks=decks).house_edge_exact
+    within = edge_b <= t <= edge_p
+    out: Dict[str, object] = {
+        "convention": (
+            "portfolio (wager-weighted blend of per-bet house edges); "
+            "Stake does not publish the weighting"
+        ),
+        "published_house_edge": float(t),
+        "published_rtp": float(1 - t),
+        "published_house_edge_exact": t,
+        "published_rtp_exact": 1 - t,
+        "achievable_house_edge_range": {
+            "min": float(edge_b),           # banker-only portfolio
+            "max": float(edge_p),           # player-only portfolio
+            "min_exact": edge_b,
+            "max_exact": edge_p,
+            "min_bet": "banker",
+            "max_bet": "player",
+        },
+        "within_achievable_range": within,
+        "assumption": (
+            "zero tie weight: the implied split is the unique two-bet "
+            "banker/player mix reproducing the published overall edge; "
+            "with a tie weight w_t > max_tie_weight_for_target every "
+            "nonnegative-weight solution disappears"
+        ),
+    }
+    if within:
+        w = implied_banker_weight(t, decks)
+        blend = portfolio_house_edge({"banker": w, "player": 1 - w}, decks)
+        out["implied_weights"] = {
+            "banker": float(w), "player": float(1 - w), "tie": 0.0,
+        }
+        out["implied_weights_exact"] = {
+            "banker": w, "player": 1 - w, "tie": Fraction(0),
+        }
+        out["reproduces_published_exactly"] = blend == t
+        # largest tie weight any nonnegative 3-bet mix hitting the target
+        # can carry (banker absorbing the rest): quantifies the assumption.
+        out["max_tie_weight_for_target"] = float((t - edge_b) / (edge_t - edge_b))
+    else:
+        out["implied_weights"] = None
+        out["implied_weights_exact"] = None
+        out["reproduces_published_exactly"] = False
+        out["max_tie_weight_for_target"] = None
+    return out
+
+
 def pair_probability(decks: Optional[int] = 8) -> Fraction:
     """Exact P(a hand's first two cards share a rank) — a rank-level
     quantity (10/J/Q/K are distinct ranks despite all being value 0).
@@ -421,7 +657,13 @@ def pair_summary(decks: Optional[int] = 8, bet: str = "player_pair") -> Dict[str
             "variant": "punto_banco",
             "decks": decks if decks is not None else "infinite",
             "bet_type": bet,
+            "shoe_mechanism": _shoe_mechanism(decks),
             "payout_odds": f"{float(PAIR_PAYOUT_ODDS):g}:1",
+            # table-level facts, carried on every row so all config dicts
+            # in full_payout_table share ONE key set (a consumer reading
+            # row["config"]["tie_odds"] must not crash on pair rows):
+            "tie_odds": f"{float(PAYOUT_ODDS['tie']):g}:1",
+            "tie_pushes_player_banker": True,
             "multiplier": float(PAIR_MULTIPLIER),
             "rank_based": True,
             "events_per_round": EVENTS_PER_ROUND,
@@ -435,18 +677,35 @@ def full_payout_table(decks: Optional[int] = 8) -> Dict[str, Dict[str, object]]:
     """Per bet: published odds, multiplier, exact probabilities, RTP, house
     edge, per-unit SD — all analytic.  Covers the three main bets (Stake's
     published spots) AND the two 11:1 pair side bets from WoO's table, so
-    every column of the published house-edge table is reproducible."""
-    table = {
-        bet: Baccarat(bet, decks=decks).analytic_summary() | {
+    every column of the published house-edge table is reproducible.  The
+    derived WoO-note figures are surfaced too: Player/Banker rows carry
+    ``house_edge_excluding_ties`` (~1.17% / ~1.36% at 8 decks) and the Tie
+    row carries ``house_edge_9to1``, the edge at the alternate 9:1 tie
+    payout some casinos offer (~4.84% at 8 decks).  The ``"overall"`` key
+    (not a bet row) carries :func:`overall_house_edge_summary` — Stake's
+    headline blended "1.10% overall / 98.90% RTP" mapped onto the exact
+    portfolio math (achievable range 1.0579% .. 1.2351% at 8 decks;
+    derived 76.24/23.76 banker/player mix under the named zero-tie
+    assumption)."""
+    table: Dict[str, Dict[str, object]] = {}
+    for bet in BET_TYPES:
+        eng = Baccarat(bet, decks=decks)
+        table[bet] = eng.analytic_summary() | {
             "payout_odds": f"{float(PAYOUT_ODDS[bet]):g}:1",
             "multiplier": float(MULTIPLIERS[bet]),
-            "win_probability": Baccarat(bet, decks=decks).win_probability,
-            "push_probability": Baccarat(bet, decks=decks).push_probability,
+            "win_probability": eng.win_probability,
+            "push_probability": eng.push_probability,
         }
-        for bet in BET_TYPES
-    }
+    for bet in ("player", "banker"):
+        table[bet]["house_edge_excluding_ties"] = float(
+            house_edge_excluding_ties(bet, decks)
+        )
+    table["tie"]["house_edge_9to1"] = Baccarat(
+        "tie", decks=decks, tie_odds=Fraction(9)
+    ).house_edge
     for bet in PAIR_BET_TYPES:
         table[bet] = pair_summary(decks, bet)
+    table["overall"] = overall_house_edge_summary(decks)
     return table
 
 
@@ -561,18 +820,37 @@ class Baccarat:
 
     ``decks=8`` (default) is the standard punto banco shoe; ``decks=None``
     is Stake's published unlimited-deck mechanism (module docstring).
+
+    ``tie_odds`` (default the published ``Fraction(8)``, i.e. 8:1) sets the
+    table's tie payout, so the 9:1 variant WoO's notes mention (house edge
+    ~4.84% at 8 decks) is one constructor argument away.  It only affects
+    the TIE bet's payout — Player/Banker bets push on a tie at any tie
+    odds, so their analytics are identical for every ``tie_odds``.
     """
 
-    def __init__(self, bet_type: str, decks: Optional[int] = 8) -> None:
+    def __init__(
+        self,
+        bet_type: str,
+        decks: Optional[int] = 8,
+        tie_odds: Union[int, Fraction] = PAYOUT_ODDS["tie"],
+    ) -> None:
         if bet_type not in BET_TYPES:
             raise ValueError(
                 f"unknown bet type {bet_type!r}; must be one of {BET_TYPES}"
             )
         _shoe_params(decks)  # validates
+        if isinstance(tie_odds, bool) or not isinstance(tie_odds, (int, Fraction)):
+            raise ValueError(
+                f"tie_odds must be a positive int or Fraction, got {tie_odds!r}"
+            )
+        tie_odds = Fraction(tie_odds)
+        if tie_odds <= 0:
+            raise ValueError(f"tie_odds must be positive, got {tie_odds}")
         self.bet_type = bet_type
         self.decks = decks
-        self.payout_odds = PAYOUT_ODDS[bet_type]
-        self._mult_exact = MULTIPLIERS[bet_type]
+        self._tie_odds = tie_odds
+        self._payout_odds = tie_odds if bet_type == "tie" else PAYOUT_ODDS[bet_type]
+        self._mult_exact = self._payout_odds + 1
         probs = outcome_probabilities(decks)
         self._p_win = probs[bet_type]
         if bet_type == "tie":
@@ -582,6 +860,19 @@ class Baccarat:
         self._p_lose = 1 - self._p_win - self._p_push
 
     # ---- (a) analytics — exact rationals, floats at the edge -------------
+
+    @property
+    def payout_odds(self) -> Fraction:
+        """Winnings odds this bet pays (read-only: every derived analytic
+        — multiplier, RTP, edge, variance — is fixed at construction, so a
+        mutable odds attribute could silently desync them; build a new
+        engine, e.g. with ``tie_odds=Fraction(9)``, to change odds)."""
+        return self._payout_odds
+
+    @property
+    def tie_odds(self) -> Fraction:
+        """The table's tie payout odds (read-only; default 8:1)."""
+        return self._tie_odds
 
     @property
     def multiplier_exact(self) -> Fraction:
@@ -648,10 +939,13 @@ class Baccarat:
             "game": "baccarat",
             "variant": "punto_banco",
             "decks": self.decks if self.decks is not None else "infinite",
+            "shoe_mechanism": _shoe_mechanism(self.decks),
             "bet_type": self.bet_type,
             "payout_odds": f"{float(self.payout_odds):g}:1",
+            "tie_odds": f"{float(self.tie_odds):g}:1",
             "multiplier": self.multiplier,
             "tie_pushes_player_banker": True,
+            "rank_based": False,     # value-level bet (pair rows are True)
             "events_per_round": EVENTS_PER_ROUND,
             "win_probability": self.win_probability,
             "push_probability": self.push_probability,
@@ -745,6 +1039,7 @@ class Baccarat:
             chunk_rounds=chunk_rounds,
             progress=progress,
             bets=(self.bet_type,),
+            tie_odds=self._tie_odds,
         )
         out = res["bets"][self.bet_type]
         out["outcome_counts"] = res["outcome_counts"]
@@ -761,16 +1056,22 @@ def simulate_all_bets(
     chunk_rounds: int = 1_000_000,
     progress: bool = True,
     bets: Sequence[str] = BET_TYPES,
+    tie_odds: Union[int, Fraction] = PAYOUT_ODDS["tie"],
 ) -> Dict[str, object]:
     """Simulate one shared campaign of ``n_rounds`` rounds and settle every
     requested bet against the SAME rounds (as at a real table).  Chunked so
     per-chunk arrays stay small (1M rounds -> ~150 MB peak); each chunk is
-    one contiguous nonce range of the provably-fair stream."""
+    one contiguous nonce range of the provably-fair stream.  ``tie_odds``
+    configures the table's tie payout (default the published 8:1) — the
+    dealt rounds are identical either way, only the tie bet's settle and
+    analytics change."""
     if n_rounds <= 0:
         raise ValueError("n_rounds must be positive")
     for b in bets:
         if b not in BET_TYPES:
             raise ValueError(f"unknown bet type {b!r}")
+    # build engines up front: validates decks AND tie_odds before any work
+    engines = {b: Baccarat(b, decks=decks, tie_odds=tie_odds) for b in bets}
     rng = bulk if bulk is not None else BulkRng()
     nonce_first = rng.nonce_next
     counts = np.zeros(3, dtype=np.int64)
@@ -792,7 +1093,7 @@ def simulate_all_bets(
 
     per_bet: Dict[str, Dict[str, object]] = {}
     for bet in bets:
-        eng = Baccarat(bet, decks=decks)
+        eng = engines[bet]
         i_win = _OUTCOME_NAMES.index(bet)
         wins = int(counts[i_win])
         pushes = int(counts[2]) if bet != "tie" else 0

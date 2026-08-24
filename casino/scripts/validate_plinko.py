@@ -24,7 +24,7 @@ Checks, in order:
              row-for-row; low-risk analytic RTPs are reported with their
              diffs and checked against the page's global 98.91-99.16 band.)
 4. XTAB    — the WoO page's OTHER published Plinko math, reproduced through
-             PlinkoEngine.from_table: all four CryptoGames pay tables must
+             Plinko.from_table: all four CryptoGames pay tables must
              hit the printed RTP at 2 decimals AND the printed per-drop
              standard deviation at all 6 printed decimals (0.562711,
              0.517632, 0.464829, 3.678698); BetFury Green + Red must hit

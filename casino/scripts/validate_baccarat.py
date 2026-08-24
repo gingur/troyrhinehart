@@ -9,7 +9,14 @@
    Stake prints).  The published banker third-card table (sec. 4) is parsed
    row-for-row and compared against BANKER_DRAW_TABLE, and the published
    card mapping floor(float * 52) plus the 6-events / 1-digest budget are
-   spot-verified scalar-vs-bulk on the verified RNG core.
+   spot-verified scalar-vs-bulk on the verified RNG core.  Stake's
+   headline "1.10% overall / 98.90% RTP" (sec. 6) is parsed (prose AND
+   game-page header) and pinned to the engine's exact portfolio surface:
+   it must lie inside the achievable banker/player blend range, the
+   engine's implied_banker_weight must derive the unique zero-tie mix
+   (~76.24% banker / 23.76% player) whose portfolio_house_edge
+   round-trips the published figure EXACTLY as Fractions, and
+   full_payout_table's "overall" block must surface all of it.
 
 2. Wizard-of-Odds cross-check (references/woo/baccarat.md): ALL FIVE
    columns of the published house-edge table (Banker / Player / Tie 8:1 /
@@ -18,7 +25,12 @@
    Player 0.95 / Tie 2.64), the published pair-bet odds (11:1) and the
    8-deck pair RTP (89.64%) are parsed and compared to the engine's EXACT
    analytics — the pair column against the exact rank-level Fractions
-   (4D-1)/(52D-1) — rounded to the reference's printed precision.
+   (4D-1)/(52D-1) — rounded to the reference's printed precision.  The
+   derived figures in WoO's notes are parsed and checked too: the
+   excluding-ties Banker/Player edges (~1.17% / ~1.36%) against
+   house_edge_excluding_ties (= exact edge / (1 - P(tie))) and the 9:1
+   tie variant (~4.84%) against Baccarat("tie", tie_odds=Fraction(9)),
+   plus the requirement that full_payout_table surfaces all three.
 
 3. Empirical gate: 10M+ provably-fair 8-deck rounds on the vectorized
    BulkRng stream (deterministic default seed, ONE nonce per round, 6 game
@@ -75,8 +87,8 @@ CHECKS: List[Dict[str, object]] = []
 # Every check() call lands here — a gate that crashes mid-way leaves its
 # completed checks in place and adds one explicit FAIL for the crash, so
 # the machine-readable summary is emitted no matter what goes wrong.
-EXPECTED_MIN_CHECKS_ANALYTIC = 45   # gates 1+2 emit 51 today; floor guards silent skips
-EXPECTED_MIN_CHECKS_FULL = 55       # incl. gate 3 (12 more today)
+EXPECTED_MIN_CHECKS_ANALYTIC = 53   # gates 1+2 emit 59 checks today; floor guards silent skips
+EXPECTED_MIN_CHECKS_FULL = 63       # incl. gate 3 (12 more today)
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -180,17 +192,88 @@ def gate_stake_payouts() -> None:
             f"exact {100 * eng.house_edge:.4f}%",
         )
 
-    # Stake's headline "1.10% overall" is a blended figure whose weighting
-    # Stake does not publish — sanity-check only that it sits between the
-    # exact banker and player edges (any banker/player mix does).
+    # ---- Stake's headline "overall" figure (sec. 6) ----------------------
+    # "a house edge of just 1.10% overall, meaning that the theoretical
+    # return to player percentage (RTP) in this game is 98.90%" — a
+    # PORTFOLIO (bet-mix) figure whose weighting Stake does not publish.
+    # Parse BOTH published numbers and pin them to the engine's exact
+    # portfolio machinery (blend + exact inverse), not just a bracket.
     m = re.search(r"house edge of just ([\d.]+)% overall", text)
-    overall = float(m.group(1)) if m else None
-    lo = 100 * Baccarat("banker", 8).house_edge
-    hi = 100 * Baccarat("player", 8).house_edge
+    m_rtp = re.search(r"\(RTP\) in this game is \*\*([\d.]+)%\*\*", text)
+    m_hdr = re.search(r"Edge:\s*([\d.]+)%", text)
+    overall = Fraction(m.group(1)) / 100 if m else None       # exact 11/1000
+    rtp_pub = Fraction(m_rtp.group(1)) / 100 if m_rtp else None
     check(
-        f"Stake overall edge {overall}% lies between exact banker/player edges",
-        overall is not None and lo <= overall <= hi,
-        f"banker {lo:.4f}% .. player {hi:.4f}%",
+        "parsed Stake overall edge, RTP and game-page header; all consistent "
+        "and equal to the engine's published-input constants",
+        overall is not None and rtp_pub is not None and m_hdr is not None
+        and overall + rtp_pub == 1
+        and Fraction(m_hdr.group(1)) / 100 == overall
+        and overall == bc.STAKE_OVERALL_HOUSE_EDGE
+        and rtp_pub == bc.STAKE_OVERALL_RTP
+        and bc.STAKE_OVERALL_RTP == 1 - bc.STAKE_OVERALL_HOUSE_EDGE,
+        f"edge {m.group(1) if m else None}% / RTP "
+        f"{m_rtp.group(1) if m_rtp else None}% / header "
+        f"{m_hdr.group(1) if m_hdr else None}%",
+    )
+    edge_b = Baccarat("banker", 8).house_edge_exact
+    edge_p = Baccarat("player", 8).house_edge_exact
+    check(
+        f"Stake overall edge {float(overall or 0):.2%} lies inside the exact "
+        "achievable banker/player blend range",
+        overall is not None and edge_b <= overall <= edge_p,
+        f"banker {float(edge_b):.4%} .. player {float(edge_p):.4%}",
+    )
+    # exact inversion: the unique zero-tie banker/player mix hitting 1.10%,
+    # and the EXACT (Fraction-equality) round trip through the blend.
+    w = bc.implied_banker_weight(overall, 8) if overall is not None else None
+    blend = (
+        bc.portfolio_house_edge({"banker": w, "player": 1 - w}, 8)
+        if w is not None else None
+    )
+    check(
+        "implied banker/player weights derived from the published overall "
+        "edge; portfolio_house_edge round-trips it EXACTLY (Fractions)",
+        w is not None and 0 <= w <= 1 and blend == overall
+        and blend == bc.portfolio_house_edge(
+            {"banker": w, "player": 1 - w, "tie": 0}, 8
+        ),
+        f"banker {float(w):.4%} / player {float(1 - w):.4%} "
+        f"[exact {w}]; blend = {float(blend):.6%}" if w is not None else "",
+    )
+    # single-bet blends collapse to the per-bet edges (portfolio identity)
+    check(
+        "portfolio identity: weight-1 blends equal each bet's exact edge; "
+        "published overall is NOT any single bet's edge (a true mix)",
+        all(
+            bc.portfolio_house_edge({b: 1}, 8)
+            == Baccarat(b, 8).house_edge_exact
+            for b in bc.BET_TYPES
+        )
+        and overall is not None
+        and all(
+            Baccarat(b, 8).house_edge_exact != overall for b in bc.BET_TYPES
+        ),
+        f"banker-only {float(edge_b):.4%}, player-only {float(edge_p):.4%}",
+    )
+    # full_payout_table must surface the whole block (no unreachable cell)
+    ov = bc.full_payout_table(8).get("overall", {})
+    rng_blk = ov.get("achievable_house_edge_range", {})
+    check(
+        "full_payout_table(8)['overall'] surfaces published edge/RTP, "
+        "achievable range and the derived weights (assumption named)",
+        overall is not None and rtp_pub is not None and w is not None
+        and ov.get("published_house_edge_exact") == overall
+        and ov.get("published_rtp_exact") == rtp_pub
+        and ov.get("reproduces_published_exactly") is True
+        and rng_blk.get("min_exact") == edge_b
+        and rng_blk.get("max_exact") == edge_p
+        and ov.get("implied_weights_exact", {}).get("banker") == w
+        and ov.get("implied_weights_exact", {}).get("tie") == 0
+        and "tie" in str(ov.get("assumption")),
+        f"range [{rng_blk.get('min', 0):.4%}, {rng_blk.get('max', 0):.4%}]; "
+        f"weights banker {ov.get('implied_weights', {}).get('banker', 0):.2%}"
+        f" / player {ov.get('implied_weights', {}).get('player', 0):.2%}",
     )
 
     rows = parse_stake_banker_rows(text)
@@ -318,6 +401,52 @@ def gate_woo_analytics() -> None:
         ),
         f"rtp {fpt['player_pair']['rtp']:.6f}, "
         f"sd {fpt['player_pair']['std_per_unit']:.4f}",
+    )
+
+    # ---- derived WoO-note figures (excluding-ties edges, 9:1 tie) --------
+    # "Note: many other sources quote house edge excluding ties ... which
+    #  yields ~1.17% Banker / ~1.36% Player" (spans a line break).
+    m = re.search(
+        r"house edge excluding ties.*?~([\d.]+)%\s*Banker\s*/\s*~([\d.]+)%\s*Player",
+        text, re.S,
+    )
+    pub_excl = {
+        "banker": float(m.group(1)) if m else None,
+        "player": float(m.group(2)) if m else None,
+    }
+    for bet in ("banker", "player"):
+        pub = pub_excl[bet]
+        exact = 100 * float(bc.house_edge_excluding_ties(bet, 8))
+        check(
+            f"WoO 8-deck {bet} edge EXCLUDING ties ~{pub}% == exact (2 dp)",
+            pub is not None and round(exact, 2) == pub,
+            f"exact {exact:.4f}% = edge / (1 - P(tie)) "
+            f"[{bc.house_edge_excluding_ties(bet, 8)}]",
+        )
+    # "some casinos pay 9:1 on Tie, cutting its house edge to ~4.84%"
+    m = re.search(r"9:1 on Tie, cutting its house edge\s+to\s+~([\d.]+)%", text)
+    pub_tie9 = float(m.group(1)) if m else None
+    eng9 = Baccarat("tie", 8, tie_odds=Fraction(9))
+    exact9 = 100 * eng9.house_edge
+    check(
+        f"WoO tie-at-9:1 edge ~{pub_tie9}% == exact via tie_odds=9 (2 dp)",
+        pub_tie9 is not None and round(exact9, 2) == pub_tie9,
+        f"exact {exact9:.4f}% [rtp = 10 * P(tie) = {100 * eng9.rtp:.4f}%, "
+        f"odds {eng9.payout_odds}:1]",
+    )
+    # full_payout_table must surface all three derived figures (no blanks)
+    check(
+        "full_payout_table(8) surfaces excluding-ties & 9:1-tie edges",
+        pub_tie9 is not None
+        and all(pub_excl[b] is not None for b in ("banker", "player"))
+        and all(
+            round(100 * fpt[b]["house_edge_excluding_ties"], 2) == pub_excl[b]
+            for b in ("banker", "player")
+        )
+        and round(100 * fpt["tie"]["house_edge_9to1"], 2) == pub_tie9,
+        f"banker {100 * fpt['banker']['house_edge_excluding_ties']:.4f}%, "
+        f"player {100 * fpt['player']['house_edge_excluding_ties']:.4f}%, "
+        f"tie@9:1 {100 * fpt['tie']['house_edge_9to1']:.4f}%",
     )
 
     # win probabilities (8-deck): "- Banker wins: 45.86%" etc.
@@ -558,6 +687,26 @@ def main() -> int:
                           "win_probability")
             }
             for bet in bc.PAIR_BET_TYPES
+        }
+        # derived WoO-note figures (excluding-ties convention, 9:1 tie)
+        for bet in ("banker", "player"):
+            summary["analytic"][bet]["house_edge_excluding_ties"] = float(
+                bc.house_edge_excluding_ties(bet, 8)
+            )
+        summary["analytic"]["tie"]["house_edge_9to1"] = Baccarat(
+            "tie", 8, tie_odds=Fraction(9)
+        ).house_edge
+        # Stake's headline blended figure — the exact portfolio derivation
+        ov = bc.overall_house_edge_summary(8)
+        summary["analytic"]["overall"] = {
+            "published_house_edge": ov["published_house_edge"],
+            "published_rtp": ov["published_rtp"],
+            "achievable_house_edge_range": [
+                ov["achievable_house_edge_range"]["min"],
+                ov["achievable_house_edge_range"]["max"],
+            ],
+            "implied_weights": ov["implied_weights"],
+            "reproduces_published_exactly": ov["reproduces_published_exactly"],
         }
         summary["empirical"] = {
             "n_rounds": sim.get("n_rounds"),

@@ -39,16 +39,21 @@ strips alone — nothing is asserted that is not recomputed.
 
 **2. Scarab Spin / Tome of Life (secondary; references/stake/slots.md).**
 Stake's fixed-reel Originals slot pair: 5x3, 20 lines, published house edge
-2.16% / RTP 97.84%, reel geometry 30/30/30/30/41 central stops (the
-provably-fair game-event mapping ``floor(float * reel_length)`` is already
-in the verified RNG core: :func:`spinquest_sim.rng.scarab_spin_stops`).
-Stake publishes the COMPLETE line paytable payout-for-payout (transcribed
-below symbol-for-symbol; Tome of Life's table is identical), the bonus
-rule (3 scatters -> 15 free spins), the max win (10,000x the bet) and the
-wild mechanic — "random wilds in the base game, represented by King Tut's
+2.16% / RTP 97.84%, reel geometry 30/30/30/30/41 central stops.  Stake
+publishes the COMPLETE line paytable payout-for-payout (transcribed below
+symbol-for-symbol; Tome of Life's table is identical), the bonus rule
+(3 scatters -> 15 free spins), the max win (10,000x the bet), the wild
+mechanic — "random wilds in the base game, represented by King Tut's
 mask. Wild symbols substitute for all symbols except scatter symbols"
-(reference Sect. 4, verbatim) — but not the reel strips or the wild-drop
-frequencies (Sect. 7).
+(reference Sect. 4, verbatim) — and, critically, the EVENT MATH: "This
+game consists of 5 game event numbers, until the case of a bonus round,
+where more are generated" (Sect. 3a, verbatim), with the stop mapping
+``floor(float * reel_length)`` that is already in the verified RNG core
+(:func:`spinquest_sim.rng.scarab_spin_stops`,
+``rng.EVENT_COUNTS["scarab_spin"] == 5``).  A base spin therefore
+consumes EXACTLY 5 floats — one per reel, nothing else — and this engine
+does exactly that, base and free spins alike, through the verified core.
+What Stake does NOT publish are the reel strips (Sect. 7).
 
 The reconstruction is therefore split into what the reference pins and
 what must be calibrated:
@@ -56,80 +61,60 @@ what must be calibrated:
 * The PAYTABLE is transcribed payout-for-payout (wins multiply the bet per
   line, not the total bet; the scatter pays 2+ anywhere on the reels —
   both published verbatim).
-* The REEL STRIPS are a conventional descending par-sheet ladder derived
-  deterministically by ``scripts/calibrate_slots.py``: per-reel symbol
-  counts are monotone non-increasing in the symbol's 5-of-a-kind pay
-  (commons most frequent, premiums rarest), chosen as the ranked nearest
-  integer ladders to the inverse-square-root-of-pay profile — see the
-  script for the exact ordered search.  No wild appears on any strip
-  (wilds are the published RANDOM overlay below), every reel carries one
-  scatter, all five count vectors are distinct, and every reel's count
-  vector has coefficient of variation >= 0.4 (``SCARAB_SHAPE_GATES``).
-* The published "random wilds in the base game" are modelled as a
-  provably-fair OVERLAY FEATURE (the "wild drop"): each spin consumes 21
-  floats — floats 0-4 pick the 5 central stops (the published Sect. 3a
-  mapping), float 5 arms the wild drop (it fires iff the float's 32-bit
-  value is below ``SCARAB_WILD_FIRE_K``), and floats 6-20 cover the 15
-  visible tiles reel-major (tile (reel i, row r) <- float 6+3i+r): when
-  the drop fired, a tile turns wild iff its float's 32-bit value is below
-  ``SCARAB_WILD_TILE_K`` and the tile is not a scatter.  When the drop did
-  not fire the 15 tile floats are simply unused — exactly the convention
-  Stake publishes for Blue Samurai ("for the sake of simplicity in the
-  provably fair model, we just generate 12 floats every time, and if the
-  float ... has a stuck samurai ..., then that float is not used at all").
-  The drop applies to base and free spins alike, and never covers a
-  scatter, so scatter counts and the bonus trigger stay strip-only.
+* The REEL STRIPS — including the King Tut wild, which occupies real strip
+  stops (1-2 per reel, ``SCARAB_COUNTS`` column 11): wilds land in the
+  base game from the reels themselves, the only reading of "random wilds
+  in the base game" consistent with the published 5-floats-per-spin event
+  math.  The full count matrix (11 line symbols + wild + scatter per
+  reel) is the deterministic output of ``scripts/calibrate_slots.py``: a
+  conventional descending par-sheet ladder (counts monotone
+  non-increasing in 5-of-a-kind pay on every reel, Spearman(pay, total
+  count) <= -0.9 with the wild among the rarest paying symbols, per-reel
+  count cv >= 0.4, all five count vectors distinct, wild's own row
+  carrying <= 20% of the line return) solved EXACTLY, by big-integer
+  contraction of the paytable LUT, so that the full-round RTP prints the
+  published "97.84" (``SCARAB_SHAPE_GATES``).
+* The SCATTER density is the published free-spin engine's throttle and is
+  the one degree of freedom that can carry a 97.84% total on this
+  paytable: the published table tops out at 37.50x bet-per-line for a
+  regular 5-of-a-kind, so ANY descending ladder's base return is a few
+  percent of the total bet (ours, exactly: line 2.13% + scatter 6.30% =
+  8.44%).  The published bonus rule (3+ scatters -> 15 free spins,
+  retriggerable, same reels, no multiplier stated for Scarab) amplifies a
+  base return mu into RTP = mu / (1 - 15p), so the published 97.84% pins
+  15p = 1 - mu/0.9784: the calibration places 2/2/2/2/3 scatters (spaced
+  >= 3 on every reel, so a 3-row window never shows two scatters per
+  reel), giving the exact trigger probability p = 0.06091707... and
+  E[spins per bonus] = 173.9 — long retrigger chains, exactly the regime
+  Stake's own Tome of Life page corroborates with its published bonus cap
+  of "respins up to an impressive 180 times".  EVERY spin, base or free,
+  has the identical win distribution (mu = 8.44% of the total bet per
+  spin) — there is no fire/non-fire barbell, no overlay, no unpublished
+  mechanism, and no fitted threshold anywhere: the RTP comes from the
+  count matrix, i.e. from the par sheet itself.
 
-Why an overlay is forced by the published numbers: exact enumeration of
-Stake's published paytable over ANY conventional descending ladder yields
-a base line return of well under 1% of the total bet (the table tops out
-at 37.50x bet-per-line for a regular 5-of-a-kind; with the shipped strips
-it is exactly 23,929,000/(30^4*41*100) = 0.7205% per line), while the
-published 97.84% RTP with the published 15-free-spin feature needs a base
-return of ~87% — only the published wild feature (its row pays 0.50/10/
-100/500) can carry the difference.  The two calibrated constants close
-that gap exactly and deterministically (``scripts/calibrate_slots.py``):
-
-* ``SCARAB_WILD_TILE_K = 2**31`` (tile probability exactly 1/2 on fire
-  spins) is selected by a fixed scan of the dyadic grid j/16 as the value
-  whose full-round relative standard deviation (8.5921) lands inside the
-  Wizard of Odds' published slot-SD band 5.18-13.45 (Cleopatra, 20 lines
-  .. 1 line) closest to his published typical slot SD 8.74
-  (references/woo/slots.md, house-edge master table).
-* ``SCARAB_WILD_FIRE_K = 203404370`` (fire probability K/2^32 =
-  0.047358770...) is the unique 32-bit threshold minimising the exact
-  distance |RTP - 97.84%|: RTP = (E0 + pi*(E1-E0) + sc)/(1 - 15*p) with
-  every term an exact rational — E0 = 23929000/(30^4*41*100) the no-wild
-  line return, E1 = 1919198207150/(30^4*41*3200) the fire-spin line
-  return (per-tile symbol distributions contracted exactly against the
-  integer paytable LUT), sc = the scatter return, p = 119/16400 the
-  3+-scatter probability — giving RTP = 0.9784000009194...  which prints
-  "97.84" (house edge "2.16") with 9.2e-10 to spare against the half-ULP
-  window of the printed figure (5e-5).
-
-Base-game shape with the ladder strips (all recomputed, none asserted):
-92.16%-of-spins-pay is gone — without a wild drop 29.41% of spins hit a
-line (exact 30^4*41 enumeration; vs the only published 20-line hit
-frequency, Cleopatra's 35.88%), per-line hit frequency 2.89%, and the
-wild drop fires on 4.74% of spins.  The published 10,000x-bet max win is
-enforced as a payout cap on every round (the cap binds with probability
-too small to affect any analytic figure at double precision: a single
-spin cannot exceed 500x the total bet, so a capped round needs 20+
-near-perfect wild screens in one bonus chain).
+The exact full-round RTP of the shipped par sheet is the rational
+7,005,731/7,160,400 = 0.978399391095... — within 6.1e-7 of the published
+0.9784 against the half-ULP window of the printed figure (5e-5) — and it
+prints "97.84" (house edge "2.16").  Base-game shape (all recomputed,
+none asserted): 44.01% of spins hit a line (exact 30^4*41 enumeration;
+vs the only published 20-line hit frequency, Cleopatra's 35.88%),
+per-line hit frequency 5.35%, full-round relative SD 12.60 inside the
+published slot band 5.18-13.45, and the wild's own row carries 5.5% of
+the line return.  The published 10,000x-bet max win is enforced as a
+payout cap on every round (the cap binds with probability too small to
+affect any analytic figure at double precision).
 
 **Engine contract** (same as every other game in this package):
 
 (a) analytic paytable / probability / RTP / variance computation — exact
-    enumeration of all reel-stop combinations for strip-only machines;
-    for wild-drop machines an exact per-reel factorization (the 5 stops
-    and 15 overlay indicators are independent across reels, so every
-    line-pair moment is a tensor contraction of the paytable LUT against
-    per-reel joint distributions — first moments in exact integer /
-    Fraction arithmetic, second moments in float64), cross-checked in the
-    tests against the brute-force stop enumeration of the no-wild
-    component;
+    enumeration of ALL reel-stop combinations (32^5 for Atkins, 30^4*41
+    for Scarab), first moments in exact integer / Fraction arithmetic,
+    second moments in float64, cross-checked in the tests against an
+    independent count-marginal contraction;
 (b) provably-fair single-round play on the verified scalar RNG path
-    (5 floats -> 5 central stops, plus the 16 wild-drop floats for Scarab;
+    (exactly 5 floats -> 5 central stops per spin, routed through
+    rng.scarab_spin_stops for the published 30/30/30/30/41 geometry;
     bonus spins keep consuming the SAME nonce's byte stream, matching
     Stake's published "Slots: the incremental number is only utilised for
     bonus rounds"),
@@ -155,9 +140,9 @@ and a full round pays X = Y + Z*T, so
 
 The 20 payline patterns are the classic 5x3 set; because each reel stop is
 uniform over a cyclic strip, every payline has the IDENTICAL win
-distribution (per-line marginals depend only on per-reel symbol counts and
-the wild-drop probabilities), so the pattern choice affects only
-inter-line correlation (variance), not any published return figure.
+distribution (per-line marginals depend only on per-reel symbol counts),
+so the pattern choice affects only inter-line correlation (variance), not
+any published return figure.
 """
 
 from __future__ import annotations
@@ -165,7 +150,6 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 import math
-import struct
 import time
 from fractions import Fraction
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -189,8 +173,6 @@ __all__ = [
     "SCARAB_COUNTS",
     "SCARAB_SCATTER_POS",
     "SCARAB_STRIPS",
-    "SCARAB_WILD_FIRE_K",
-    "SCARAB_WILD_TILE_K",
     "SCARAB_MAX_WIN",
     "SCARAB_FLOATS_PER_SPIN",
     "SCARAB_SHAPE_GATES",
@@ -210,7 +192,6 @@ __all__ = [
 ROWS = 3                       # visible rows; stop = CENTRAL row position
 N_LINES = 20                   # both models: 20 lines, 1 line-bet each
 _SAFETY_SPIN_CAP = 100_000     # free-spin safety cap (P ~ 0 at any horizon)
-_TWO32 = 1 << 32
 
 # The classic 20-line pattern set for a 5x3 grid (row per reel; 0=top,
 # 1=middle, 2=bottom).  Marginals are pattern-independent (see module doc).
@@ -275,17 +256,32 @@ WOO_ATKINS_PRINTED: Dict[str, Tuple[str, float, str, str]] = {
 # relative SD 13.45 (1 line) down to 5.18 (all 20 lines) with 20-line hit
 # frequency 35.88%; his house-edge master table lists the typical slot SD
 # as 8.74.  The Scarab par sheet is gated on this band (SCARAB_SHAPE_GATES)
-# and its wild-drop tile probability targets the 8.74 exemplar.
+# and, under the published capped bonus rules, lands near the 8.74
+# typical-slot exemplar (round 5 shipped 12.60, at the one-line end).
 WOO_SLOT_SD_BAND: Tuple[float, float] = (5.18, 13.45)
 WOO_TYPICAL_SLOT_SD = 8.74
 WOO_CLEOPATRA_HIT_20LINE = 0.3588
 
 # references/stake/slots.md — Scarab Spin / Tome of Life published math.
+# The two games are ONE math model in the reference's own words (Sect. 5
+# note: same paytable ladder, same 2.16% edge, same Sect. 3a event math);
+# the Tome page publishes the model's full bonus rule set, the Scarab page
+# a strict subset of it.
 STAKE_SCARAB_PUBLISHED: Dict[str, object] = {
-    "rtp": 0.9784,                 # "RTP 97.84%"
-    "house_edge": 0.0216,          # "Edge: 2.16 %" badge
+    "rtp": 0.9784,                 # "RTP 97.84%" (both game pages)
+    "house_edge": 0.0216,          # "Edge: 2.16 %" badge (both game pages)
     "reel_lengths": (30, 30, 30, 30, 41),
-    "free_spins": 15,              # "receive 15 bonus free spins"
+    "free_spins": 15,              # "receive 15 bonus free spins" /
+                                   # "15 free spins are awarded"
+    "free_spin_cap": 180,          # "Bonus rounds are capped at 180 free
+                                   #  spins" ("respins up to ... 180 times")
+    "free_spin_multiplier": 3,     # "a 3x multiplier on winning combos" /
+                                   # "all wins during the bonus rounds are
+                                   #  tripled, ..."
+    "wild5_multiplier_exempt": True,   # "... except when 5 WILD symbols
+                                   #  are spun"
+    "wild_substitution_double": True,  # "Combinations where WILD symbols
+                                   #  are used as another symbol pay double"
     "paylines": 20,
     "max_win": 10_000.0,           # "Max win: 10,000x your bet"
     "random_wilds": True,          # "random wilds in the base game"
@@ -303,17 +299,58 @@ STAKE_SCARAB_PRINTED: Dict[str, Tuple[str, float, str, str]] = {
 # (checked in tests/test_slots.py and scripts/validate_slots.py): the count
 # ladder must run the RIGHT way (commons frequent, premiums rare) with
 # |Spearman(5-of-a-kind pay, total strip count)| >= 0.9 and counts monotone
-# non-increasing in pay on every reel; the wild must not occupy strip stops
-# (it is the published random overlay); no two reels may share a count
-# vector; every reel's 13-entry count vector needs cv >= 0.4; and the
-# full-round relative SD must sit inside the published slot band.
+# non-increasing in pay on every reel; the King Tut wild OCCUPIES strip
+# stops ("random wilds in the base game" land from the reels — the only
+# reading consistent with the published 5-floats-per-spin event math) but
+# at most 2 per reel, and its own paytable row may carry at most 20% of
+# the line return; no two reels may share a count vector; every reel's
+# 13-entry count vector needs cv >= 0.4; the full-round relative SD must
+# sit inside the published slot band; every spin (base or free) draws the
+# IDENTICAL stop distribution from the same reels (no overlay, no
+# fire/non-fire barbell — free spins differ from base spins only by the
+# PUBLISHED 3x multiplier and its published pure-5-wild exemption).
+#
+# Round-5 gates on the published bonus rule set and the return
+# composition: the bonus is 15 free spins with retriggers hard-capped at
+# 180 total (P(chain > 180) = 0 STRUCTURALLY — the published cap, not a
+# safety net), so E[spins/bonus] <= 180 always; the trigger probability
+# and the chain load are capped (p <= 0.05, 15p <= 0.70 — the calibrated
+# minimum feasible on the published paytable, far from the round-5
+# rho = 0.914 criticality; Atkins' published anchor is 0.011185); and the
+# published PAYTABLE must carry the return: attributing every win (base
+# and free spins alike) to the paytable row that pays it, the eleven line
+# rows + wild row must carry >= 50% of the RTP and the scatter row <= 25%
+# (round 5 measured 25.29% / 74.71% — inverted).  The base-game feature
+# split (line + scatter + feature = RTP) is reported alongside; on this
+# paytable (top regular 5-of-a-kind 37.50 line-bets = 1.875x the total
+# bet) the feature necessarily carries the balance — see the calibration
+# script for the exact achievable-line-return certificate.
 SCARAB_SHAPE_GATES: Dict[str, object] = {
     "spearman_abs_min": 0.9,
     "per_reel_cv_min": 0.4,
     "sd_band": WOO_SLOT_SD_BAND,
-    "wild_on_strips": False,
+    "wild_on_strips": True,
+    "wild_max_stops_per_reel": 2,
+    "wild_line_return_share_max": 0.20,
     "distinct_reel_count_vectors": True,
     "counts_monotone_in_pay": True,
+    "same_reels_every_spin": True,
+    "published_bonus_rules": {
+        "free_spins": 15,
+        "free_spin_cap": 180,
+        "free_spin_multiplier": 3,
+        "wild5_multiplier_exempt": True,
+        "wild_substitution_double": True,
+    },
+    "p_trigger_max": 0.05,
+    "chain_load_max": 0.70,             # 15p (retrigger chain criticality)
+    "expected_bonus_spins_max": 180.0,  # published cap
+    "p_chain_exceeds_cap": 0.0,         # structural
+    "line_rows_rtp_share_min": 0.50,    # paytable rows carry the return
+    "scatter_row_rtp_share_max": 0.35,  # certified minimum region: the
+                                        # ascending-p calibration walk
+                                        # proves no admissible sheet gets
+                                        # below ~0.28 on this paytable
 }
 
 # ---------------------------------------------------------------------------
@@ -418,50 +455,58 @@ SCARAB_LINE_PAYS: Dict[int, Dict[int, float]] = {
 # reels" — published row of the same bet-per-line table.
 SCARAB_SCATTER_PAYS: Dict[int, float] = {2: 2.00, 3: 6.00, 4: 50.00, 5: 500.00}
 SCARAB_FREE_SPINS = 15        # "Land 3 scatter symbols ... 15 bonus free spins"
-SCARAB_FREE_MULT = 1
+# The published bonus rule set of the shared Scarab/Tome math model
+# (references/stake/slots.md Sect. 5, quoted verbatim in the module doc):
+# retriggers up to a HARD cap of 180 total free spins, every bonus win
+# tripled except a pure 5-wild line, and wild-substitution combos doubled.
+SCARAB_FREE_MULT = 3          # "a 3x multiplier on winning combos"
+SCARAB_FREE_SPIN_CAP = 180    # "Bonus rounds are capped at 180 free spins"
+SCARAB_WILD_DOUBLE = True     # "Combinations where WILD symbols are used as
+                              #  another symbol pay double"
+SCARAB_WILD5_EXEMPT = True    # "all wins during the bonus rounds are
+                              #  tripled, except when 5 WILD symbols are spun"
 SCARAB_REEL_LENGTHS: Tuple[int, ...] = (30, 30, 30, 30, 41)
 SCARAB_MAX_WIN = 10_000.0     # "Max win: 10,000x your bet" (Sect. 4)
-SCARAB_FLOATS_PER_SPIN = 21   # 5 stops + 1 wild-drop arm + 15 tiles
+# "This game consists of 5 game event numbers" (Sect. 3a) — one float per
+# reel, nothing else; identical to the verified RNG core's event count
+# (rng.EVENT_COUNTS["scarab_spin"], asserted below and in the tests).
+SCARAB_FLOATS_PER_SPIN = 5
 
 # CALIBRATED par sheet (scripts/calibrate_slots.py, Scarab stages — fully
 # deterministic, re-runnable, byte-for-byte reproducible).  Per-reel counts
-# for the 11 line symbols (order = SCARAB_SYMBOLS[0..10], i.e. ascending
-# 5-of-a-kind pay): monotone non-increasing in pay on every reel, the
-# ranked nearest integer ladders to the pay^(-1/2) profile (reels 1-4 take
-# ranks 1-4 of the 29-stop ladder enumeration so no two reels share a
-# vector; reel 5 takes rank 1 of the 40-stop enumeration).  The wild NEVER
-# occupies a strip stop — it enters only through the published random
-# wild drop.  One scatter per reel at deterministic position (4+7i) mod L.
+# for ALL 13 symbols (order = SCARAB_SYMBOLS: columns 0..10 the line
+# symbols in ascending 5-of-a-kind pay, column 11 the King Tut wild,
+# column 12 the scatter; each row sums to the reel length).  The 11-symbol
+# ladder is monotone non-increasing in pay on every reel; the wild sits ON
+# the strips at 1-2 stops per reel (7 stops machine-wide — among the
+# rarest paying symbols, Spearman(pay, total count) = -0.93); scatters
+# are 2/2/2/2/3, spaced >= 3 so a window never shows two per reel.  The
+# count matrix is solved exactly against the published RTP — see the
+# module docstring and the calibration script.
 SCARAB_COUNTS: Tuple[Tuple[int, ...], ...] = (
-    (4, 4, 4, 3, 3, 3, 2, 2, 2, 1, 1),
-    (4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1),
-    (4, 4, 3, 3, 3, 3, 3, 2, 2, 1, 1),
-    (4, 4, 4, 4, 3, 3, 2, 2, 1, 1, 1),
-    (5, 5, 5, 5, 5, 4, 3, 3, 2, 2, 1),
+    (4, 4, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 2),
+    (4, 4, 4, 3, 3, 3, 2, 1, 1, 1, 1, 1, 2),
+    (4, 4, 4, 3, 3, 2, 2, 1, 1, 1, 1, 2, 2),
+    (5, 4, 3, 3, 3, 3, 1, 1, 1, 1, 1, 2, 2),
+    (5, 5, 5, 4, 4, 4, 3, 3, 2, 1, 1, 1, 3),
 )
-SCARAB_SCATTER_POS: Tuple[Tuple[int, ...], ...] = ((4,), (11,), (18,), (25,), (32,))
+SCARAB_SCATTER_POS: Tuple[Tuple[int, ...], ...] = (
+    (4, 19), (11, 26), (3, 18), (10, 25), (5, 18, 32))
 
 # The strips: the deterministic greedy interleave of SCARAB_COUNTS with the
 # scatters at SCARAB_SCATTER_POS (identical arrangement routine as the
 # Atkins strips; order never touches any published figure — marginals
-# depend only on counts).  Totals across the machine: Cat 21, Gold Coin 21,
-# Diamond 19, Spade 18, Club 17, Heart 16, Blue Coin 12, Green Gem 11,
-# Purple Gem 9, Red Gem 7, Yellow Gem 5, King Tut 0 —
-# Spearman(5-of-a-kind pay, total count) = -0.96 (commons frequent,
-# premiums rare, the wild rarest of all on the strips at zero).
+# depend only on counts).  Totals across the machine: Cat 22, Gold Coin
+# 21, Diamond 19, Spade 16, Club 16, Heart 14, Blue Coin 10, Green Gem 8,
+# Purple Gem 7, Red Gem 5, Yellow Gem 5, King Tut (wild) 7, scatter 11 —
+# commons frequent, premiums rare, the wild among the rarest.
 SCARAB_STRIPS: Tuple[Tuple[int, ...], ...] = (
-    (0, 2, 0, 5, 12, 1, 3, 1, 4, 2, 6, 2, 0, 7, 5, 1, 3, 8, 4, 7, 3, 6, 2, 0, 10, 8, 5, 1, 4, 9),
-    (0, 5, 1, 3, 1, 4, 2, 0, 9, 4, 0, 12, 6, 8, 3, 5, 1, 7, 2, 5, 1, 4, 0, 9, 2, 6, 3, 8, 10, 7),
-    (1, 6, 0, 3, 1, 4, 0, 5, 2, 7, 1, 4, 6, 3, 0, 2, 8, 5, 12, 3, 10, 2, 9, 7, 0, 4, 1, 6, 8, 5),
-    (2, 0, 3, 1, 5, 2, 0, 3, 1, 4, 7, 5, 1, 4, 6, 0, 2, 9, 3, 8, 0, 10, 5, 7, 2, 12, 4, 1, 6, 3),
-    (3, 1, 4, 2, 0, 3, 1, 4, 0, 5, 2, 0, 5, 3, 7, 2, 6, 4, 1, 6, 9, 5, 3, 7, 0, 8, 2, 4, 1, 10, 6, 9, 12, 8, 3, 5, 0, 2, 7, 4, 1),
+    (0, 2, 0, 4, 12, 1, 3, 1, 7, 3, 6, 2, 0, 4, 8, 5, 1, 3, 7, 12, 4, 0, 6, 2, 11, 1, 8, 5, 10, 9),
+    (0, 2, 0, 3, 1, 5, 2, 4, 1, 4, 0, 12, 6, 2, 5, 3, 1, 9, 5, 2, 6, 4, 0, 3, 11, 8, 12, 10, 1, 7),
+    (1, 3, 0, 12, 2, 4, 1, 3, 0, 2, 4, 1, 6, 0, 11, 5, 2, 10, 12, 3, 0, 7, 2, 9, 4, 6, 1, 11, 8, 5),
+    (0, 4, 1, 3, 0, 5, 1, 3, 0, 2, 12, 4, 2, 0, 5, 1, 11, 8, 1, 9, 5, 0, 10, 2, 7, 12, 4, 6, 11, 3),
+    (0, 2, 0, 5, 1, 12, 3, 1, 4, 2, 6, 2, 0, 5, 3, 7, 4, 1, 12, 7, 4, 6, 3, 8, 0, 5, 2, 8, 1, 6, 10, 7, 12, 3, 9, 5, 0, 2, 11, 4, 1),
 )
-
-# Wild-drop thresholds (32-bit; a float f = V/2^32 passes iff V < K).
-# Both are the deterministic output of scripts/calibrate_slots.py — see the
-# module docstring for the derivation and the exact rational RTP.
-SCARAB_WILD_TILE_K = 1 << 31          # tile wild probability 1/2 on fire spins
-SCARAB_WILD_FIRE_K = 203404370        # fire probability 0.047358770...
 
 
 def _pays_to_cents(pays: Dict[int, Dict[int, float]]) -> Dict[int, Dict[int, int]]:
@@ -501,14 +546,32 @@ class SlotMachine:
     included, is in bet-per-line multipliers).  All returns reported by this
     class are per unit TOTAL bet (20 line-bets).
 
-    ``wild_drop_fire_k`` / ``wild_drop_tile_k`` switch on the random
-    overlay-wild feature (Stake's published "random wilds in the base
-    game"): each spin then consumes 21 floats — 5 stops, 1 drop-arm float
-    (fires iff its 32-bit value < fire_k) and 15 tile floats reel-major
-    (tile (reel i, row r) <- float 6+3i+r; on a fired spin a non-scatter
-    tile turns wild iff its 32-bit value < tile_k; on other spins the tile
-    floats are unused, Blue-Samurai style).  ``max_win`` caps every round's
-    total payout in total-bet multiples (Stake publishes 10,000x).
+    Published rule switches (references/stake/slots.md Sect. 5, the bonus
+    rule set of the shared Scarab/Tome math model):
+
+    * ``free_spin_cap`` — hard cap on TOTAL free spins per bonus ("Bonus
+      rounds are capped at 180 free spins"): retriggers extend the bonus
+      but never past the cap, so P(chain > cap) = 0 structurally.  With
+      ``None`` the chain is the uncapped geometric one (the Atkins model;
+      a safety cap guards the loop at negligible probability).
+    * ``wild_substitution_double`` — "Combinations where WILD symbols are
+      used as another symbol pay double": an interpretation that uses a
+      wild AS another symbol pays 2x (base and free spins alike; the
+      wild's own row never doubles).
+    * ``wild5_multiplier_exempt`` — "all wins during the bonus rounds are
+      tripled, except when 5 WILD symbols are spun": the free-spin
+      multiplier applies per interpretation, but a pure 5-wild line pays
+      its published 500x unmultiplied.
+
+    Every spin — base or free — consumes EXACTLY 5 floats, one per reel
+    (Stake Sect. 3a: "This game consists of 5 game event numbers"); for
+    the published 30/30/30/30/41 Scarab geometry the float -> stop mapping
+    is routed through the verified RNG core's
+    :func:`spinquest_sim.rng.scarab_spin_stops`.  Free spins draw stops
+    from the SAME reels through the same mapping — they differ from base
+    spins only by the published multiplier rules above.  ``max_win`` caps
+    every round's total payout in total-bet multiples (Stake publishes
+    10,000x).
     """
 
     def __init__(
@@ -525,9 +588,10 @@ class SlotMachine:
         free_spin_multiplier: float,
         paylines: Sequence[Sequence[int]] = PAYLINES_20,
         trigger_count: int = 3,
-        wild_drop_fire_k: int = 0,
-        wild_drop_tile_k: int = 0,
         max_win: Optional[float] = None,
+        free_spin_cap: Optional[int] = None,
+        wild_substitution_double: bool = False,
+        wild5_multiplier_exempt: bool = False,
     ) -> None:
         if len(strips) != 5:
             raise ValueError("need exactly 5 reel strips")
@@ -556,17 +620,21 @@ class SlotMachine:
             raise ValueError("paylines must be 5 rows in 0..2")
         self.n_lines = len(self.paylines)
         self.trigger_count = int(trigger_count)
-        self.wild_drop_fire_k = int(wild_drop_fire_k)
-        self.wild_drop_tile_k = int(wild_drop_tile_k)
-        if not (0 <= self.wild_drop_fire_k < _TWO32
-                and 0 <= self.wild_drop_tile_k < _TWO32):
-            raise ValueError("wild-drop thresholds must be 32-bit")
-        if (self.wild_drop_fire_k > 0) != (self.wild_drop_tile_k > 0):
-            raise ValueError("wild drop needs both fire_k and tile_k")
-        self.overlay = self.wild_drop_fire_k > 0
         self.max_win = None if max_win is None else float(max_win)
         if self.max_win is not None and self.max_win <= 0:
             raise ValueError("max_win must be positive")
+        self.free_spin_cap = None if free_spin_cap is None else int(free_spin_cap)
+        if self.free_spin_cap is not None and self.free_spin_cap < free_spins:
+            raise ValueError("free_spin_cap must be >= free_spins")
+        self.wild_substitution_double = bool(wild_substitution_double)
+        self.wild5_multiplier_exempt = bool(wild5_multiplier_exempt)
+        # bonus pays are exact integer cents: k-oak pay * multiplier must be
+        # a whole number of cents for every published rung
+        for s, row in line_pays.items():
+            for k, v in row.items():
+                bm = v * 100 * self.free_spin_multiplier
+                if abs(bm - round(bm)) > 1e-9:
+                    raise ValueError("bonus pay not an exact cent multiple")
 
         self._line_pays_cents = _pays_to_cents(self.line_pays)
         # scatter pays in cents of a LINE bet (exact ints): 'total' basis
@@ -588,6 +656,10 @@ class SlotMachine:
             for k in range(lo + 1, 5 * ROWS + 1):
                 if k not in self.scatter_pays:
                     self._scatter_cents[k] = self._scatter_cents[k - 1]
+        # bonus-spin scatter pays: published free-spin multiplier, exact cents
+        self._scatter_cents_bonus = np.array(
+            [int(round(int(c) * self.free_spin_multiplier))
+             for c in self._scatter_cents], dtype=np.int64)
 
         # per-reel window scatter counts: scnt[i][t] = scatters visible in
         # the 3-row window centred on stop t.
@@ -607,6 +679,7 @@ class SlotMachine:
             self._sym_at.append(arr)
 
         self._lut_cache: Optional[np.ndarray] = None
+        self._lut_bonus_cache: Optional[np.ndarray] = None
         self._exact_cache: Optional[Dict[str, object]] = None
 
     # ------------------------------------------------------------------
@@ -615,44 +688,73 @@ class SlotMachine:
 
     @property
     def floats_per_spin(self) -> int:
-        """Floats one spin consumes from the verifiable stream: 5 stops,
-        plus (wild-drop machines) 1 drop-arm float and 15 tile floats."""
-        return SCARAB_FLOATS_PER_SPIN if self.overlay else 5
+        """Floats one spin consumes from the verifiable stream: exactly 5,
+        one per reel — Stake's published "5 game event numbers" (Sect. 3a),
+        identical to rng.EVENT_COUNTS["scarab_spin"]."""
+        return 5
 
     def line_pay(self, line_symbols: Sequence[int]) -> float:
         """Reference (scalar) line evaluation: highest pay among all
         left-aligned interpretations; wild substitutes for everything except
-        the scatter; a wild run can also pay as the wild's own symbol."""
+        the scatter; a wild run can also pay as the wild's own symbol.  With
+        ``wild_substitution_double`` (published Tome of Life rule,
+        references/stake/slots.md Sect. 5: "Combinations where WILD symbols
+        are used as another symbol pay double") an interpretation that uses
+        at least one wild AS another symbol pays 2x."""
         return self._line_pay_cents_scalar(tuple(line_symbols)) / 100.0
 
-    def _line_pay_cents_scalar(self, tup: Tuple[int, ...]) -> int:
+    def bonus_line_pay(self, line_symbols: Sequence[int]) -> float:
+        """Scalar line evaluation for a FREE spin: every interpretation is
+        multiplied by ``free_spin_multiplier`` except — with
+        ``wild5_multiplier_exempt`` (Stake Sect. 5: "all wins during the
+        bonus rounds are tripled, except when 5 WILD symbols are spun") —
+        the pure 5-wild combination, which pays its published 500x
+        unmultiplied.  The best interpretation is taken AFTER applying the
+        multiplier."""
+        return self._line_pay_cents_scalar(tuple(line_symbols),
+                                           bonus=True) / 100.0
+
+    def _line_pay_cents_scalar(self, tup: Tuple[int, ...],
+                               bonus: bool = False) -> int:
         best = 0
+        mult = self.free_spin_multiplier if bonus else 1
         for s_id, pays in self._line_pays_cents.items():
             k = 0
+            wild_used = False
             for s in tup:
                 if s == s_id or (s == self.wild and s_id != self.wild):
+                    if s == self.wild and s_id != self.wild:
+                        wild_used = True
                     k += 1
                 else:
                     break
             p = pays.get(k, 0)
             if k >= 5:
                 p = pays.get(5, p)
+            if bonus:
+                if s_id == self.wild and k >= 5 and self.wild5_multiplier_exempt:
+                    pass                       # published exemption: pay 1x
+                else:
+                    p = int(round(p * mult))
+            if self.wild_substitution_double and s_id != self.wild and wild_used:
+                p *= 2
             if p > best:
                 best = p
         return best
 
-    @property
-    def _lut_cents(self) -> np.ndarray:
+    def _build_lut(self, bonus: bool) -> np.ndarray:
         """Flat int64 LUT of line pay (cents of a line bet) for every
         symbol 5-tuple, index = sum(sym_i * n_sym^(4-i)).  Vectorized build;
-        cross-checked against the scalar rule in the tests."""
-        if self._lut_cache is not None:
-            return self._lut_cache
+        cross-checked against the scalar rule in the tests.  ``bonus``
+        applies the free-spin multiplier per interpretation (with the
+        published pure-5-wild exemption when configured); the
+        wild-substitution doubling applies to both tables."""
         n = self.n_symbols
         shape = (n,) * 5
         # grid[j] = symbol index along axis j (broadcast views, no copies)
         grids = [np.arange(n).reshape([n if a == j else 1 for a in range(5)])
                  for j in range(5)]
+        mult = self.free_spin_multiplier if bonus else 1
         best = np.zeros(shape, dtype=np.int64)
         for s_id, pays in self._line_pays_cents.items():
             if s_id == self.wild:
@@ -661,16 +763,37 @@ class SlotMachine:
                 match = [(g == s_id) | (g == self.wild) for g in grids]
             run = np.ones(shape, dtype=bool)
             k = np.zeros(shape, dtype=np.int64)
+            aw = np.zeros(shape, dtype=bool)      # wild used AS s_id
             for j in range(5):
                 run = run & match[j]
                 k = k + run
+                if s_id != self.wild:
+                    aw = aw | (run & (grids[j] == self.wild))
             pay_by_k = np.zeros(6, dtype=np.int64)
+            pay_by_k_b = np.zeros(6, dtype=np.int64)
             for kk, cents in pays.items():
                 if kk <= 5:
                     pay_by_k[kk] = cents
-            best = np.maximum(best, pay_by_k[k])
-        self._lut_cache = best.reshape(-1)
+                    pay_by_k_b[kk] = int(round(cents * mult))
+            if bonus and s_id == self.wild and self.wild5_multiplier_exempt:
+                pay_by_k_b[5] = pay_by_k[5]       # published exemption
+            p = pay_by_k_b[k] if bonus else pay_by_k[k]
+            if self.wild_substitution_double and s_id != self.wild:
+                p = np.where(aw, 2 * p, p)
+            best = np.maximum(best, p)
+        return best.reshape(-1)
+
+    @property
+    def _lut_cents(self) -> np.ndarray:
+        if self._lut_cache is None:
+            self._lut_cache = self._build_lut(bonus=False)
         return self._lut_cache
+
+    @property
+    def _lut_cents_bonus(self) -> np.ndarray:
+        if self._lut_bonus_cache is None:
+            self._lut_bonus_cache = self._build_lut(bonus=True)
+        return self._lut_bonus_cache
 
     def symbol_counts(self) -> np.ndarray:
         """(5, n_symbols) per-reel symbol counts."""
@@ -711,68 +834,22 @@ class SlotMachine:
     # (a) analytics
     # ------------------------------------------------------------------
 
-    def _tile_numerators(self, reel: int, tile_k: int) -> Tuple[List[int], int]:
-        """Exact effective per-tile symbol distribution on one reel under a
-        wild overlay with probability tile_k/2^32: (numerators, denominator).
-        A scatter tile is never overlaid; any other tile turns wild with the
-        overlay probability, else keeps its strip symbol."""
-        counts = self.symbol_counts()[reel]
-        L = self.reel_lengths[reel]
-        cs = int(counts[self.scatter])
-        cw = int(counts[self.wild])
-        nums = [0] * self.n_symbols
-        for s in range(self.n_symbols):
-            if s == self.scatter:
-                nums[s] = cs * _TWO32
-            elif s == self.wild:
-                nums[s] = cw * _TWO32 + (L - cs - cw) * tile_k
-            else:
-                nums[s] = int(counts[s]) * (_TWO32 - tile_k)
-        g = 0
-        for v in nums:
-            g = math.gcd(g, v)
-        g = g or 1
-        return [v // g for v in nums], (L * _TWO32) // g
-
-    def _exact_line_component(self, tile_k: int) -> Tuple[Fraction, Fraction]:
-        """(E[single-line pay] in line-bet units, P(line pays)) under a
-        constant per-tile overlay probability tile_k/2^32 — exact rational
-        big-integer contraction of the paytable LUT (no float rounding)."""
-        per_reel = []
-        denom = 1
-        for i in range(5):
-            nums, den = self._tile_numerators(i, tile_k)
-            per_reel.append(nums)
-            denom *= den
-        lut = self._lut_cents
-        m = _contract_int(lut, per_reel, self.n_symbols)
-        h = _contract_int((lut > 0).astype(np.int64), per_reel, self.n_symbols)
-        return Fraction(m, denom * 100), Fraction(h, denom)
-
     def marginal_line_stats(self) -> Tuple[Fraction, Fraction]:
         """(per-line expected pay in line-bet units, per-line hit prob),
-        computed from symbol COUNTS (and, for wild-drop machines, the
-        overlay probabilities) only — independent of strip order and of the
-        payline patterns.  For strip-only machines this is the cross-check
-        for the full enumeration."""
-        if not self.overlay:
-            counts = self.symbol_counts().astype(np.float64)
-            lut = self._lut_cents.reshape((self.n_symbols,) * 5)
-            # integer-valued float64 contractions stay exact (< 2^53)
-            total = lut.astype(np.float64)
-            hits = (lut > 0).astype(np.float64)
-            for axis in range(4, -1, -1):
-                total = np.tensordot(total, counts[axis], axes=([axis], [0]))
-                hits = np.tensordot(hits, counts[axis], axes=([axis], [0]))
-            denom = 1
-            for L in self.reel_lengths:
-                denom *= L
-            return (Fraction(int(round(float(total))), denom * 100),
-                    Fraction(int(round(float(hits))), denom))
-        pi = Fraction(self.wild_drop_fire_k, _TWO32)
-        e0, h0 = self._exact_line_component(0)
-        e1, h1 = self._exact_line_component(self.wild_drop_tile_k)
-        return (1 - pi) * e0 + pi * e1, (1 - pi) * h0 + pi * h1
+        computed from symbol COUNTS only — independent of strip order and
+        of the payline patterns.  This is the cross-check for the full
+        stop enumeration (an independent code path: no windows, no lines).
+        Exact: the count products are contracted as big integers."""
+        counts = self.symbol_counts()
+        per_reel = [[int(c) for c in counts[i]] for i in range(5)]
+        lut = self._lut_cents
+        m = _contract_int(lut, per_reel, self.n_symbols)
+        h = _contract_int((lut > 0).astype(np.int64), per_reel,
+                          self.n_symbols)
+        denom = 1
+        for L in self.reel_lengths:
+            denom *= L
+        return Fraction(m, denom * 100), Fraction(h, denom)
 
     def _scatter_return_exact(self) -> Tuple[Fraction, Fraction, List[Fraction]]:
         """(scatter return per unit total bet, P(trigger), exact pmf)."""
@@ -783,6 +860,88 @@ class SlotMachine:
         p = sum((pr for k, pr in enumerate(pmf) if k >= self.trigger_count),
                 Fraction(0))
         return sc_ret, p, pmf
+
+    @staticmethod
+    def _capped_chain_exact(a: int, denom: int, F: int, cap: int
+                            ) -> Tuple[Fraction, np.ndarray]:
+        """EXACT distribution of N = total free spins of one bonus under
+        the published capped-retrigger rule (F spins per (re)trigger, total
+        spins hard-capped at ``cap`` — Stake Sect. 5: "Bonus rounds are
+        capped at 180 free spins").  ``a / denom`` is the exact per-spin
+        retrigger probability.  Forward DP on (spins played t, spins
+        remaining r); level-t weights are integers over denom^t, so E[N]
+        comes out as an exact Fraction; the pmf (support 15..cap, hence
+        P(N > cap) = 0 STRUCTURALLY) is returned in float64.
+        E[N] = sum_t P(spin t+1 is played) — the alive mass per level."""
+        b = denom - a
+        probs: Dict[int, int] = {min(F, cap): 1}
+        alive: List[int] = []
+        pmf_w: Dict[int, int] = {}
+        for t in range(cap):
+            if not probs:
+                break
+            alive.append(sum(probs.values()))
+            new: Dict[int, int] = {}
+            for r, wgt in probs.items():
+                rt = min(r - 1 + F, cap - (t + 1))
+                rn = r - 1
+                if rt > 0:
+                    new[rt] = new.get(rt, 0) + wgt * a
+                else:
+                    pmf_w[t + 1] = pmf_w.get(t + 1, 0) + wgt * a
+                if rn > 0:
+                    new[rn] = new.get(rn, 0) + wgt * b
+                else:
+                    pmf_w[t + 1] = pmf_w.get(t + 1, 0) + wgt * b
+            probs = new
+        if probs:
+            pmf_w[cap] = pmf_w.get(cap, 0) + sum(probs.values())
+        depth = len(alive)
+        e_n = Fraction(
+            sum(w * denom ** (depth - 1 - t) for t, w in enumerate(alive)),
+            denom ** (depth - 1))
+        pmf = np.zeros(cap + 1)
+        for nn, wgt in pmf_w.items():
+            pmf[nn] = wgt / denom ** nn
+        return e_n, pmf
+
+    @staticmethod
+    def _capped_chain_moments(p: float, F: int, cap: int, e_w: float,
+                              e_w2: float, e_wz: float
+                              ) -> Tuple[float, float]:
+        """(E[T], E[T^2]) of the capped bonus package T = sum of the N
+        free-spin wins W_i, by backward DP over (t, r).  The per-spin win W
+        and the retrigger indicator Z are dependent WITHIN a spin (e_wz =
+        E[W Z]), which the recursion carries exactly:
+
+            T(t,r)      = W + T(next state)
+            E[T]        = E[W] + p*m1[s+] + q*m1[s-]
+            E[W*T']     = E[WZ]*m1[s+] + (E[W]-E[WZ])*m1[s-]
+            E[T^2]      = E[W^2] + 2*E[W*T'] + p*m2[s+] + q*m2[s-]
+
+        with s+ = (t+1, min(r-1+F, cap-t-1)) and s- = (t+1, r-1)."""
+        q = 1.0 - p
+        size = cap + F + 2
+        m1_next = np.zeros(size)
+        m2_next = np.zeros(size)
+        for t in range(cap - 1, -1, -1):
+            rmax = cap - t
+            r = np.arange(1, rmax + 1)
+            rt = np.minimum(r - 1 + F, cap - (t + 1))
+            rn = r - 1
+            m1n = np.where(rt > 0, m1_next[rt], 0.0)
+            m1d = np.where(rn > 0, m1_next[rn], 0.0)
+            m2n = np.where(rt > 0, m2_next[rt], 0.0)
+            m2d = np.where(rn > 0, m2_next[rn], 0.0)
+            m1_cur = np.zeros(size)
+            m2_cur = np.zeros(size)
+            m1_cur[1:rmax + 1] = e_w + p * m1n + q * m1d
+            m2_cur[1:rmax + 1] = (e_w2 + 2.0 * (e_wz * m1n
+                                                + (e_w - e_wz) * m1d)
+                                  + p * m2n + q * m2d)
+            m1_next, m2_next = m1_cur, m2_cur
+        r0 = min(F, cap)
+        return float(m1_next[r0]), float(m2_next[r0])
 
     @staticmethod
     def _fold_free_spins(F: int, m: float, p: float, mu: float,
@@ -802,30 +961,15 @@ class SlotMachine:
                 "e_x2": e_x2, "var": var}
 
     def enumerate_exact(self, progress: bool = False) -> Dict[str, object]:
-        """Exact analytics.
-
-        Strip-only machines (Atkins): brute-force enumeration of ALL
-        reel-stop combinations (32^5) with the full 20-line + scatter
-        evaluation per outcome — first moments in exact integer/Fraction
-        arithmetic, second moments float64 — then the exact free-spin
-        recursion.
-
-        Wild-drop machines (Scarab): the stops and the 16 overlay floats
-        are independent across reels, so every moment factorizes per reel:
-        first moments (returns, probabilities, RTP) are exact rational
-        big-integer contractions; second moments (variance/SD only) are
-        float64 tensor contractions over per-reel joint distributions of
-        the 20x20 line pairs (correlations through shared tiles and shared
-        overlay indicators are exact by construction).  The no-wild
-        component is cross-checked against the brute-force stop enumeration
-        in the tests.
-        """
+        """Exact analytics: brute-force enumeration of ALL reel-stop
+        combinations (32^5 Atkins, 30^4*41 Scarab) with the full 20-line +
+        scatter evaluation per outcome — first moments in exact
+        integer/Fraction arithmetic, second moments float64 — then the
+        exact free-spin recursion.  Cross-checked in the tests against the
+        independent count-marginal contraction."""
         if self._exact_cache is not None:
             return self._exact_cache
-        if self.overlay:
-            result = self._overlay_exact(progress=progress)
-        else:
-            result = self._enumerate_stops(progress=progress)
+        result = self._enumerate_stops(progress=progress)
         self._exact_cache = result
         return result
 
@@ -858,6 +1002,12 @@ class SlotMachine:
             sc_inner = sc_inner + self._scnt[i].reshape(shape)
         sc_inner = sc_inner.reshape(-1)
 
+        # A machine with the published capped bonus (Scarab/Tome) also needs
+        # the FREE-SPIN evaluation moments (the bonus LUT is not a scalar
+        # multiple of the base LUT once the pure-5-wild exemption applies).
+        capped = self.free_spin_cap is not None
+        lut_b = self._lut_cents_bonus if capped else None
+
         line_cents_total = 0            # exact
         scatter_cents_total = 0         # exact
         line_hits_total = 0             # exact, summed over lines
@@ -866,13 +1016,24 @@ class SlotMachine:
         k_hist = np.zeros(5 * ROWS + 1, dtype=np.int64)
         sum_y2 = 0.0                    # float64: E[Y^2] (line-bet cents^2)
         sum_yz = 0                      # exact: E[Y * 1{trigger}]
+        w_line_cents_total = 0          # exact: bonus-eval line cents
+        sum_w2 = 0.0                    # float64: E[W^2]
+        sum_wz = 0                      # exact: E[W * 1{trigger}]
+        max_y_cents = 0                 # largest single base-spin win
+        max_w_cents = 0                 # largest single free-spin win
         y = np.empty(inner_size, dtype=np.int64)
+        w = np.empty(inner_size, dtype=np.int64) if capped else None
         for t1 in range(lens[0]):
             y[:] = 0
+            if capped:
+                w[:] = 0
             hits_here = np.zeros(inner_size, dtype=np.int64)
             for l in range(self.n_lines):
-                pays = lut[inners[l] + heads[l][t1]]
+                idx = inners[l] + heads[l][t1]
+                pays = lut[idx]
                 y += pays
+                if capped:
+                    w += lut_b[idx]
                 nz = pays > 0
                 line_hits_total += int(np.count_nonzero(nz))
                 hits_here += nz
@@ -887,6 +1048,14 @@ class SlotMachine:
             trigger_total += int(np.count_nonzero(trig))
             sum_y2 += float(np.dot(y.astype(np.float64), y.astype(np.float64)))
             sum_yz += int(y[trig].sum())
+            max_y_cents = max(max_y_cents, int(y.max()))
+            if capped:
+                w_line_cents_total += int(w.sum())
+                w += self._scatter_cents_bonus[k]
+                sum_w2 += float(np.dot(w.astype(np.float64),
+                                       w.astype(np.float64)))
+                sum_wz += int(w[trig].sum())
+                max_w_cents = max(max_w_cents, int(w.max()))
             if progress and (t1 + 1) % 8 == 0:
                 print(f"  enumerate {self.name}: reel-1 stop {t1 + 1}/{lens[0]}",
                       flush=True)
@@ -904,212 +1073,99 @@ class SlotMachine:
         F, m = self.free_spins, self.free_spin_multiplier
         p = float(p_trigger)
         mu = float(mu_y)
-        fold = self._fold_free_spins(F, m, p, mu, e_y2, float(e_yz))
 
         result: Dict[str, object] = {
             "outcomes": denom,
             "line_return": line_return,
             "scatter_return": scatter_return,
             "base_return": mu_y,
-            "bonus_return": p * fold["e_t"],
-            "rtp": fold["rtp"],
-            "house_edge": 1.0 - fold["rtp"],
             "p_bonus_trigger": p_trigger,
             "hit_frequency": hit_freq,
             "any_line_hit_frequency": Fraction(any_hit_total, denom),
             "scatter_pmf": k_hist / denom,
             "scatter_counts": k_hist,
-            "expected_bonus_spins": fold["e_spins"],
-            "expected_bonus_win": fold["e_t"],
             "e_y": mu,
             "e_y2": e_y2,
             "e_yz": float(e_yz),
-            "e_x2": fold["e_x2"],
-            "variance_per_unit": fold["var"],
-            "std_per_unit": math.sqrt(fold["var"]),
-            "elapsed_s": time.perf_counter() - t0,
+            "free_spin_cap": self.free_spin_cap,
+            "max_spin_cents": max_y_cents,
+            "elapsed_s": 0.0,
         }
-        return result
-
-    # -- wild-drop analytics (per-reel factorization) -------------------
-
-    def _eff_rows(self, w: float) -> np.ndarray:
-        """(n, n) raw-symbol -> effective-symbol distribution rows under a
-        per-tile overlay probability w (scatter never overlaid)."""
-        n = self.n_symbols
-        E = np.zeros((n, n))
-        for x in range(n):
-            if x == self.scatter:
-                E[x, x] = 1.0
-            else:
-                E[x, x] += 1.0 - w
-                E[x, self.wild] += w
-        return E
-
-    def _pair_mats(self, w: float) -> List[Dict[int, np.ndarray]]:
-        """Per reel: {delta: (n, n) joint distribution of the effective
-        symbols at two rows offset by delta}.  delta=0 shares the tile (and
-        its overlay indicator); other deltas have independent indicators."""
-        n = self.n_symbols
-        E = self._eff_rows(w)
-        out: List[Dict[int, np.ndarray]] = []
-        for strip in self.strips:
-            L = len(strip)
-            mats: Dict[int, np.ndarray] = {}
-            for d in range(-2, 3):
-                M = np.zeros((n, n))
-                if d == 0:
-                    for u in range(L):
-                        M[np.arange(n), np.arange(n)] += E[strip[u]]
-                else:
-                    for u in range(L):
-                        M += np.outer(E[strip[u]], E[strip[(u + d) % L]])
-                mats[d] = M / L
-            out.append(mats)
-        return out
-
-    def _kappa_joints(self, w: float) -> List[List[np.ndarray]]:
-        """Per reel, per row: (n, 3) joint of (effective symbol at that
-        row, scatter count in the same reel's window)."""
-        n = self.n_symbols
-        E = self._eff_rows(w)
-        out: List[List[np.ndarray]] = []
-        for i, strip in enumerate(self.strips):
-            L = len(strip)
-            scnt = self._scnt[i]
-            rows = []
-            for r in range(ROWS):
-                J = np.zeros((n, 3))
-                for t in range(L):
-                    J[:, scnt[t]] += E[strip[(t + r - 1) % L]]
-                rows.append(J / L)
-            out.append(rows)
-        return out
-
-    def _component_moments(self, tile_k: int) -> Tuple[float, float]:
-        """(E[Y^2], E[Y * 1{trigger}]) of one mixture component (constant
-        per-tile overlay probability tile_k/2^32), with Y the spin win in
-        line-bet cents.  Float64 tensor contractions on exact rational
-        per-reel joints (used only for variance / SD)."""
-        w = tile_k / _TWO32
-        n = self.n_symbols
-        G = self._lut_cents.reshape((n,) * 5).astype(np.float64)
-        PM = self._pair_mats(w)
-        KJ = self._kappa_joints(w)
-        pmf = self.scatter_distribution()
-        sc = self._scatter_cents.astype(np.float64)
-        z_vec = (np.arange(5 * ROWS + 1) >= self.trigger_count).astype(float)
-
-        cache: Dict[Tuple[int, ...], float] = {}
-        e_pairs = 0.0
-        for la in self.paylines:
-            for lb in self.paylines:
-                dt = tuple(lb[i] - la[i] for i in range(5))
-                if dt not in cache:
-                    H = G
-                    for i in range(5):
-                        H = np.tensordot(H, PM[i][dt[i]], axes=([0], [0]))
-                    cache[dt] = float(np.tensordot(H, G, axes=5))
-                e_pairs += cache[dt]
-
-        e_pay_sc = 0.0
-        e_pay_z = 0.0
-        for line in self.paylines:
-            acc: Dict[int, np.ndarray] = {0: G}
-            for i in range(5):
-                J = KJ[i][line[i]]
-                nxt: Dict[int, np.ndarray] = {}
-                for k, tens in acc.items():
-                    for kap in range(3):
-                        col = J[:, kap]
-                        if not col.any():
-                            continue
-                        r = np.tensordot(tens, col, axes=([0], [0]))
-                        if k + kap in nxt:
-                            nxt[k + kap] = nxt[k + kap] + r
-                        else:
-                            nxt[k + kap] = r
-                acc = nxt
-            dist = np.zeros(5 * ROWS + 1)
-            for k, v in acc.items():
-                dist[k] = float(v)
-            e_pay_sc += float(dist @ sc)
-            e_pay_z += float(dist @ z_vec)
-
-        e_sc2 = float(pmf @ (sc ** 2))
-        e_sc_z = float((pmf * z_vec) @ sc)
-        e_y2 = e_pairs + 2.0 * e_pay_sc + e_sc2
-        e_yz = e_pay_z + e_sc_z
-        return e_y2, e_yz
-
-    def _overlay_exact(self, progress: bool = False) -> Dict[str, object]:
-        t0 = time.perf_counter()
-        pi = Fraction(self.wild_drop_fire_k, _TWO32)
-        e0, h0 = self._exact_line_component(0)
-        e1, h1 = self._exact_line_component(self.wild_drop_tile_k)
-        line_return = (1 - pi) * e0 + pi * e1
-        hit_freq = (1 - pi) * h0 + pi * h1
-        sc_ret, p_trigger, pmf = self._scatter_return_exact()
-        mu_y = line_return + sc_ret
-
-        F = self.free_spins
-        m_frac = Fraction(self.free_spin_multiplier)
-        if F * p_trigger >= 1:
-            raise ValueError("free-spin retrigger process does not terminate")
-        e_t_frac = F * m_frac * mu_y / (1 - F * p_trigger)
-        rtp_frac = mu_y + p_trigger * e_t_frac
-
-        # second moments (variance/SD only): mixture over the two components
-        pi_f = float(pi)
-        y2_0, yz_0 = self._component_moments(0)
-        y2_1, yz_1 = self._component_moments(self.wild_drop_tile_k)
-        unit = 100 * self.n_lines
-        e_y2 = ((1.0 - pi_f) * y2_0 + pi_f * y2_1) / unit ** 2
-        e_yz = ((1.0 - pi_f) * yz_0 + pi_f * yz_1) / unit
-        p = float(p_trigger)
-        mu = float(mu_y)
-        fold = self._fold_free_spins(F, self.free_spin_multiplier, p, mu,
-                                     e_y2, e_yz)
-
-        denom = 1
-        for L in self.reel_lengths:
-            denom *= L
-        k_hist = np.array([int(pr * denom) for pr in pmf], dtype=np.int64)
-        result: Dict[str, object] = {
-            "outcomes": denom,
-            "line_return": line_return,
-            "scatter_return": sc_ret,
-            "base_return": mu_y,
-            "bonus_return": float(p_trigger * e_t_frac),
-            "rtp": float(rtp_frac),
-            "rtp_fraction": rtp_frac,
-            "house_edge": float(1 - rtp_frac),
-            "p_bonus_trigger": p_trigger,
-            "hit_frequency": hit_freq,
-            "any_line_hit_frequency": None,   # not factorizable; see tests
-            "scatter_pmf": k_hist / denom,
-            "scatter_counts": k_hist,
-            "expected_bonus_spins": fold["e_spins"],
-            "expected_bonus_win": fold["e_t"],
-            "e_y": mu,
-            "e_y2": e_y2,
-            "e_yz": e_yz,
-            "e_x2": fold["e_x2"],
-            "variance_per_unit": fold["var"],
-            "std_per_unit": math.sqrt(fold["var"]),
-            "components": {
-                "base": {"line_return": e0, "hit_frequency": h0,
-                         "e_y2_cents2": y2_0, "e_yz_cents": yz_0},
-                "fire": {"line_return": e1, "hit_frequency": h1,
-                         "e_y2_cents2": y2_1, "e_yz_cents": yz_1},
-            },
-            "overlay": {
-                "fire_prob": pi,
-                "tile_prob": Fraction(self.wild_drop_tile_k, _TWO32),
-                "floats_per_spin": self.floats_per_spin,
-            },
-            "elapsed_s": time.perf_counter() - t0,
-        }
+        if not capped:
+            # uncapped geometric retrigger chain (the Atkins model) — the
+            # bonus-spin win is exactly m * Y here, so the closed-form
+            # branching recursion applies (path unchanged, bit-identical)
+            fold = self._fold_free_spins(F, m, p, mu, e_y2, float(e_yz))
+            m_frac = Fraction(m)
+            if F * p_trigger >= 1:
+                raise ValueError(
+                    "free-spin retrigger process does not terminate")
+            e_t_frac = F * m_frac * mu_y / (1 - F * p_trigger)
+            rtp_frac = mu_y + p_trigger * e_t_frac
+            result.update({
+                "bonus_return": p * fold["e_t"],
+                "rtp": fold["rtp"],
+                "rtp_fraction": rtp_frac,
+                "house_edge": 1.0 - fold["rtp"],
+                "expected_bonus_spins": fold["e_spins"],
+                "expected_bonus_win": fold["e_t"],
+                "e_x2": fold["e_x2"],
+                "variance_per_unit": fold["var"],
+                "std_per_unit": math.sqrt(fold["var"]),
+            })
+        else:
+            # published capped bonus (Scarab/Tome): 15 free spins, capped
+            # retriggers (never past free_spin_cap total spins), free-spin
+            # wins from the bonus LUT (published multiplier per
+            # interpretation, pure-5-wild exemption).  First moments exact.
+            cap = self.free_spin_cap
+            sc_b_total = int(sum(
+                int(k_hist[kk]) * int(self._scatter_cents_bonus[kk])
+                for kk in range(len(k_hist))))
+            bonus_line_return = Fraction(w_line_cents_total, denom * unit)
+            bonus_scatter_return = Fraction(sc_b_total, denom * unit)
+            e_w_frac = bonus_line_return + bonus_scatter_return
+            e_w2 = sum_w2 / denom / unit ** 2
+            e_wz = Fraction(sum_wz, denom * unit)
+            e_n_frac, chain_pmf = self._capped_chain_exact(
+                trigger_total, denom, F, cap)
+            # E[T] = E[N] * E[W]: the i-th free spin being played depends
+            # only on the PRECEDING spins' trigger indicators, so each
+            # played spin contributes E[W] (optional-stopping argument);
+            # verified against the backward DP below.
+            e_t_frac = e_n_frac * e_w_frac
+            rtp_frac = mu_y + p_trigger * e_t_frac
+            et_dp, et2_dp = self._capped_chain_moments(
+                p, F, cap, float(e_w_frac), e_w2, float(e_wz))
+            if not math.isclose(et_dp, float(e_t_frac), rel_tol=1e-9):
+                raise AssertionError(
+                    f"capped-chain moment mismatch: {et_dp} vs "
+                    f"{float(e_t_frac)}")
+            rtp = float(rtp_frac)
+            e_x2 = e_y2 + 2.0 * float(e_yz) * float(e_t_frac) + p * et2_dp
+            var = e_x2 - rtp * rtp
+            result.update({
+                "bonus_return": p * float(e_t_frac),
+                "rtp": rtp,
+                "rtp_fraction": rtp_frac,
+                "house_edge": 1.0 - rtp,
+                "expected_bonus_spins": float(e_n_frac),
+                "expected_bonus_spins_fraction": e_n_frac,
+                "expected_bonus_win": float(e_t_frac),
+                "bonus_line_return": bonus_line_return,
+                "bonus_scatter_return": bonus_scatter_return,
+                "e_w": float(e_w_frac),
+                "e_w2": e_w2,
+                "e_wz": float(e_wz),
+                "chain_pmf": chain_pmf,
+                "p_chain_at_cap": float(chain_pmf[cap]),
+                "p_chain_exceeds_cap": 0.0,
+                "max_bonus_spin_cents": max_w_cents,
+                "e_x2": e_x2,
+                "variance_per_unit": var,
+                "std_per_unit": math.sqrt(var),
+            })
+        result["elapsed_s"] = time.perf_counter() - t0
         return result
 
     @property
@@ -1142,20 +1198,12 @@ class SlotMachine:
             "trigger_count": self.trigger_count,
             "free_spins": self.free_spins,
             "free_spin_multiplier": self.free_spin_multiplier,
+            "free_spin_cap": self.free_spin_cap,
+            "wild_substitution_double": self.wild_substitution_double,
+            "wild5_multiplier_exempt": self.wild5_multiplier_exempt,
             "max_win": self.max_win,
+            "floats_per_spin": self.floats_per_spin,
         }
-        if self.overlay:
-            cfg["wild_drop"] = {
-                "fire_threshold_k": self.wild_drop_fire_k,
-                "fire_prob": self.wild_drop_fire_k / _TWO32,
-                "tile_threshold_k": self.wild_drop_tile_k,
-                "tile_prob": self.wild_drop_tile_k / _TWO32,
-                "floats_per_spin": self.floats_per_spin,
-                "applies_to": "base and free spins",
-                "never_covers_scatter": True,
-            }
-        else:
-            cfg["wild_drop"] = None
         return cfg
 
     def analytic_summary(self) -> Dict[str, object]:
@@ -1173,8 +1221,12 @@ class SlotMachine:
     # ------------------------------------------------------------------
 
     def _stops_from_floats(self, floats: Sequence[float]) -> List[int]:
-        """floor(float * reel_length) per reel — Stake's published mapping
-        (identical to rng.scarab_spin_stops for the 30/30/30/30/41 reels)."""
+        """floor(float * reel_length) per reel — Stake's published mapping.
+        For the published 30/30/30/30/41 Scarab geometry this is ROUTED
+        THROUGH the verified RNG core's scarab_spin_stops; other geometries
+        (Atkins 32^5) use the core's generic float_to_index."""
+        if self.reel_lengths == tuple(sq_rng.SCARAB_SPIN_REELS):
+            return sq_rng.scarab_spin_stops(list(floats))
         return [sq_rng.float_to_index(f, L)
                 for f, L in zip(floats, self.reel_lengths)]
 
@@ -1183,47 +1235,28 @@ class SlotMachine:
         return [[self.strips[i][(stops[i] + r - 1) % self.reel_lengths[i]]
                  for i in range(5)] for r in range(ROWS)]
 
-    def _overlay_from_floats(self, floats: Sequence[float]
-                             ) -> Tuple[bool, List[bool]]:
-        """(drop fired, 15 tile-wild flags reel-major) from one spin's
-        floats.  Floats are exactly V/2^32 so the comparisons against the
-        32-bit thresholds are exact."""
-        if not self.overlay:
-            return False, [False] * 15
-        fire = floats[5] < self.wild_drop_fire_k / _TWO32
-        tile_thresh = self.wild_drop_tile_k / _TWO32
-        tiles = [bool(fire and floats[6 + j] < tile_thresh) for j in range(15)]
-        return bool(fire), tiles
-
-    def _effective_window(self, stops: Sequence[int], fire: bool,
-                          tiles: Sequence[bool]) -> List[List[int]]:
+    def _spin_cents(self, stops: Sequence[int],
+                    bonus: bool = False) -> Tuple[int, int, List[int]]:
+        """(total win in line-bet cents, scatter count, per-line cents).
+        ``bonus`` evaluates the spin under the free-spin rules (published
+        multiplier baked in, pure-5-wild exemption when configured)."""
         window = self._window(stops)
-        if fire:
-            for i in range(5):
-                for r in range(ROWS):
-                    if tiles[3 * i + r] and window[r][i] != self.scatter:
-                        window[r][i] = self.wild
-        return window
-
-    def _spin_cents(self, stops: Sequence[int], fire: bool = False,
-                    tiles: Sequence[bool] = ()) -> Tuple[int, int, List[int]]:
-        """(total win in line-bet cents, scatter count, per-line cents)."""
-        window = self._effective_window(stops, fire, tiles or [False] * 15)
         line_cents = []
         for line in self.paylines:
             tup = tuple(window[line[i]][i] for i in range(5))
-            line_cents.append(self._line_pay_cents_scalar(tup))
+            line_cents.append(self._line_pay_cents_scalar(tup, bonus=bonus))
         k = sum(int(self._scnt[i][stops[i]]) for i in range(5))
-        total = sum(line_cents) + int(self._scatter_cents[k])
+        sc = self._scatter_cents_bonus if bonus else self._scatter_cents
+        total = sum(line_cents) + int(sc[k])
         return total, k, line_cents
 
     def play_round(
         self, server_seed: str, client_seed: str, nonce: int
     ) -> Dict[str, object]:
-        """Play one verifiable round: base spin (floats 0..fps-1 of the
-        bet's stream, fps = :attr:`floats_per_spin`) plus, when 3+ scatters
-        land, the full free-spin feature.  Bonus spin j consumes floats
-        fps*(j+1) .. fps*(j+2)-1 of the SAME nonce's stream (the cursor
+        """Play one verifiable round: base spin (floats 0..4 of the bet's
+        stream — the published "5 game event numbers") plus, when 3+
+        scatters land, the full free-spin feature.  Bonus spin j consumes
+        floats 5*(j+1) .. 5*(j+1)+4 of the SAME nonce's stream (the cursor
         keeps incrementing within the bet — Stake: "Slots: the incremental
         number is only utilised for bonus rounds").  Returns win
         multipliers per unit TOTAL bet, capped at ``max_win`` when set.
@@ -1232,26 +1265,30 @@ class SlotMachine:
         unit = 100 * self.n_lines
         floats = sq_rng.generate_floats(server_seed, client_seed, nonce, 0, fps)
         stops = self._stops_from_floats(floats)
-        fire, tiles = self._overlay_from_floats(floats)
-        base_cents, k, line_cents = self._spin_cents(stops, fire, tiles)
+        base_cents, k, line_cents = self._spin_cents(stops)
         triggered = k >= self.trigger_count
         total_cents = base_cents
         bonus_spins = 0
         bonus_cents = 0
         if triggered:
-            remaining = self.free_spins
-            while remaining > 0 and bonus_spins < _SAFETY_SPIN_CAP:
+            cap = self.free_spin_cap
+            hard = _SAFETY_SPIN_CAP if cap is None else cap
+            remaining = min(self.free_spins, hard)
+            while remaining > 0 and bonus_spins < hard:
                 cursor = 4 * fps * (1 + bonus_spins)   # bytes
                 f = sq_rng.generate_floats(
                     server_seed, client_seed, nonce, cursor, fps)
                 s = self._stops_from_floats(f)
-                bf, bt = self._overlay_from_floats(f)
-                cents, kk, _ = self._spin_cents(s, bf, bt)
-                bonus_cents += round(cents * self.free_spin_multiplier)
+                cents, kk, _ = self._spin_cents(s, bonus=True)
+                bonus_cents += cents
+                bonus_spins += 1
+                remaining -= 1
                 if kk >= self.trigger_count:
                     remaining += self.free_spins
-                remaining -= 1
-                bonus_spins += 1
+                if cap is not None:
+                    # published rule: "Bonus rounds are capped at 180 free
+                    # spins" — retriggers never extend a bonus past the cap
+                    remaining = min(remaining, cap - bonus_spins)
             total_cents += bonus_cents
         capped = False
         if self.max_win is not None:
@@ -1262,12 +1299,6 @@ class SlotMachine:
         return {
             "stops": stops,
             "window": self._window(stops),
-            "effective_window": self._effective_window(stops, fire, tiles),
-            "wild_drop": fire,
-            "overlay_wilds": sum(
-                1 for i in range(5) for r in range(ROWS)
-                if fire and tiles[3 * i + r]
-                and self._window(stops)[r][i] != self.scatter),
             "scatters": k,
             "line_wins": [c / 100.0 for c in line_cents],   # x bet per line
             "base_win": base_cents / unit,                  # x total bet
@@ -1291,31 +1322,24 @@ class SlotMachine:
     # ------------------------------------------------------------------
 
     def _bulk_spin_cents(
-        self, stops: np.ndarray, fire: Optional[np.ndarray] = None,
-        tiles: Optional[np.ndarray] = None,
+        self, stops: np.ndarray, bonus: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
         """(win cents, scatter counts) for a (N, 5) stop matrix — vectorized
-        version of :meth:`_spin_cents` (LUT gathers per payline).  ``fire``
-        (N,) bool and ``tiles`` (N, 15) bool carry the wild-drop overlay
-        for wild-drop machines."""
+        version of :meth:`_spin_cents` (LUT gathers per payline)."""
         n = self.n_symbols
-        lut = self._lut_cents
+        lut = self._lut_cents_bonus if bonus else self._lut_cents
         strides = [n ** (4 - i) for i in range(5)]
-        overlay = fire is not None
         cents = np.zeros(stops.shape[0], dtype=np.int64)
         for line in self.paylines:
             idx = np.zeros(stops.shape[0], dtype=np.int64)
             for i in range(5):
-                sym = self._sym_at[i][line[i]][stops[:, i]]
-                if overlay:
-                    wm = fire & tiles[:, 3 * i + line[i]] & (sym != self.scatter)
-                    sym = np.where(wm, self.wild, sym)
-                idx += sym * strides[i]
+                idx += self._sym_at[i][line[i]][stops[:, i]] * strides[i]
             cents += lut[idx]
         k = np.zeros(stops.shape[0], dtype=np.int64)
         for i in range(5):
             k += self._scnt[i][stops[:, i]]
-        cents += self._scatter_cents[k]
+        cents += (self._scatter_cents_bonus if bonus
+                  else self._scatter_cents)[k]
         return cents, k
 
     def _resolve_bonuses(
@@ -1324,66 +1348,76 @@ class SlotMachine:
         """Resolve the free-spin feature for every triggered round.
 
         Walks each triggered nonce's byte stream exactly like
-        :meth:`play_round` (floats fps, 2*fps, ... of the same nonce) but
-        extracts only STOPS and the overlay flags scalar-side (stops alone
-        decide retriggers); all line evaluation is done vectorized on the
+        :meth:`play_round` (floats 5, 10, ... of the same nonce — 5 floats
+        per spin) but extracts only STOPS scalar-side (stops alone decide
+        retriggers); all line evaluation is done vectorized on the
         collected spin matrix afterwards.  Returns (bonus cents per round,
         total bonus spins).
         """
         key = server_seed.encode("utf-8")
         prefix = client_seed.encode("utf-8") + b":"
+        base_hmac = _hmac.new(key, b"", hashlib.sha256)
         fps = self.floats_per_spin
         B = 4 * fps
-        fmt = ">%dI" % fps
-        lens = self.reel_lengths
-        scnt = [c.tolist() for c in self._scnt]
-        fire_k = self.wild_drop_fire_k
-        tile_k = self.wild_drop_tile_k
-        rows: List[Tuple[int, ...]] = []
-        owner: List[int] = []
+        lens_u64 = np.array(self.reel_lengths, dtype=np.uint64)
+        scnt = self._scnt
+        mats: List[np.ndarray] = []   # per-round (spins, 5) stop matrices
+        spins_per: List[int] = []     # bonus spins per triggered round
         total_spins = 0
-        for ridx, nonce in enumerate(nonces.tolist()):
+        trigger_count = self.trigger_count
+        free_spins = self.free_spins
+        fs_cap = self.free_spin_cap
+        hard = _SAFETY_SPIN_CAP if fs_cap is None else fs_cap
+
+        for nonce in nonces.tolist():
             msg = prefix + b"%d:" % nonce
             stream = bytearray()
             n_digests = 0
-            remaining = self.free_spins
+            # speculative stream generation (Blue-Samurai-style over-read is
+            # NOT happening on the verifiable path: play_round consumes the
+            # identical floats — extra generated bytes are simply not used)
+            cap_spins = 4 * free_spins
+            st = k_list = None
             spin = 0
-            while remaining > 0 and spin < _SAFETY_SPIN_CAP:
-                base = B * (1 + spin)
-                while len(stream) < base + B:
-                    stream += _hmac.new(
-                        key, msg + b"%d" % n_digests, hashlib.sha256).digest()
-                    n_digests += 1
-                vals = struct.unpack_from(fmt, stream, base)
-                stops = tuple((vals[i] * lens[i]) >> 32 for i in range(5))
-                k = sum(scnt[i][stops[i]] for i in range(5))
-                if self.overlay:
-                    f = 1 if vals[5] < fire_k else 0
-                    tiles = tuple(
-                        1 if (f and vals[6 + j] < tile_k) else 0
-                        for j in range(15))
-                    rows.append(stops + (f,) + tiles)
-                else:
-                    rows.append(stops)
-                owner.append(ridx)
-                if k >= self.trigger_count:
-                    remaining += self.free_spins
+            remaining = min(free_spins, hard)
+            while remaining > 0 and spin < hard:
+                if st is None or spin >= cap_spins:
+                    if st is not None:
+                        cap_spins *= 2
+                    cap_spins = min(cap_spins, hard)
+                    need = (1 + cap_spins) * B
+                    while len(stream) < need:
+                        h = base_hmac.copy()
+                        h.update(msg + b"%d" % n_digests)
+                        stream += h.digest()
+                        n_digests += 1
+                    vals = np.frombuffer(bytes(stream), dtype=">u4")
+                    vals = vals[fps:fps * (1 + cap_spins)].astype(np.uint64)
+                    st = ((vals.reshape(-1, fps) * lens_u64) >> np.uint64(32)
+                          ).astype(np.int64)
+                    k_arr = scnt[0][st[:, 0]]
+                    for i in range(1, 5):
+                        k_arr = k_arr + scnt[i][st[:, i]]
+                    k_list = k_arr.tolist()
+                if k_list[spin] >= trigger_count:
+                    remaining += free_spins
                 remaining -= 1
                 spin += 1
+                if fs_cap is not None:
+                    # published 180-spin bonus cap (same clamp as play_round)
+                    remaining = min(remaining, fs_cap - spin)
+            mats.append(st[:spin])
+            spins_per.append(spin)
             total_spins += spin
         bonus_cents = np.zeros(len(nonces), dtype=np.int64)
-        if rows:
-            mat = np.array(rows, dtype=np.int64)
-            stops_mat = mat[:, :5]
-            if self.overlay:
-                fire = mat[:, 5].astype(bool)
-                tiles = mat[:, 6:21].astype(bool)
-                cents, _ = self._bulk_spin_cents(stops_mat, fire, tiles)
-            else:
-                cents, _ = self._bulk_spin_cents(stops_mat)
-            if self.free_spin_multiplier != 1:
-                cents = np.round(cents * self.free_spin_multiplier).astype(np.int64)
-            np.add.at(bonus_cents, np.array(owner, dtype=np.int64), cents)
+        if total_spins:
+            stops_mat = np.concatenate(mats, axis=0)
+            # free-spin evaluation: the published multiplier (and the pure-
+            # 5-wild exemption, when configured) is baked into the bonus LUT
+            cents, _ = self._bulk_spin_cents(stops_mat, bonus=True)
+            owner = np.repeat(np.arange(len(nonces), dtype=np.int64),
+                              np.array(spins_per, dtype=np.int64))
+            np.add.at(bonus_cents, owner, cents)
         return bonus_cents, total_spins
 
     def simulate(
@@ -1394,27 +1428,30 @@ class SlotMachine:
         progress: bool = True,
     ) -> Dict[str, object]:
         """Simulate ``n_rounds`` provably-fair rounds (one nonce per round,
-        fps floats per base spin; triggered rounds resolve their free spins
+        5 floats per base spin; triggered rounds resolve their free spins
         from the same nonce's continuing stream, exactly like
         :meth:`play_round`) and return the standard result dict.
 
         Win accumulation is exact integer cents; empirical RTP/SD are
         computed from the exact totals.  Chunked so per-chunk arrays stay
-        far below 500 MB.
+        far below 500 MB — the chunk size adapts to the expected free-spin
+        load (p * E[spins per bonus]) so the collected bonus-spin matrix
+        stays small even for high-trigger par sheets.
         """
         if n_rounds <= 0:
             raise ValueError("n_rounds must be positive")
         rng = bulk if bulk is not None else BulkRng()
         exact = self.enumerate_exact()
         fps = self.floats_per_spin
-        if self.overlay:
-            chunk_rounds = min(chunk_rounds, 500_000)
+        spin_load = (float(exact["p_bonus_trigger"])
+                     * float(exact["expected_bonus_spins"]))
+        chunk_rounds = min(chunk_rounds,
+                           max(50_000, int(2_000_000 / max(spin_load, 0.02))))
         unit = 100 * self.n_lines
         reel_lens = np.array(self.reel_lengths, dtype=np.float64)
         cap_cents = (None if self.max_win is None
                      else int(round(self.max_win * unit)))
-        fire_thresh = self.wild_drop_fire_k / _TWO32
-        tile_thresh = self.wild_drop_tile_k / _TWO32
+        scarab_geometry = self.reel_lengths == tuple(sq_rng.SCARAB_SPIN_REELS)
 
         nonce_first = rng.nonce_next
         total_cents = 0
@@ -1422,22 +1459,19 @@ class SlotMachine:
         n_triggered = 0
         n_bonus_spins = 0
         n_base_winners = 0
-        n_fired = 0
         n_capped = 0
         done = 0
         t0 = time.perf_counter()
         while done < n_rounds:
             step = min(chunk_rounds, n_rounds - done)
             chunk_nonce0 = rng.nonce_next
-            fm = rng.float_matrix(step, fps)
-            stops = np.floor(fm[:, :5] * reel_lens).astype(np.int64)
-            if self.overlay:
-                fire = fm[:, 5] < fire_thresh
-                tiles = (fm[:, 6:21] < tile_thresh) & fire[:, None]
-                n_fired += int(np.count_nonzero(fire))
-                cents, k = self._bulk_spin_cents(stops, fire, tiles)
+            if scarab_geometry:
+                # published 30/30/30/30/41 stops through the verified core
+                stops = rng.scarab_spins(step)
             else:
-                cents, k = self._bulk_spin_cents(stops)
+                fm = rng.float_matrix(step, fps)
+                stops = np.floor(fm[:, :5] * reel_lens).astype(np.int64)
+            cents, k = self._bulk_spin_cents(stops)
             trig = k >= self.trigger_count
             trig_idx = np.nonzero(trig)[0]
             if trig_idx.size:
@@ -1478,8 +1512,6 @@ class SlotMachine:
             "n_triggered": n_triggered,
             "trigger_rate": n_triggered / n_rounds,
             "n_bonus_spins": n_bonus_spins,
-            "n_wild_drops": n_fired,
-            "wild_drop_rate": n_fired / n_rounds,
             "n_capped": n_capped,
             "total_payout": total_cents / unit,
             "analytic_rtp": float(exact["rtp"]),
@@ -1519,10 +1551,11 @@ def atkins_machine() -> SlotMachine:
 
 def scarab_machine() -> SlotMachine:
     """Scarab Spin (references/stake/slots.md Sect. 3a + 4): published
-    paytable payout-for-payout, published reel geometry 30/30/30/30/41,
-    published 10,000x max win, published random wilds modelled as the
-    calibrated wild-drop overlay, ladder strips calibrated so the exact
-    RTP prints the published 97.84%."""
+    paytable payout-for-payout, published reel geometry 30/30/30/30/41
+    driven by exactly 5 floats per spin through the verified RNG core,
+    published 10,000x max win, King Tut wild ON the reel strips (the
+    published "random wilds in the base game"), count matrix calibrated
+    so the exact RTP prints the published 97.84%."""
     return SlotMachine(
         name="scarab_spin",
         symbols=SCARAB_SYMBOLS,
@@ -1534,20 +1567,25 @@ def scarab_machine() -> SlotMachine:
         scatter_pay_basis="line",
         free_spins=SCARAB_FREE_SPINS,
         free_spin_multiplier=SCARAB_FREE_MULT,
-        wild_drop_fire_k=SCARAB_WILD_FIRE_K,
-        wild_drop_tile_k=SCARAB_WILD_TILE_K,
         max_win=SCARAB_MAX_WIN,
+        free_spin_cap=SCARAB_FREE_SPIN_CAP,
+        wild_substitution_double=SCARAB_WILD_DOUBLE,
+        wild5_multiplier_exempt=SCARAB_WILD5_EXEMPT,
     )
 
 
 def tome_of_life_machine() -> SlotMachine:
-    """Tome of Life — Stake publishes the structurally identical paytable
-    and the same 2.16% edge / fixed-reel event math as Scarab Spin
-    (reference Sect. 5 note), so it shares the Scarab math model with
-    re-skinned symbol names.  (Tome-specific flourishes — wild-substitution
-    pays doubled, 3x bonus multiplier, 180-spin cap, 37x bonus buy — are
-    published without the reel data needed to model them separately and are
-    NOT modelled.)"""
+    """Tome of Life — the same published math model as Scarab Spin with
+    re-skinned symbol names, exactly as the reference states (Sect. 5 note:
+    structurally identical paytable, same 2.16% edge, same fixed-reel
+    event math).  The bonus rule set of the SHARED model is the one the
+    reference publishes in full on the Tome page (Sect. 5) and in part on
+    the Scarab page (Sect. 4, a strict subset — "receive 15 bonus free
+    spins"): 15 free spins on 3 scatters, retriggers hard-capped at 180
+    total spins, all bonus wins tripled except a pure 5-wild line, and
+    wild-substitution combinations paying double.  Both games therefore
+    run the identical par sheet and print the identical published
+    97.84% / 2.16%."""
     m = scarab_machine()
     return SlotMachine(
         name="tome_of_life",
@@ -1560,7 +1598,8 @@ def tome_of_life_machine() -> SlotMachine:
         scatter_pay_basis="line",
         free_spins=SCARAB_FREE_SPINS,
         free_spin_multiplier=SCARAB_FREE_MULT,
-        wild_drop_fire_k=SCARAB_WILD_FIRE_K,
-        wild_drop_tile_k=SCARAB_WILD_TILE_K,
         max_win=SCARAB_MAX_WIN,
+        free_spin_cap=SCARAB_FREE_SPIN_CAP,
+        wild_substitution_double=SCARAB_WILD_DOUBLE,
+        wild5_multiplier_exempt=SCARAB_WILD5_EXEMPT,
     )

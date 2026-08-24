@@ -215,6 +215,256 @@ def test_rtp_identity_and_push_accounting():
             assert 0 < eng.win_probability < 1
 
 
+def test_house_edge_excluding_ties_matches_woo_note():
+    # WoO note: "many other sources quote house edge excluding ties ...
+    # which yields ~1.17% Banker / ~1.36% Player" (8 decks)
+    assert round(100 * float(bc.house_edge_excluding_ties("banker", 8)), 2) == 1.17
+    assert round(100 * float(bc.house_edge_excluding_ties("player", 8)), 2) == 1.36
+    # exact identity for every published shoe: edge / (1 - P(tie)), and the
+    # excluding-ties edge is strictly larger (the tie pushes it hid shrink
+    # the denominator)
+    for decks in (8, 6, 1, None):
+        pt = bc.outcome_probabilities(decks)["tie"]
+        for bet in ("player", "banker"):
+            eng = Baccarat(bet, decks)
+            excl = bc.house_edge_excluding_ties(bet, decks)
+            assert isinstance(excl, Fraction)
+            assert excl == eng.house_edge_exact / (1 - pt)
+            assert excl > eng.house_edge_exact
+    # only player/banker have the convention (tie never pushes)
+    for bad in ("tie", "dragon", "player_pair"):
+        with pytest.raises(ValueError):
+            bc.house_edge_excluding_ties(bad, 8)
+    with pytest.raises(ValueError):
+        bc.house_edge_excluding_ties("player", 0)
+
+
+def test_tie_bet_9to1_variant_matches_woo_note():
+    # WoO note: "some casinos pay 9:1 on Tie, cutting its house edge to
+    # ~4.84%" — reachable via the tie_odds constructor parameter
+    eng9 = Baccarat("tie", 8, tie_odds=Fraction(9))
+    assert eng9.payout_odds == Fraction(9)
+    assert eng9.multiplier == 10.0
+    pt = bc.outcome_probabilities(8)["tie"]
+    assert eng9.rtp_exact == 10 * pt                     # exact machinery
+    assert eng9.house_edge_exact == 1 - 10 * pt
+    assert round(100 * eng9.house_edge, 2) == 4.84
+    # variance/SD follow the new odds — no desync between odds & analytics:
+    # net result is +9 w.p. p, -1 w.p. 1-p, so var = (9+1)^2 p (1-p)
+    assert eng9.variance_per_unit == pytest.approx(float(100 * pt * (1 - pt)))
+    assert eng9.variance_per_unit > Baccarat("tie", 8).variance_per_unit
+    assert eng9.config()["payout_odds"] == "9:1"
+    assert eng9.config()["tie_odds"] == "9:1"
+    # default stays the published 8:1
+    d = Baccarat("tie", 8)
+    assert d.payout_odds == Fraction(8) and d.tie_odds == Fraction(8)
+    assert d.config()["tie_odds"] == "8:1"
+    # tie_odds never changes player/banker (a tie pushes them regardless)
+    for bet in ("player", "banker"):
+        a = Baccarat(bet, 8)
+        b = Baccarat(bet, 8, tie_odds=Fraction(9))
+        assert a.house_edge_exact == b.house_edge_exact
+        assert a.payout_odds == b.payout_odds
+        assert b.payouts_for_outcomes(np.array([2]))[0] == 1.0
+    # settlement table honors the variant odds
+    assert list(eng9.payouts_for_outcomes(np.array([0, 1, 2]))) == [0.0, 0.0, 10.0]
+    # bad tie odds rejected
+    for bad in (0, -1, Fraction(0), True, 8.0, "9"):
+        with pytest.raises(ValueError):
+            Baccarat("tie", 8, tie_odds=bad)
+
+
+def test_tie_9to1_simulation_settles_at_variant_odds():
+    n = 200_000
+    res = bc.simulate_all_bets(
+        n, decks=8, bulk=BulkRng(SS, CS, 0), progress=False,
+        bets=("tie",), tie_odds=Fraction(9),
+    )
+    r = res["bets"]["tie"]
+    assert r["config"]["payout_odds"] == "9:1"
+    assert r["analytic_house_edge"] == pytest.approx(
+        float(1 - 10 * bc.outcome_probabilities(8)["tie"])
+    )
+    assert r["rtp"] == pytest.approx(10 * r["wins"] / n)
+    assert r["within_3se"], r["z_score"]
+    # identical rounds, only the tie settle changes: same wins as 8:1 run
+    res8 = bc.simulate_all_bets(
+        n, decks=8, bulk=BulkRng(SS, CS, 0), progress=False, bets=("tie",),
+    )
+    assert res8["bets"]["tie"]["wins"] == r["wins"]
+    # invalid tie_odds rejected before any simulation work
+    with pytest.raises(ValueError):
+        bc.simulate_all_bets(10, tie_odds=0)
+    # per-bet engine path carries its tie_odds into simulate()
+    single = Baccarat("tie", 8, tie_odds=Fraction(9)).simulate(
+        50_000, bulk=BulkRng(SS, CS, 0), progress=False
+    )
+    assert single["config"]["payout_odds"] == "9:1"
+    assert single["within_3se"]
+
+
+# ---------------------------------------------------------------------------
+# Stake's headline "1.10% overall / 98.90% RTP" — exact portfolio math
+# (references/stake/baccarat.md sec. 6)
+# ---------------------------------------------------------------------------
+
+def test_portfolio_house_edge_is_exact_blend():
+    # weight 1 on a single bet reduces exactly to that bet's edge
+    for decks in (8, None):
+        for bet in bc.BET_TYPES:
+            assert bc.portfolio_house_edge({bet: 1}, decks) == (
+                Baccarat(bet, decks).house_edge_exact
+            )
+        for bet in bc.PAIR_BET_TYPES:
+            assert bc.portfolio_house_edge({bet: 1}, decks) == (
+                bc.pair_house_edge(decks)
+            )
+    # exact linearity: a 50/50 banker/player mix is the exact midpoint
+    eb = Baccarat("banker", 8).house_edge_exact
+    ep = Baccarat("player", 8).house_edge_exact
+    half = Fraction(1, 2)
+    assert bc.portfolio_house_edge({"banker": half, "player": half}, 8) == (
+        (eb + ep) / 2
+    )
+    # zero-weight entries are inert
+    assert bc.portfolio_house_edge(
+        {"banker": half, "player": half, "tie": 0}, 8
+    ) == (eb + ep) / 2
+    # tie_odds flows through to the tie bet's edge in the blend
+    assert bc.portfolio_house_edge({"tie": 1}, 8, tie_odds=Fraction(9)) == (
+        Baccarat("tie", 8, tie_odds=Fraction(9)).house_edge_exact
+    )
+
+
+def test_implied_banker_weight_exact_inverse_round_trip():
+    eb = Baccarat("banker", 8).house_edge_exact
+    ep = Baccarat("player", 8).house_edge_exact
+    # endpoints: banker-only and player-only portfolios
+    assert bc.implied_banker_weight(eb, 8) == 1
+    assert bc.implied_banker_weight(ep, 8) == 0
+    # interior targets round-trip EXACTLY through the blend (Fractions)
+    for target in ((eb + ep) / 2, (3 * eb + ep) / 4, Fraction(11, 1000)):
+        w = bc.implied_banker_weight(target, 8)
+        assert 0 <= w <= 1
+        assert bc.portfolio_house_edge(
+            {"banker": w, "player": 1 - w}, 8
+        ) == target
+
+
+def test_stake_overall_headline_is_derived_portfolio_figure():
+    # published constants (sec. 6): 1.10% overall edge <=> 98.90% RTP
+    assert bc.STAKE_OVERALL_HOUSE_EDGE == Fraction("1.10") / 100
+    assert bc.STAKE_OVERALL_RTP == Fraction("98.90") / 100
+    assert bc.STAKE_OVERALL_HOUSE_EDGE + bc.STAKE_OVERALL_RTP == 1
+    # 1.10% is NOT any single bet's edge — it is a genuine mix ...
+    for bet in bc.BET_TYPES:
+        assert Baccarat(bet, 8).house_edge_exact != bc.STAKE_OVERALL_HOUSE_EDGE
+    # ... and the unique zero-tie mix is ~76.24% banker / 23.76% player
+    w = bc.implied_banker_weight(bc.STAKE_OVERALL_HOUSE_EDGE, 8)
+    assert round(100 * float(w), 2) == 76.24
+    assert round(100 * float(1 - w), 2) == 23.76
+    assert bc.portfolio_house_edge({"banker": w, "player": 1 - w}, 8) == (
+        bc.STAKE_OVERALL_HOUSE_EDGE
+    )
+
+
+def test_overall_summary_block_reports_range_weights_and_assumption():
+    ov = bc.overall_house_edge_summary(8)
+    eb = Baccarat("banker", 8).house_edge_exact
+    ep = Baccarat("player", 8).house_edge_exact
+    assert ov["published_house_edge_exact"] == bc.STAKE_OVERALL_HOUSE_EDGE
+    assert ov["published_rtp_exact"] == bc.STAKE_OVERALL_RTP
+    assert ov["published_house_edge"] == pytest.approx(0.011)
+    assert ov["published_rtp"] == pytest.approx(0.989)
+    rng_blk = ov["achievable_house_edge_range"]
+    assert rng_blk["min_exact"] == eb and rng_blk["max_exact"] == ep
+    assert rng_blk["min_bet"] == "banker" and rng_blk["max_bet"] == "player"
+    assert ov["within_achievable_range"] is True
+    assert ov["reproduces_published_exactly"] is True
+    we = ov["implied_weights_exact"]
+    assert we["banker"] + we["player"] == 1 and we["tie"] == 0
+    assert we["banker"] == bc.implied_banker_weight(
+        bc.STAKE_OVERALL_HOUSE_EDGE, 8
+    )
+    # the zero-tie assumption is NAMED and quantified
+    assert "tie" in ov["assumption"]
+    assert 0 < ov["max_tie_weight_for_target"] < 0.01
+    # other shoe models: 1.10% stays inside their banker/player ranges too
+    for decks in (6, 1, None):
+        o = bc.overall_house_edge_summary(decks)
+        assert o["within_achievable_range"] is True
+        assert o["reproduces_published_exactly"] is True
+    # a target outside the achievable range is reported, never fabricated
+    o = bc.overall_house_edge_summary(8, target=Fraction(1, 2))
+    assert o["within_achievable_range"] is False
+    assert o["implied_weights"] is None
+    assert o["reproduces_published_exactly"] is False
+
+
+def test_portfolio_and_inverse_reject_bad_inputs():
+    good = {"banker": Fraction(1, 2), "player": Fraction(1, 2)}
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({})                       # empty
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge(42)                       # not a mapping
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({"dragon": 1})            # unknown bet
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({"banker": 2})            # sum != 1
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({"banker": Fraction(1, 2)})
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({"banker": -1, "player": 2})   # negative
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({"banker": 0.5, "player": 0.5})  # float
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge({"banker": True})         # bool
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge(good, decks=0)            # bad shoe
+    with pytest.raises(ValueError):
+        bc.portfolio_house_edge(good, tie_odds=0)         # bad tie odds
+    with pytest.raises(ValueError):
+        bc.implied_banker_weight(0.011)                   # float target
+    with pytest.raises(ValueError):
+        bc.implied_banker_weight(True)                    # bool target
+    with pytest.raises(ValueError):
+        bc.implied_banker_weight(Fraction(1, 100))        # below banker edge
+    with pytest.raises(ValueError):
+        bc.implied_banker_weight(Fraction(1, 2))          # above player edge
+    with pytest.raises(ValueError):
+        bc.implied_banker_weight(Fraction(11, 1000), decks=0)
+    with pytest.raises(ValueError):
+        bc.overall_house_edge_summary(8, target=0.011)    # float target
+
+
+def test_engine_attributes_and_tables_are_tamper_proof():
+    # payout_odds / tie_odds are read-only: mutating them cannot desync
+    # the analytics fixed at construction
+    eng = Baccarat("tie", 8)
+    with pytest.raises(AttributeError):
+        eng.payout_odds = Fraction(9)
+    with pytest.raises(AttributeError):
+        eng.tie_odds = Fraction(9)
+    # module lookup tables are frozen (CARD_VALUES included)
+    for arr in (bc.CARD_VALUES, bc.CARD_RANKS):
+        with pytest.raises(ValueError):
+            arr[0] = 1
+    with pytest.raises(ValueError):
+        bc.BANKER_DRAW_TABLE[0, 0] = False
+
+
+def test_config_names_shoe_mechanism():
+    assert Baccarat("player", 8).config()["shoe_mechanism"] == (
+        "fisher_yates_without_replacement"
+    )
+    assert Baccarat("player", None).config()["shoe_mechanism"] == (
+        "independent_floor_52"
+    )
+    assert bc.pair_summary(None, "player_pair")["config"]["shoe_mechanism"] == (
+        "independent_floor_52"
+    )
+
+
 def test_total_grid_is_exact_and_consistent():
     grid, denom = bc.total_grid(8)
     assert grid.shape == (10, 10)
@@ -230,18 +480,41 @@ def test_total_grid_is_exact_and_consistent():
 
 def test_full_payout_table_structure():
     table = bc.full_payout_table(8)
-    # main bets AND the two 11:1 pair side bets (WoO's fifth column)
-    assert set(table) == set(bc.BET_TYPES) | set(bc.PAIR_BET_TYPES)
-    for bet, row in table.items():
+    # main bets, the two 11:1 pair side bets (WoO's fifth column), AND the
+    # "overall" block for Stake's headline blended figure
+    assert set(table) == set(bc.BET_TYPES) | set(bc.PAIR_BET_TYPES) | {"overall"}
+    for bet in bc.BET_TYPES + bc.PAIR_BET_TYPES:
+        row = table[bet]
         assert set(row) >= {
             "rtp", "house_edge", "std_per_unit", "config",
             "payout_odds", "multiplier", "win_probability",
         }
         assert row["config"]["game"] == "baccarat"
+    # every bet row's config shares ONE key set (a consumer reading e.g.
+    # row["config"]["tie_odds"] must not crash on pair rows or vice versa)
+    key_sets = {
+        frozenset(table[bet]["config"])
+        for bet in bc.BET_TYPES + bc.PAIR_BET_TYPES
+    }
+    assert len(key_sets) == 1
     for bet in bc.PAIR_BET_TYPES:
         assert table[bet]["payout_odds"] == "11:1"
         assert table[bet]["multiplier"] == 12.0
         assert table[bet]["config"]["rank_based"] is True
+        assert table[bet]["config"]["tie_odds"] == "8:1"
+    for bet in bc.BET_TYPES:
+        assert table[bet]["config"]["rank_based"] is False
+    # derived WoO-note figures are surfaced (no unreachable published cell)
+    for bet in ("player", "banker"):
+        assert table[bet]["house_edge_excluding_ties"] == pytest.approx(
+            float(bc.house_edge_excluding_ties(bet, 8))
+        )
+    assert table["tie"]["house_edge_9to1"] == pytest.approx(
+        Baccarat("tie", 8, tie_odds=Fraction(9)).house_edge
+    )
+    assert "house_edge_excluding_ties" not in table["tie"]
+    # the overall block is the module-level summary, verbatim
+    assert table["overall"] == bc.overall_house_edge_summary(8)
 
 
 # ---------------------------------------------------------------------------
@@ -532,13 +805,27 @@ def test_validator_analytic_gates_pass_and_emit_json():
     assert proc.returncode == 0, proc.stdout + proc.stderr
     j = _json_line(proc.stdout)
     assert j["pass"] is True and j["failed"] == []
-    assert j["checks_passed"] == j["checks_total"] >= 46
+    assert j["checks_passed"] == j["checks_total"] >= 50
     assert j["game"] == "baccarat" and j["empirical"] is None
     a = j["analytic"]
     assert round(100 * a["banker"]["house_edge"], 2) == 1.06
     assert round(100 * a["player"]["house_edge"], 2) == 1.24
     assert round(100 * a["tie"]["house_edge"], 2) == 14.36
     assert round(100 * a["player_pair"]["house_edge"], 2) == 10.36
+    # derived WoO-note figures reach the machine-readable summary too
+    assert round(100 * a["banker"]["house_edge_excluding_ties"], 2) == 1.17
+    assert round(100 * a["player"]["house_edge_excluding_ties"], 2) == 1.36
+    assert round(100 * a["tie"]["house_edge_9to1"], 2) == 4.84
+    # Stake's headline blended figure — derived, exact, in the summary
+    ov = a["overall"]
+    assert round(100 * ov["published_house_edge"], 2) == 1.10
+    assert round(100 * ov["published_rtp"], 2) == 98.90
+    assert round(100 * ov["implied_weights"]["banker"], 2) == 76.24
+    assert round(100 * ov["implied_weights"]["player"], 2) == 23.76
+    assert ov["implied_weights"]["tie"] == 0.0
+    assert ov["reproduces_published_exactly"] is True
+    lo, hi = ov["achievable_house_edge_range"]
+    assert round(100 * lo, 4) == 1.0579 and round(100 * hi, 4) == 1.2351
 
 
 def test_validator_small_sim_reports_empirical_block():

@@ -345,6 +345,63 @@ def test_settle_bets_multi_bet_basket():
     assert rl.settle_bets(wheel, basket).sum() == 36.0 * len(basket)
 
 
+def test_basket_analytics_single_bet_matches_per_bet_analytics():
+    for bt, sel in [("red", None), ("straight", 0), ("dozen", 2),
+                    ("corner", (0, 1, 2, 3))]:
+        eng = Roulette(bt, sel)
+        ana = rl.basket_analytics([eng])
+        assert ana["rtp_exact"] == RTP_EXACT
+        assert ana["ev_exact"] == (
+            eng.multiplier_exact * eng.win_probability_exact
+        )
+        assert math.isclose(ana["variance"], eng.variance_per_unit,
+                            rel_tol=1e-14)
+        assert math.isclose(ana["std"], eng.std_per_unit, rel_tol=1e-14)
+
+
+def test_basket_analytics_matches_full_wheel_brute_force():
+    """Exact Fraction moments == brute-force numpy moments of settle_bets
+    over the full wheel (each pocket exactly once, uniform)."""
+    basket = [Roulette("red"), Roulette("straight", 0), Roulette("dozen", 1),
+              Roulette("split", (0, 2)), Roulette("corner", (25, 26, 28, 29)),
+              Roulette("line", (13, 14, 15, 16, 17, 18)),
+              Roulette("column", 2)]
+    ana = rl.basket_analytics(basket)
+    wheel = rl.settle_bets(np.arange(37), basket)
+    # per-pocket totals agree pointwise with the settlement path
+    np.testing.assert_allclose(
+        np.array([float(t) for t in ana["pocket_totals_exact"]]), wheel
+    )
+    assert math.isclose(ana["ev"], wheel.mean(), rel_tol=1e-12)
+    assert math.isclose(ana["variance"], wheel.var(), rel_tol=1e-12)
+    assert math.isclose(
+        ana["mu4"], float(((wheel - wheel.mean()) ** 4).mean()), rel_tol=1e-12
+    )
+    assert ana["rtp_exact"] == RTP_EXACT
+    assert ana["ev_exact"] == Fraction(36, 37) * len(basket)
+
+
+def test_basket_analytics_covariance_is_real():
+    """Overlap moves basket variance away from the sum of per-bet variances
+    (same EV either way) — the analytic counterpart genuinely models
+    covariance, it is not a per-bet restatement."""
+    sum_var = 2 * Roulette("red").variance_per_unit
+    overlapping = rl.basket_analytics([Roulette("red"), Roulette("high")])
+    disjoint = rl.basket_analytics([Roulette("red"), Roulette("black")])
+    assert overlapping["ev_exact"] == disjoint["ev_exact"] == Fraction(72, 37)
+    assert overlapping["variance"] > sum_var   # positive covariance
+    assert disjoint["variance"] < sum_var      # negative covariance
+    # red+black exact: T = 2 unless pocket 0 -> Var = 4*(36/37) - (72/37)^2
+    assert disjoint["variance_exact"] == (
+        Fraction(4 * 36, 37) - Fraction(72, 37) ** 2
+    )
+
+
+def test_basket_analytics_rejects_empty():
+    with pytest.raises(ValueError):
+        rl.basket_analytics([])
+
+
 def test_simulate_contract_and_reproducibility():
     n = 100_000
     res = Roulette("red").simulate(
@@ -386,3 +443,78 @@ def test_simulate_chunking_matches_single_call():
 def test_simulate_rejects_bad_rounds():
     with pytest.raises(ValueError):
         Roulette("red").simulate(0)
+    with pytest.raises(ValueError):
+        Roulette("red").simulate(-1)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [float("inf"), float("nan"), 2.5, 1e6, np.float64(10.0), True, "1000",
+     None],
+)
+def test_simulate_rejects_non_integral_n_rounds(bad):
+    """Root guard for the round-4 bug class: n_rounds=inf passes an `<= 0`
+    guard (inf <= 0 is False) and `while done < n_rounds` never terminates;
+    n_rounds=nan makes every comparison False, so the loop body never runs
+    and simulate would RETURN a normal-looking dict (wins=0, within_3se=True)
+    for a campaign that never happened.  json.loads parses bare Infinity/NaN
+    by default, so JSON/MCP callers inherit both.  Every non-Integral (and
+    bool) must raise TypeError up front."""
+    with pytest.raises(TypeError, match="n_rounds"):
+        Roulette("red").simulate(
+            bad, bulk=BulkRng(_SRV, _CLIENT, workers=1), progress=False
+        )
+
+
+@pytest.mark.parametrize(
+    "bad", [float("inf"), float("nan"), 0.5, 2.0, np.float32(4.0), True]
+)
+def test_simulate_rejects_non_integral_chunk_rounds(bad):
+    # Same root guard on the other loop counter: a float chunk_rounds used
+    # to die with a raw numpy "an integer is required" deep inside BulkRng
+    # (and inf/nan would corrupt the chunking arithmetic silently).
+    with pytest.raises(TypeError, match="chunk_rounds"):
+        Roulette("red").simulate(
+            1000, bulk=BulkRng(_SRV, _CLIENT, workers=1),
+            chunk_rounds=bad, progress=False,
+        )
+
+
+def test_simulate_accepts_numpy_integers():
+    # numpy integers ARE numbers.Integral and must keep working.
+    res = Roulette("red").simulate(
+        np.int64(500), bulk=BulkRng(_SRV, _CLIENT, workers=1),
+        chunk_rounds=np.int32(128), progress=False,
+    )
+    assert res["n_rounds"] == 500
+    assert int(res["pocket_counts"].sum()) == 500
+    ref = Roulette("red").simulate(
+        500, bulk=BulkRng(_SRV, _CLIENT, workers=1), progress=False
+    )
+    assert res["wins"] == ref["wins"]
+
+
+@pytest.mark.parametrize("bad_chunk", [0, -1, -5])
+def test_simulate_rejects_nonpositive_chunk_rounds(bad_chunk):
+    # chunk_rounds=0 used to make step = min(0, remaining) = 0 and loop
+    # forever with no error or output; negative values only raised
+    # incidentally from deeper in the RNG.  Both must raise up front.
+    with pytest.raises(ValueError, match="chunk_rounds"):
+        Roulette("red").simulate(
+            1000, bulk=BulkRng(_SRV, _CLIENT, workers=1),
+            chunk_rounds=bad_chunk, progress=False,
+        )
+
+
+def test_simulate_chunk_rounds_one_terminates_and_matches():
+    # Boundary just above the guard: chunk_rounds=1 must terminate and
+    # replay the exact same stream as one default-sized chunk.
+    a = Roulette("red").simulate(
+        50, bulk=BulkRng(_SRV, _CLIENT, workers=1),
+        chunk_rounds=1, progress=False,
+    )
+    b = Roulette("red").simulate(
+        50, bulk=BulkRng(_SRV, _CLIENT, workers=1), progress=False
+    )
+    assert a["wins"] == b["wins"]
+    np.testing.assert_array_equal(a["pocket_counts"], b["pocket_counts"])

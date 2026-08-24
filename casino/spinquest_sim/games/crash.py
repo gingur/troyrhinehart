@@ -42,17 +42,67 @@ says Stake chose "a future bitcoin block as a client seed so players can be
 certain that we did not pick one in the house's favor" — i.e. the terminating
 hash is published FIRST, and only then is the salt fixed, by a source the
 operator cannot control.  If the salt is known while the chain is being
-generated, the operator can grind secret seeds until the first rounds of a
-fully verifiable chain all bust early.  This module therefore enforces the
-order: ``STAKE_SALT`` (Bitcoin block 584,500, mined 2019-07-21) is accepted
-ONLY for replaying/verifying Stake's own published 2019 chain — pairing it
-with any newly generated chain raises :class:`CommitmentOrderError`; every
-chain-generating API requires an explicit salt bound AFTER the terminating
-hash exists (:meth:`HashChain.bind_salt`, or the two-phase auto protocol in
-:func:`simulate_chain_targets`); a salt attested to predate the commitment
-raises, a caller-supplied salt that provably existed before the chain was
-generated warns (:class:`CommitmentOrderWarning`, reproducible-simulation
-mode); and the verification dicts record the commitment order and timestamps.
+generated — or if the operator may draw/grind the salt itself after the
+commitment (game hashes are salt-independent once committed, so a free salt
+is grindable at one HMAC per candidate per round) — the first rounds of a
+fully verifiable chain can be rigged to bust early.  Timestamp order is
+therefore necessary but nowhere near sufficient, and this module applies the
+general rule **no external commitment => not fair** — and a beacon CLAIM is
+never taken at the operator's word: it is validated structurally, its reveal
+time is a mandatory attestation, and the certifying boolean is gated behind
+an explicit out-of-band verification step performed by the VERIFIER:
+
+* ``fair_ordering: True`` requires ALL of:
+
+  1. a structured ``salt_source`` naming a recognized public randomness
+     beacon and index — ``{"beacon": "bitcoin", "height": N}`` or
+     ``{"beacon": "drand", "round": R}`` (:data:`EXTERNAL_BEACONS` /
+     :func:`is_external_commitment`) — bound via
+     :meth:`HashChain.bind_salt` only after the terminating hash exists;
+  2. a structurally possible salt for that beacon: 64 hex characters, and
+     for ``bitcoin`` at least :data:`BITCOIN_MIN_LEADING_ZEROS` (= 8)
+     leading zero nibbles — the difficulty-1 proof-of-work floor satisfied
+     by every block ever mined (genesis has 10, block 1 has 8,
+     ``STAKE_SALT`` — block 584,500 — has 18), so a ground SHA-256 salt
+     dressed as a block hash is refused as arithmetically impossible;
+  3. a MANDATORY ``revealed_at`` attestation strictly AFTER
+     :attr:`HashChain.committed_at` and not in the future: an
+     already-published beacon value honestly attested (e.g. Bitcoin
+     block 1, mined 2009-01-09) is refused at bind time — the named index
+     must be one whose value did not yet exist at the commitment;
+  4. an explicit :meth:`HashChain.verify_salt_against_beacon` call in
+     which the verifier supplies the beacon's published value and
+     publication time resolved OUT-OF-BAND (never by the operator's
+     process): the resolved value must equal the bound salt byte-for-byte
+     and the resolved publication time must strictly postdate the
+     commitment.  Until then the record says ``order:
+     "external_commitment_claimed_unverified", fair_ordering: False``
+     (with ``fair_ordering_claimed: True``); a failed verification marks
+     the claim ``order: "external_commitment_refuted"`` permanently.
+
+  Together these kill the seed-grinding rig (grind the SECRET SEED against
+  an already-published beacon value, then bind the genuine beacon value):
+  binding without ``revealed_at`` raises, attesting the true (past) reveal
+  time raises, and lying about the reveal time still yields
+  ``fair_ordering: False`` — when any verifier resolves the named index,
+  its genuine publication time (before the commitment) refutes the claim.
+* A salt the operator's own process drew after the commitment (including
+  the default two-phase path of :func:`simulate_chain_targets`, which uses
+  ``secrets.token_hex``) is recorded honestly as
+  ``order: "operator_drawn_after_commitment", fair_ordering: False`` — a
+  reproducible-simulation convenience, not the published guarantee.
+* A caller-supplied salt that provably existed before the chain was
+  generated warns (:class:`CommitmentOrderWarning`) and is recorded as
+  ``order: "salt_preexisting_reproducible_mode", fair_ordering: False``.
+* ``STAKE_SALT`` (Bitcoin block 584,500, mined 2019-07-21, matched
+  case-insensitively and with any ``0x`` prefix stripped) is additionally
+  refused outright for any newly generated chain — a special-cased hint,
+  not the mechanism; it is accepted only for replaying/verifying Stake's
+  own published 2019 chain.  A salt attested (``revealed_at``) to predate
+  the commitment also raises.
+
+The verification dicts record the commitment order, timestamps, and the
+structured ``salt_source``.
 
 Analytic probabilities here are exact *under float64 semantics*: the largest
 ``int`` that still reaches a target is found by bisection over the published
@@ -95,6 +145,9 @@ __all__ = [
     "STAKE_SALT_BLOCK_TIME",
     "CommitmentOrderError",
     "CommitmentOrderWarning",
+    "EXTERNAL_BEACONS",
+    "BITCOIN_MIN_LEADING_ZEROS",
+    "is_external_commitment",
     "crash_int_from_hash",
     "crash_point_from_int",
     "crash_point_from_hash",
@@ -157,8 +210,112 @@ class CommitmentOrderWarning(UserWarning):
     """
 
 
+# Recognized public randomness beacons a verifier can resolve out-of-band:
+# beacon name -> the key naming the future index that must be chosen before
+# its value exists (the salt is then that index's published value).
+EXTERNAL_BEACONS: Dict[str, str] = {
+    "bitcoin": "height",   # {"beacon": "bitcoin", "height": N} -> block N's hash
+    "drand": "round",      # {"beacon": "drand", "round": R} -> round R's randomness
+}
+
+# One-sentence honesty note attached to every non-external salt record.
+_NO_EXTERNAL_COMMITMENT_NOTE = (
+    "salt has no verifier-resolvable external commitment (no recognized "
+    "beacon + future index named in salt_source), so a verifier cannot rule "
+    "out operator grinding: reproducible-simulation convenience only, NOT "
+    "the published guarantee — fair_ordering is False"
+)
+
+# Attached while a structured beacon claim awaits out-of-band verification.
+_UNVERIFIED_CLAIM_NOTE = (
+    "external beacon commitment CLAIMED but not verified: fair_ordering "
+    "stays False until the VERIFIER calls verify_salt_against_beacon() "
+    "with the named beacon value and its publication time resolved "
+    "out-of-band — the resolved value must equal the bound salt "
+    "byte-for-byte and its publication time must strictly postdate the "
+    "commitment"
+)
+
+
+def is_external_commitment(salt_source: object) -> bool:
+    """True iff ``salt_source`` is a verifier-resolvable external commitment.
+
+    The structured form is ``{"beacon": <name in EXTERNAL_BEACONS>,
+    <index_key>: <positive int>}`` — e.g. ``{"beacon": "bitcoin",
+    "height": 584500}`` or ``{"beacon": "drand", "round": 3366570}`` — naming
+    a public beacon and a future index chosen BEFORE its value exists.  A
+    verifier resolves the index out-of-band and checks the bound salt equals
+    the beacon's published value; anything else (a free-text string, a
+    self-drawn token, no source at all) is NOT an external commitment and can
+    never yield ``fair_ordering: True``.
+    """
+    if not isinstance(salt_source, dict):
+        return False
+    index_key = EXTERNAL_BEACONS.get(salt_source.get("beacon"))
+    if index_key is None:
+        return False
+    index = salt_source.get(index_key)
+    return isinstance(index, int) and not isinstance(index, bool) and index > 0
+
+
+# Structural floor for a salt CLAIMED to be a beacon's value.  Every Bitcoin
+# block hash ever mined carries at least 8 leading zero nibbles (the
+# difficulty-1 proof-of-work target is 0x00000000FFFF...): genesis has 10,
+# block 1 has 8, STAKE_SALT (block 584,500) has 18.  A claimed block hash
+# with fewer is arithmetically impossible AT ANY HEIGHT and is refused
+# before any ordering question arises.  drand randomness is an unstructured
+# 32-byte value (64 hex chars, no leading-zero floor).
+BITCOIN_MIN_LEADING_ZEROS = 8
+_BEACON_MIN_LEADING_ZEROS: Dict[str, int] = {
+    "bitcoin": BITCOIN_MIN_LEADING_ZEROS,
+    "drand": 0,
+}
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _normalize_hex_value(value: str) -> str:
+    """Lowercase, whitespace-stripped, ``0x``-stripped hex form."""
+    v = value.strip().lower()
+    if v.startswith("0x"):
+        v = v[2:]
+    return v
+
+
+def _check_beacon_value_shape(value: str, beacon: str, what: str) -> str:
+    """Structural sanity of a value claimed to BE ``beacon``'s output.
+
+    Returns the normalized hex form, or raises :class:`CommitmentOrderError`
+    when the claim is impossible for that beacon (wrong length / non-hex /
+    too few leading zero nibbles for a Bitcoin block hash).
+    """
+    normalized = _normalize_hex_value(value)
+    if len(normalized) != 64 or not _HEX_DIGITS.issuperset(normalized):
+        raise CommitmentOrderError(
+            f"{what} {value!r} is not a 64-character hex digest, so it "
+            f"cannot be a {beacon} beacon value"
+        )
+    zeros = len(normalized) - len(normalized.lstrip("0"))
+    floor = _BEACON_MIN_LEADING_ZEROS[beacon]
+    if zeros < floor:
+        raise CommitmentOrderError(
+            f"{what} has {zeros} leading zero nibbles, but every genuine "
+            f"{beacon} value carries at least {floor} (proof-of-work "
+            "floor, true at every height since genesis): the claimed "
+            "beacon commitment is arithmetically impossible"
+        )
+    return normalized
+
+
 def _reject_stake_salt_for_new_chain(salt: Optional[str]) -> None:
-    if salt == STAKE_SALT:
+    # Special-cased HINT only (the general rule "no external commitment =>
+    # not fair" is the mechanism): normalized so case or a 0x prefix cannot
+    # sneak the known 2019 salt past the refusal.
+    if salt is None:
+        return
+    normalized = salt.strip().lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if normalized == STAKE_SALT:
         raise CommitmentOrderError(
             "STAKE_SALT is Bitcoin block 584,500's hash (mined 2019-07-21). "
             "It may only be used to replay/verify Stake's own published 2019 "
@@ -292,10 +449,27 @@ class HashChain:
     1. ``hc = HashChain(length=...)`` — the chain is generated and
        :attr:`terminating_hash` (the public commitment) exists from this
        moment (:attr:`committed_at`).  Publish it.
-    2. ``hc.bind_salt(salt, ...)`` — AFTER publishing, bind a salt from a
-       source the operator cannot control (e.g. a future Bitcoin block's
-       hash).  ``STAKE_SALT`` is refused (it predates any new chain); a
-       ``revealed_at`` earlier than :attr:`committed_at` is refused.
+    2. ``hc.bind_salt(salt, salt_source={"beacon": ..., ...},
+       revealed_at=...)`` — AFTER publishing, bind a salt from a source the
+       operator cannot control.  A structured EXTERNAL commitment
+       (:func:`is_external_commitment`) naming a recognized beacon and
+       index — e.g. ``{"beacon": "bitcoin", "height": N}`` — is validated
+       structurally (64 hex chars; >= 8 leading zero nibbles for a Bitcoin
+       block hash) and requires a MANDATORY ``revealed_at`` strictly after
+       :attr:`committed_at` and not in the future; it is then recorded as
+       ``order: "external_commitment_claimed_unverified", fair_ordering:
+       False`` — a CLAIM, not a certification.  Any salt bound without a
+       structured claim (including a salt the operator drew itself) is
+       recorded as ``order: "operator_drawn_after_commitment",
+       fair_ordering: False``.  ``STAKE_SALT`` is refused outright (it
+       predates any new chain); a ``revealed_at`` earlier than
+       :attr:`committed_at` is refused.
+    2b. ``hc.verify_salt_against_beacon(resolved_value, resolved_time)`` —
+       the VERIFIER resolves the named beacon index out-of-band and feeds
+       the published value and its publication time here.  Only a
+       byte-identical match published strictly after the commitment flips
+       ``fair_ordering`` to True (``order: "terminating_hash_first"``); any
+       failure refutes the claim permanently.
     3. Play: each round pops the next game hash (``chain[-2]`` first — the
        terminator itself is the commitment and is not played).  Every popped
        hash re-hashes to the terminating hash in exactly ``game_index``
@@ -312,7 +486,7 @@ class HashChain:
         secret_seed: Optional[str] = None,
         length: int = 10_001,
         salt: Optional[str] = None,
-        salt_source: Optional[str] = None,
+        salt_source: Optional[object] = None,
     ) -> None:
         if secret_seed is None:
             secret_seed = secrets.token_hex(32)
@@ -324,10 +498,13 @@ class HashChain:
         # hash) exists — any salt bound later is bound after this instant.
         self.committed_at: float = time.time()
         self.salt: Optional[str] = None
-        self.salt_source: Optional[str] = None
+        self.salt_source: Optional[object] = None
         self.salt_bound_at: Optional[float] = None
         self.salt_revealed_at: Optional[float] = None
         self._salt_preexisting = False
+        self._beacon_verified = False
+        self._beacon_refuted: Optional[str] = None
+        self.beacon_verification: Optional[Dict[str, object]] = None
         if salt is not None:
             # Convenience path: this salt was in the caller's hands while
             # the chain was generated -> provably not a fair ordering.
@@ -343,14 +520,53 @@ class HashChain:
         return self.length - 1 - self.games_played
 
     @property
+    def fair_ordering_claimed(self) -> bool:
+        """True iff a structured external beacon commitment is CLAIMED.
+
+        A claim alone certifies nothing — it merely names a beacon and
+        index a verifier can resolve out-of-band.  See
+        :attr:`fair_ordering` / :meth:`verify_salt_against_beacon`.
+        """
+        return (
+            self.salt is not None
+            and not self._salt_preexisting
+            and is_external_commitment(self.salt_source)
+        )
+
+    @property
     def fair_ordering(self) -> bool:
-        """True iff the salt was bound only after the commitment existed."""
-        return self.salt is not None and not self._salt_preexisting
+        """True iff the claimed beacon commitment has been VERIFIED.
+
+        Timestamp order alone is not enough (a salt the operator drew after
+        the commitment is freely grindable), and a beacon claim alone is
+        not enough either (the operator could name an already-published
+        index and grind the SEED against its value).  True requires a
+        structured claim (:attr:`fair_ordering_claimed`) AND a successful
+        :meth:`verify_salt_against_beacon` call with the beacon's value and
+        publication time resolved out-of-band by the verifier.  No external
+        commitment, or no verification => not fair.
+        """
+        return self.fair_ordering_claimed and self._beacon_verified
 
     @property
     def commitment(self) -> Dict[str, object]:
         """The commitment-order record (included in verification dicts)."""
-        return {
+        if self.salt is None:
+            order = "unbound (commitment published, awaiting salt)"
+        elif self._salt_preexisting:
+            order = "salt_preexisting_reproducible_mode"
+        elif self._beacon_refuted is not None:
+            order = "external_commitment_refuted"
+        elif self.fair_ordering:
+            order = "terminating_hash_first"
+        elif self.fair_ordering_claimed:
+            order = "external_commitment_claimed_unverified"
+        else:
+            # Bound after the commitment but with no external commitment —
+            # indistinguishable, to a verifier, from a salt the operator
+            # drew (and possibly ground) itself.
+            order = "operator_drawn_after_commitment"
+        record: Dict[str, object] = {
             "terminating_hash": self.terminating_hash,
             "terminating_hash_committed_at": _iso(self.committed_at),
             "terminating_hash_committed_at_unix": self.committed_at,
@@ -359,30 +575,65 @@ class HashChain:
             "salt_bound_at": _iso(self.salt_bound_at),
             "salt_bound_at_unix": self.salt_bound_at,
             "salt_revealed_at": _iso(self.salt_revealed_at),
-            "order": (
-                "unbound (commitment published, awaiting salt)"
-                if self.salt is None
-                else "salt_preexisting_reproducible_mode"
-                if self._salt_preexisting
-                else "terminating_hash_first"
-            ),
+            "order": order,
             "fair_ordering": self.fair_ordering,
+            "fair_ordering_claimed": self.fair_ordering_claimed,
+            "beacon_verification": self.beacon_verification,
         }
+        if self.salt is not None and not self.fair_ordering:
+            if self._salt_preexisting:
+                record["note"] = (
+                    "salt existed before the chain was generated, so the "
+                    "commitment order is inverted regardless of its source "
+                    "— fair_ordering is False"
+                )
+            elif self._beacon_refuted is not None:
+                record["note"] = (
+                    "beacon claim REFUTED by out-of-band resolution: "
+                    + self._beacon_refuted
+                )
+            elif self.fair_ordering_claimed:
+                record["note"] = _UNVERIFIED_CLAIM_NOTE
+            else:
+                record["note"] = _NO_EXTERNAL_COMMITMENT_NOTE
+        return record
 
     def bind_salt(
         self,
         salt: str,
-        salt_source: Optional[str] = None,
+        salt_source: Optional[object] = None,
         revealed_at: Optional[float] = None,
         _preexisting: bool = False,
     ) -> None:
         """Bind the public salt to the already-committed chain (one-time).
 
+        A structured external commitment as ``salt_source``
+        (:func:`is_external_commitment`) — e.g. ``{"beacon": "bitcoin",
+        "height": N}`` — is a CLAIM the verifier can resolve out-of-band,
+        and it is policed at bind time:
+
+        * the salt must be structurally possible for the named beacon
+          (64 hex chars; a Bitcoin block hash needs at least
+          :data:`BITCOIN_MIN_LEADING_ZEROS` leading zero nibbles — every
+          real block at any height has them);
+        * ``revealed_at`` is MANDATORY, must be strictly after
+          :attr:`committed_at` (the named index must be one whose value
+          did not exist at commitment time — an honestly attested
+          already-published value is refused here), and must not be in the
+          future (a salt cannot be bound before its source revealed it).
+
+        Even then ``fair_ordering`` stays False: the record says ``order:
+        "external_commitment_claimed_unverified"`` until
+        :meth:`verify_salt_against_beacon` succeeds with out-of-band data.
+        Any other source (free text, none, a self-drawn token) binds fine
+        for simulation but records ``order:
+        "operator_drawn_after_commitment", fair_ordering: False``.
+
         ``revealed_at`` (unix time), when known, attests when the salt's
         source made it public; a value earlier than :attr:`committed_at`
-        raises :class:`CommitmentOrderError`.  ``STAKE_SALT`` always raises
-        (it was revealed 2019-07-21, before any chain generated by this
-        code).
+        raises :class:`CommitmentOrderError` (necessary, never sufficient).
+        ``STAKE_SALT`` always raises (it was revealed 2019-07-21, before any
+        chain generated by this code).
         """
         if self.salt is not None:
             raise CommitmentOrderError(
@@ -399,6 +650,32 @@ class HashChain:
                 "from a source revealed after the terminating hash was "
                 "published"
             )
+        if not _preexisting and is_external_commitment(salt_source):
+            beacon = salt_source["beacon"]  # type: ignore[index]
+            _check_beacon_value_shape(salt, beacon, "claimed beacon salt")
+            if revealed_at is None:
+                raise CommitmentOrderError(
+                    "a beacon salt_source claim requires a mandatory "
+                    "revealed_at (unix time the beacon published this "
+                    "value): without it the claim can never be checked "
+                    "against the commitment order — an already-published "
+                    "beacon value has no honest revealed_at after the "
+                    "commitment, so omitting it is not an escape hatch"
+                )
+            if revealed_at <= self.committed_at:
+                raise CommitmentOrderError(
+                    f"claimed {beacon} value attested revealed at "
+                    f"{_iso(revealed_at)}, not strictly after the chain "
+                    f"commitment {_iso(self.committed_at)}: the named "
+                    "index must be a FUTURE one whose value did not exist "
+                    "when the terminating hash was published"
+                )
+            if revealed_at > time.time():
+                raise CommitmentOrderError(
+                    f"revealed_at {_iso(revealed_at)} is in the future: a "
+                    "salt cannot be bound before its source has revealed "
+                    "it"
+                )
         if _preexisting:
             warnings.warn(
                 "salt was supplied while the chain was generated "
@@ -413,6 +690,104 @@ class HashChain:
         self.salt_revealed_at = revealed_at
         self._salt_preexisting = _preexisting
         self.salt_bound_at = time.time()
+
+    def verify_salt_against_beacon(
+        self, resolved_value: str, resolved_time: float
+    ) -> Dict[str, object]:
+        """Confirm (or refute) the claimed beacon commitment — VERIFIER step.
+
+        The verifier resolves the beacon index named in ``salt_source``
+        OUT-OF-BAND — a Bitcoin node or block explorer for ``{"beacon":
+        "bitcoin", "height": N}``, the drand HTTP API for ``{"beacon":
+        "drand", "round": R}`` — never through the operator's process, and
+        passes the published value and its publication time (unix).
+        ``fair_ordering`` becomes True iff BOTH hold:
+
+        * ``resolved_value`` equals the bound salt byte-for-byte (after
+          case/``0x`` normalization), and
+        * ``resolved_time`` is strictly AFTER :attr:`committed_at` — the
+          beacon value did not yet exist when the terminating hash was
+          published, so nothing could have been ground against it.
+
+        Any failure raises :class:`CommitmentOrderError` and PERMANENTLY
+        marks the claim ``order: "external_commitment_refuted"`` (an
+        already-published beacon value — e.g. Bitcoin block 1's hash,
+        mined 2009-01-09 — is refuted here no matter what ``revealed_at``
+        the operator attested at bind time).  Returns the updated
+        :attr:`commitment` record.
+
+        Trust model: this call is the verifier's OWN act with the
+        verifier's OWN resolved data.  An operator-produced record whose
+        ``beacon_verification`` says ``verified: True`` proves nothing to
+        anyone else — a verifier re-runs this method against their own
+        resolution of the named index.
+        """
+        if self.salt is None:
+            raise RuntimeError("no salt bound: nothing to verify")
+        if self._salt_preexisting or not is_external_commitment(
+            self.salt_source
+        ):
+            raise CommitmentOrderError(
+                "no external beacon commitment is claimed for this "
+                "chain's salt; there is nothing a beacon resolution could "
+                "certify"
+            )
+        if self._beacon_refuted is not None:
+            raise CommitmentOrderError(
+                "beacon claim was already refuted and stays refuted: "
+                + self._beacon_refuted
+            )
+        beacon = self.salt_source["beacon"]  # type: ignore[index]
+
+        def _refute(reason: str) -> None:
+            self._beacon_refuted = reason
+            self._beacon_verified = False
+            self.beacon_verification = {
+                "verified": False,
+                "reason": reason,
+                "resolved_time": resolved_time,
+                "resolved_time_iso": _iso(resolved_time)
+                if isinstance(resolved_time, (int, float))
+                and math.isfinite(resolved_time)
+                else None,
+                "checked_at": _iso(time.time()),
+            }
+            raise CommitmentOrderError(reason)
+
+        if not isinstance(resolved_time, (int, float)) or isinstance(
+            resolved_time, bool
+        ) or not math.isfinite(resolved_time):
+            _refute(
+                "resolved_time must be a finite unix timestamp from the "
+                "verifier's own out-of-band resolution"
+            )
+        resolved_norm = _normalize_hex_value(resolved_value)
+        salt_norm = _normalize_hex_value(self.salt)
+        if resolved_norm != salt_norm:
+            _refute(
+                f"resolved {beacon} value {resolved_norm[:16]}... does "
+                f"not match the bound salt {salt_norm[:16]}...: the "
+                "operator's beacon claim is false"
+            )
+        if resolved_time <= self.committed_at:
+            _refute(
+                f"the {beacon} value named in salt_source was published "
+                f"{_iso(float(resolved_time))}, BEFORE the chain "
+                f"commitment {_iso(self.committed_at)}: it was grindable "
+                "while the chain was generated, so the fairness claim is "
+                "refuted (the named index was not a future one)"
+            )
+        self._beacon_verified = True
+        self.beacon_verification = {
+            "verified": True,
+            "resolved_time": float(resolved_time),
+            "resolved_time_iso": _iso(float(resolved_time)),
+            "checked_at": _iso(time.time()),
+            "note": "resolved out-of-band by the verifier: value matched "
+            "the bound salt byte-for-byte and its publication time "
+            "postdates the commitment",
+        }
+        return self.commitment
 
     def pop_hash(self) -> Tuple[int, str]:
         """(1-indexed game number, game hash) for the next round."""
@@ -768,8 +1143,10 @@ class Crash:
     ) -> Dict[str, object]:
         """Simulate on a real streamed hash chain; standard result dict.
 
-        ``salt=None`` (default) runs the honest two-phase protocol: commit
-        the terminating hash first, then draw a fresh salt.  See
+        ``salt=None`` (default) runs the two-phase protocol: commit the
+        terminating hash first, then draw a fresh salt — recorded honestly
+        as ``order: "operator_drawn_after_commitment", fair_ordering:
+        False`` (the salt has no external commitment).  See
         :func:`simulate_chain_targets`.
         """
         res = simulate_chain_targets(
@@ -856,21 +1233,31 @@ def simulate_chain_targets(
     n_rounds: int,
     secret_seed: Optional[str] = None,
     salt: Optional[str] = None,
-    salt_source: Optional[str] = None,
+    salt_source: Optional[object] = None,
     progress: bool = True,
 ) -> Dict[str, object]:
     """N rounds of Stake's ACTUAL mechanism: a fresh salted hash chain of
     ``n_rounds + 1`` hashes, streamed in constant memory, played newest-first.
 
-    Commitment ordering: with ``salt=None`` (default) the honest two-phase
-    protocol is run in-process — (1) walk the chain once, salt-free, to
-    COMMIT the terminating hash; (2) only then draw a fresh salt; (3) replay
-    the chain with the HMAC applied.  The verification dict records both
-    timestamps (``fair_ordering: True``).  A caller-supplied ``salt``
-    (reproducible-simulation mode) provably existed before the chain, so a
-    :class:`CommitmentOrderWarning` is emitted and the verification dict is
-    marked ``fair_ordering: False``.  ``STAKE_SALT`` is always refused —
-    it may only replay Stake's own published 2019 chain.
+    Commitment ordering: with ``salt=None`` (default) the two-phase protocol
+    is run in-process — (1) walk the chain once, salt-free, to COMMIT the
+    terminating hash; (2) only then draw a fresh salt; (3) replay the chain
+    with the HMAC applied.  Because that salt comes from the operator's own
+    ``secrets.token_hex`` — NOT from a verifier-resolvable external beacon —
+    the verification dict records it honestly as ``order:
+    "operator_drawn_after_commitment", fair_ordering: False``: a
+    reproducible-simulation convenience, not the published guarantee (no
+    in-process call can be, since a genuinely fair salt must come from a
+    beacon value that does not exist until after the commitment is public;
+    use :class:`HashChain` with :meth:`HashChain.bind_salt` (structured
+    beacon ``salt_source`` + mandatory ``revealed_at``) followed by the
+    verifier's :meth:`HashChain.verify_salt_against_beacon` for the real
+    protocol).  A caller-supplied
+    ``salt`` (reproducible-simulation mode) provably existed before the
+    chain, so a :class:`CommitmentOrderWarning` is emitted and the
+    verification dict is marked ``fair_ordering: False`` as well.
+    ``STAKE_SALT`` is always refused — it may only replay Stake's own
+    published 2019 chain.
 
     Every round is individually verifiable: round g's game hash re-hashes to
     the returned terminating hash in exactly g steps.  ~250k rounds/s
@@ -886,15 +1273,27 @@ def simulate_chain_targets(
     committed_hash: Optional[str] = None
     committed_at: Optional[float] = None
     if salt is None:
-        # COMMIT first (salt-free walk), then draw the salt — honest order.
+        if is_external_commitment(salt_source):
+            raise CommitmentOrderError(
+                "salt_source claims an external beacon commitment but the "
+                "salt is about to be self-drawn in-process; supply the "
+                "beacon's actual value via HashChain.bind_salt instead"
+            )
+        # COMMIT first (salt-free walk), then draw the salt.  Timestamp
+        # order is honest, but the salt is the operator's own draw — no
+        # external commitment, so this is NOT certified as fairly ordered.
         committed_hash = _stream_chain_terminator(secret_seed, n_rounds, progress)
         committed_at = time.time()
         salt = secrets.token_hex(32)
         if salt_source is None:
-            salt_source = "drawn after terminating-hash commitment"
+            salt_source = {
+                "type": "operator_drawn",
+                "method": "secrets.token_hex(32) after terminating-hash "
+                "commitment",
+            }
         salt_bound_at = time.time()
-        order = "terminating_hash_first"
-        fair = True
+        order = "operator_drawn_after_commitment"
+        fair = False
     else:
         warnings.warn(
             "caller-supplied salt existed before this chain was generated "
@@ -919,6 +1318,19 @@ def simulate_chain_targets(
         # threshold in int domain: winning set is exactly {0..win_count-1}
         wins.append(int(np.count_nonzero(ints < game.win_count_exact)))
     elapsed = time.perf_counter() - t0
+    commitment: Dict[str, object] = {
+        "terminating_hash": terminating,
+        "terminating_hash_committed_at": _iso(committed_at),
+        "terminating_hash_committed_at_unix": committed_at,
+        "salt": salt,
+        "salt_source": salt_source,
+        "salt_bound_at": _iso(salt_bound_at),
+        "salt_bound_at_unix": salt_bound_at,
+        "order": order,
+        "fair_ordering": fair,
+    }
+    if not fair:
+        commitment["note"] = _NO_EXTERNAL_COMMITMENT_NOTE
     return _finish_multi(
         games, wins, n_rounds, elapsed,
         {
@@ -926,16 +1338,6 @@ def simulate_chain_targets(
             "terminating_hash": terminating,
             "salt": salt,
             "chain_length": n_rounds + 1,
-            "commitment": {
-                "terminating_hash": terminating,
-                "terminating_hash_committed_at": _iso(committed_at),
-                "terminating_hash_committed_at_unix": committed_at,
-                "salt": salt,
-                "salt_source": salt_source,
-                "salt_bound_at": _iso(salt_bound_at),
-                "salt_bound_at_unix": salt_bound_at,
-                "order": order,
-                "fair_ordering": fair,
-            },
+            "commitment": commitment,
         },
     )
