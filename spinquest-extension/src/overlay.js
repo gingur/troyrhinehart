@@ -36,12 +36,6 @@
       '<path d="M3.5 3.5v13h13"/><path d="M6.5 12.5 9.5 9l2.5 2 4.5-5.5"/></svg>',
   };
 
-  const icon = (name) => {
-    const s = h('span', 'sqx-icon');
-    s.innerHTML = ICONS[name];
-    return s;
-  };
-
   const iconBtn = (name, title, onClick, active) => {
     const b = h('button', 'sqx-ibtn' + (active ? ' sqx-on' : ''));
     b.type = 'button';
@@ -166,6 +160,8 @@
     el.textContent = '';
     el.classList.toggle('sqx-collapsed', collapsed);
     el.classList.remove('sqx-tight');
+    sparkHover = null; // re-bound by renderGraph for this snapshot
+    histAfterFit = null; // re-bound by renderHistory for this snapshot
 
     const game = latest && latest.focusedGame;
     const session = game && latest.active ? latest.active[game] : null;
@@ -268,7 +264,20 @@
       // The collapsed strips may free more than was needed — hand the slack
       // back to history rows, up to the default cap.
       if (scroll && overflow() < 0) {
-        scroll.style.maxHeight = snap(Math.min(218, scroll.clientHeight - overflow())) + 'px';
+        scroll.style.maxHeight = snap(Math.min(HIST_MAX, scroll.clientHeight - overflow())) + 'px';
+      }
+    }
+    // Heights are settled — sync the history "last N" subtotal and the
+    // "showing N of M" hint to the row count actually on screen. Revealing
+    // the hint can add ~one row of height, so give back rows and re-sync
+    // until the body no longer overflows (converges: the hint shows once).
+    if (histAfterFit) {
+      histAfterFit();
+      while (scroll && overflow() > 0) {
+        const target = snap(scroll.clientHeight - overflow());
+        if (target >= scroll.clientHeight) break;
+        scroll.style.maxHeight = target + 'px';
+        histAfterFit();
       }
     }
   }
@@ -693,7 +702,14 @@
       const lx = x(vals.length - 1).toFixed(1);
       const ly = y(vals[vals.length - 1]).toFixed(1);
       const lastCol = vals[vals.length - 1] < 0 ? 'var(--sqx-neg)' : 'var(--sqx-pos)';
-      const zeroLabelY = y0 > 13 ? y0 - 3.5 : y0 + 9.5;
+      // "0" label sits on whichever side of the baseline the line's left edge
+      // does NOT hug, so a series that opens flat at zero can't run through it.
+      const early = vals.slice(0, Math.max(2, Math.ceil(vals.length * 0.12)));
+      const earlySum = early.reduce((a, b) => a + b, 0);
+      const roomAbove = y0 > 13, roomBelow = y0 < H - 11;
+      const zeroLabelY = earlySum >= 0
+        ? (roomBelow ? y0 + 9.5 : y0 - 3.5)
+        : (roomAbove ? y0 - 3.5 : y0 + 9.5);
       // Auto-scale labels: max at top-right, min at bottom-right, sitting in
       // the reserved bands so they never collide with the line. Skipped when
       // they'd merely restate the zero baseline.
@@ -722,10 +738,36 @@
         '<text x="3" y="' + zeroLabelY.toFixed(1) + '"' +
         ' style="fill:var(--sqx-faint);font-family:var(--sqx-mono);font-size:8px">0</text>' +
         axisLabels +
+        '<line class="sqx-spark-mk-l" y1="' + PT + '" y2="' + (H - PB) + '"' +
+        ' style="display:none;stroke:var(--sqx-mute);stroke-width:1;stroke-opacity:0.45" vector-effect="non-scaling-stroke"/>' +
+        '<circle class="sqx-spark-mk" r="3" style="display:none;stroke:var(--sqx-bg);stroke-width:1.5"/>' +
         '</svg>';
       const wrap = h('div', 'sqx-spark-wrap');
       wrap.innerHTML = svg;
       box.appendChild(wrap);
+
+      // History-row linkage: hovering round i lights up its point on the
+      // profit line (only when the series maps 1:1 onto session.rounds).
+      if (vals.length - 1 === (session.rounds || []).length) {
+        const mk = wrap.querySelector('.sqx-spark-mk');
+        const mkl = wrap.querySelector('.sqx-spark-mk-l');
+        sparkHover = (i) => {
+          if (i == null || i < 0 || i >= vals.length - 1) {
+            mk.style.display = 'none';
+            mkl.style.display = 'none';
+            return;
+          }
+          const v = vals[i + 1];
+          const px = x(i + 1).toFixed(1), py = y(v).toFixed(1);
+          mk.setAttribute('cx', px);
+          mk.setAttribute('cy', py);
+          mk.style.fill = v < 0 ? 'var(--sqx-neg)' : 'var(--sqx-pos)';
+          mk.style.display = '';
+          mkl.setAttribute('x1', px);
+          mkl.setAttribute('x2', px);
+          mkl.style.display = '';
+        };
+      }
     }
     body.appendChild(box);
   }
@@ -1210,9 +1252,12 @@
 
   const HIST_INITIAL = 50;
   const HIST_BATCH = 100;
+  const HIST_MAX = 440; // default scroll-region cap: exactly 20 rows of 22px
   let histSessionId = null;
   let histExpandedKey = null;
   let histScrollTop = 0;
+  let histAfterFit = null; // set per render: syncs subtotal/hint to fitted height
+  let sparkHover = null; // set per render by renderGraph: highlight point i
 
   const histKey = (r) => (r.id != null ? String(r.id) : 't' + r.ts);
 
@@ -1225,7 +1270,7 @@
     const p = typeof r.profit === 'number' ? Math.abs(r.profit) : 0;
     const a = r.result === 'win' || r.result === 'loss'
       ? 0.3 + 0.7 * Math.sqrt(maxAbs > 0 ? Math.min(1, p / maxAbs) : 0)
-      : 0.25;
+      : 0.5; // push/other: a clearly-visible neutral grey tick
     stripe.style.background = 'rgba(' + rgb + ', ' + a.toFixed(2) + ')';
     return stripe;
   }
@@ -1305,18 +1350,27 @@
     const lab = h('div', 'sqx-label');
     lab.appendChild(h('span', null, 'History'));
     lab.appendChild(h('span', 'sqx-count', String(rounds.length)));
-    // Rolling summary: net over the most recent N rounds.
-    const n = Math.min(20, rounds.length);
-    let lastNet = 0;
-    for (let i = rounds.length - n; i < rounds.length; i++) {
-      if (typeof rounds[i].profit === 'number') {
-        lastNet = Math.round((lastNet + rounds[i].profit) * 100) / 100;
-      }
-    }
+    // Rolling summary: net over the most recent N rounds. N is re-synced to
+    // the number of rows actually on screen once the fit pass settles heights,
+    // so the subtotal always describes exactly what's visible.
     const sum = h('span', 'sqx-hist-sum');
-    sum.appendChild(h('span', 'sqx-hist-sum-l', 'last ' + n));
-    sum.appendChild(num(fmtMoney(lastNet), posNegCls(lastNet)));
+    const sumL = h('span', 'sqx-hist-sum-l');
+    const sumV = num('');
+    sum.append(sumL, sumV);
     lab.appendChild(sum);
+    const updateSum = (k) => {
+      k = Math.max(1, Math.min(k, rounds.length));
+      let lastNet = 0;
+      for (let i = rounds.length - k; i < rounds.length; i++) {
+        if (typeof rounds[i].profit === 'number') {
+          lastNet = Math.round((lastNet + rounds[i].profit) * 100) / 100;
+        }
+      }
+      sumL.textContent = (k >= rounds.length ? 'all ' : 'last ') + k;
+      sumV.textContent = fmtMoney(lastNet);
+      sumV.className = 'sqx-num ' + posNegCls(lastNet);
+    };
+    updateSum(Math.min(20, rounds.length));
     wrap.appendChild(lab);
 
     const card = h('div', 'sqx-hist-card');
@@ -1333,13 +1387,45 @@
     const list = h('div');
     scroll.appendChild(list);
     card.appendChild(scroll);
+    // Truncation affordance pinned under the scroll region: "showing N of M ·
+    // scroll for more" up top, live "rows a–b of M" once scrolled. Click pages.
+    const hint = h('div', 'sqx-hist-hint');
+    hint.style.display = 'none';
+    hint.onclick = () => scroll.scrollBy({ top: scroll.clientHeight - 22, behavior: 'smooth' });
+    card.appendChild(hint);
     wrap.appendChild(card);
     body.appendChild(wrap);
 
-    const makeRow = (r) => {
+    const ROW = 22; // matches .sqx-hrow height
+    const visibleRows = () => Math.max(1, Math.round(scroll.clientHeight / ROW));
+    const updateHint = () => {
+      const total = rounds.length;
+      const vis = visibleRows();
+      if (vis >= total) {
+        hint.style.display = 'none';
+        return;
+      }
+      hint.style.display = '';
+      const atEnd = shownCount >= total &&
+        scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 2;
+      if (atEnd) {
+        hint.textContent = 'all ' + total + ' rounds shown';
+      } else if (scroll.scrollTop > ROW / 2) {
+        const a = Math.floor(scroll.scrollTop / ROW) + 1;
+        hint.textContent = 'rows ' + a + '–' + Math.min(total, a + vis - 1) + ' of ' + total + ' ↓';
+      } else {
+        hint.textContent = 'showing ' + vis + ' of ' + total + ' · scroll for more ↓';
+      }
+    };
+
+    const makeRow = (r, idx) => {
       const row = h('div', 'sqx-hrow');
       row.appendChild(histStripe(r, maxAbs));
-      row.appendChild(h('span', 'sqx-dim', fmtAgo(nowRef - r.ts)));
+      const ago = h('span', 'sqx-dim', fmtAgo(nowRef - r.ts));
+      if (typeof r.ts === 'number') ago.title = 'at ' + fmtClock(r.ts);
+      row.appendChild(ago);
+      row.onmouseenter = () => sparkHover && sparkHover(idx);
+      row.onmouseleave = () => sparkHover && sparkHover(null);
       row.appendChild(h('span', 'sqx-r', typeof r.bet === 'number' ? fmtAmount(r.bet) : '—'));
       row.appendChild(
         h('span', 'sqx-r ' + (typeof r.multiplier === 'number' && r.multiplier >= 10 ? 'sqx-hot' : 'sqx-dim'),
@@ -1379,7 +1465,7 @@
       const frag = document.createDocumentFragment();
       const start = rounds.length - 1 - shownCount;
       const end = Math.max(start - k + 1, 0);
-      for (let i = start; i >= end; i--) frag.appendChild(makeRow(rounds[i]));
+      for (let i = start; i >= end; i--) frag.appendChild(makeRow(rounds[i], i));
       shownCount += start - end + 1;
       list.appendChild(frag);
       const remaining = rounds.length - shownCount;
@@ -1397,10 +1483,21 @@
           shownCount < rounds.length) {
         appendBatch(HIST_BATCH);
       }
+      updateHint();
     });
 
     appendBatch(Math.min(HIST_INITIAL, rounds.length));
     if (histScrollTop) scroll.scrollTop = histScrollTop;
+    // Eager pass so the hint row occupies height BEFORE the fit pass measures
+    // overflow — otherwise revealing it later would push the footer offscreen.
+    updateHint();
+
+    // Runs after render()'s fit pass has settled the scroll region's height:
+    // the subtotal scope and the truncation hint both track what's visible.
+    histAfterFit = () => {
+      updateSum(visibleRows());
+      updateHint();
+    };
   }
 
   function renderRaw(body) {

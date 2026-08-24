@@ -970,15 +970,26 @@
 }
 
 /* fixed column header stays put; rows scroll beneath it. max-height is the
-   default cap; the fit pass lowers it inline (floor ~4 rows) when the panel
-   would otherwise overflow the viewport. */
+   default cap (exactly 20 rows, matching the "last 20" subtotal on a tall
+   viewport); the fit pass lowers it inline (floor ~4 rows) when the panel
+   would otherwise overflow the viewport. Scrollbar styled via the webkit
+   pseudos (NOT scrollbar-width: thin) so it renders as a persistent gutter —
+   a visible "there is more" affordance rather than an invisible overlay. */
 #sqx-hud .sqx-hist-scroll {
-  max-height: 218px;
+  max-height: 440px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--sqx-line) transparent;
 }
+
+#sqx-hud .sqx-hist-scroll::-webkit-scrollbar { width: 6px; }
+#sqx-hud .sqx-hist-scroll::-webkit-scrollbar-track { background: var(--sqx-inset); }
+
+#sqx-hud .sqx-hist-scroll::-webkit-scrollbar-thumb {
+  background: var(--sqx-line);
+  border-radius: 3px;
+}
+
+#sqx-hud .sqx-hist-scroll::-webkit-scrollbar-thumb:hover { background: var(--sqx-faint); }
 
 #sqx-hud .sqx-hrow {
   position: relative;
@@ -1068,6 +1079,27 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--sqx-live);
+}
+
+/* truncation affordance pinned below the scroll region: "showing N of M ·
+   scroll for more", switching to a live "rows a–b of M" range once scrolled */
+#sqx-hud .sqx-hist-hint {
+  padding: 3px 10px 4px;
+  border-top: 1px solid var(--sqx-hair);
+  background: var(--sqx-inset);
+  font-family: var(--sqx-sans);
+  font-size: 9.5px;
+  font-weight: 550;
+  letter-spacing: 0.03em;
+  color: var(--sqx-faint);
+  text-align: center;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+#sqx-hud .sqx-hist-hint:hover {
+  color: var(--sqx-mute);
+  background: rgba(151, 163, 197, 0.06);
 }
 
 /* load-earlier sentinel at the bottom of the scroll region */

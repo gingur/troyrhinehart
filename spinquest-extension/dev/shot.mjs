@@ -10,7 +10,7 @@
 
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const devDir = dirname(fileURLToPath(import.meta.url));
@@ -20,7 +20,9 @@ function loadPlaywright() {
   for (const name of ['playwright', 'playwright-core']) {
     try {
       return require(name);
-    } catch {}
+    } catch {
+      // not installed under this name — try the next
+    }
   }
   console.error(
     'playwright/playwright-core not found. Run:\n  cd ' + devDir + ' && npm install playwright-core'

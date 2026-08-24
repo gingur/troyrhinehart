@@ -217,7 +217,6 @@
         const bet = pickBet(rand);
         const target = r2(1.2 + rand() * 3.2);
         const won = cp >= target && rand() < 0.9; // sometimes ride it and bust
-        const mult = won ? target : cp;
         const payout = won ? r2(bet * target) : 0;
         s.rounds.push({
           id: 'c' + seed + '-' + k, ts: Math.round(ts),
