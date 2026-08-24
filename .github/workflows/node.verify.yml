@@ -4,4 +4,5 @@ on: [pull_request]
 
 jobs:
   verify:
+    # Temporary feature ref while gingur/devkit#192 is validated.
     uses: gingur/devkit/.github/workflows/toolchain.verify.yml@feat/node-verify-build-bun
