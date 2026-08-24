@@ -4,4 +4,5 @@ on: [pull_request]
 
 jobs:
   verify:
-    uses: gingur/devkit/.github/workflows/node.verify.yml@main
+    # Shared proto-backed verification from gingur/devkit.
+    uses: gingur/devkit/.github/workflows/toolchain.verify.yml@main
