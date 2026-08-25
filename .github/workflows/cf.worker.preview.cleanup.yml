@@ -19,5 +19,5 @@ jobs:
       infisicalProject: gingur
       infisicalEnv: preview
       infisicalPath: /troyrhinehart/cloudflare
-      infisicalIdentity: a81e1fb3-43d6-4bb5-9a7f-241a083f46d5 # gh-cf-deploy
+      infisicalIdentity: 3556886a-b83e-496d-9072-848a3d408f34 # gh-cf-deploy
     secrets: inherit
