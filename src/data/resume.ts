@@ -1,5 +1,5 @@
 /**
- * Resume content, mirroring `public/troy-rhinehart-resume.pdf`.
+ * Resume content, mirroring `public/resume.pdf`.
  *
  * This is the source of truth for the HTML resume at `/resume`. When the PDF is
  * refreshed, update this file in the same commit so the two stay in sync.
@@ -16,7 +16,9 @@ export const resume = {
     label: 'linkedin.com/in/troyrhinehart',
     href: 'https://www.linkedin.com/in/troyrhinehart',
   },
-  pdf: '/troy-rhinehart-resume.pdf',
+  pdf: '/resume.pdf',
+  // Short, stable URL; the saved file still gets a self-describing name.
+  pdfDownloadName: 'Troy-Rhinehart-Resume.pdf',
   summary:
     'Principal Software Engineer with 15+ years of experience in web application architecture and developer experience, including 3+ years integrating AI. Leads agentic engineering practices at Attentive and builds the internal tooling behind them. Spent 13 years at GoDaddy shipping AI platforms and site-building products for entrepreneurs while mentoring engineers and setting company-wide technical standards.',
   experience: [

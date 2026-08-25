@@ -11,13 +11,31 @@ The resume is published two ways, both linked from the landing page:
 - **`/resume`** — HTML resume rendered from `src/data/resume.ts`. Responsive, indexable
   (includes `Person` JSON-LD), and carries print styles so browser Print produces a clean
   light-mode copy.
-- **`/troy-rhinehart-resume.pdf`** — the source PDF in `public/`, offered as a download from
+- **`/resume.pdf`** — the source PDF in `public/`, offered as a download from
   the HTML page.
 
 `src/data/resume.ts` mirrors the PDF. **When the PDF is refreshed, replace
-`public/troy-rhinehart-resume.pdf` and update `src/data/resume.ts` in the same commit** so the
+`public/resume.pdf` and update `src/data/resume.ts` in the same commit** so the
 two do not drift. The phone number printed on the PDF is deliberately left out of the HTML
 page — that page is crawlable plain text, so email and LinkedIn are the contact channels on it.
+
+### Why `/resume.pdf` carries a canonical header
+
+The PDF is text-based, so Google indexes it independently of `/resume/` and the two compete
+as duplicate content. [Google's documented fix for non-HTML documents](https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls)
+is a `rel="canonical"` **HTTP response header**, which consolidates ranking signals onto the
+HTML page. `public/_headers` sets it via
+[Workers Static Assets custom headers](https://developers.cloudflare.com/workers/static-assets/headers/):
+
+```
+/resume.pdf
+  Link: <https://troyrhinehart.com/resume/>; rel="canonical"
+```
+
+That URL must stay **byte-identical** to the `<link rel="canonical">` that `BaseLayout` emits
+for the resume page — trailing slash included. Astro builds directory-style routes, so the
+canonical is `/resume/`, not `/resume`. If the route format or the site URL ever changes,
+`public/_headers` has to change with it.
 
 ## Stack
 

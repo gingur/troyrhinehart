@@ -1,0 +1,13 @@
+# Cloudflare Workers Static Assets custom response headers.
+# https://developers.cloudflare.com/workers/static-assets/headers/
+#
+# The PDF is a text-based document, so Google indexes it independently of the
+# HTML resume at /resume/ — the two would compete as duplicate content. A
+# rel="canonical" response header is Google's documented fix for non-HTML
+# documents: it consolidates ranking signals onto the HTML page and prefers
+# showing that page in results.
+#
+# The URL below must stay byte-identical to the <link rel="canonical"> emitted
+# by src/pages/resume.astro, trailing slash included, or the two disagree.
+/resume.pdf
+  Link: <https://troyrhinehart.com/resume/>; rel="canonical"
