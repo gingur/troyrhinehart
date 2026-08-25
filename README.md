@@ -4,6 +4,21 @@ troyrhinehart.com — personal site (Astro + React islands + Tailwind 4, deploye
 
 > **v1 scaffold.** The landing page is an intentionally placeholder card. Real design, bio, and copy land in later specs.
 
+## Resume
+
+The resume is published two ways, both linked from the landing page:
+
+- **`/resume`** — HTML resume rendered from `src/data/resume.ts`. Responsive, indexable
+  (includes `Person` JSON-LD), and carries print styles so browser Print produces a clean
+  light-mode copy.
+- **`/troy-rhinehart-resume.pdf`** — the source PDF in `public/`, offered as a download from
+  the HTML page.
+
+`src/data/resume.ts` mirrors the PDF. **When the PDF is refreshed, replace
+`public/troy-rhinehart-resume.pdf` and update `src/data/resume.ts` in the same commit** so the
+two do not drift. The phone number printed on the PDF is deliberately left out of the HTML
+page — that page is crawlable plain text, so email and LinkedIn are the contact channels on it.
+
 ## Stack
 
 - [Astro 5](https://astro.build) — `output: 'static'` (SSG, no adapter)
