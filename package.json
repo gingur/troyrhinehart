@@ -18,7 +18,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9",
     "@astrojs/react": "^4",
-    "@gingur/devkit": "github:gingur/devkit#main",
+    "@gingur/devkit": "git+https://github.com/gingur/devkit.git#main",
     "@tailwindcss/vite": "^4",
     "@types/react": "^18",
     "@types/react-dom": "^18",
