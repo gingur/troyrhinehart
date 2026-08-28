@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import CommitField from '../components/CommitField';
+import HeroEffects from '../components/HeroEffects';
 import ParticleImage from '../components/ParticleImage';
 import { resume } from '../data/resume';
 
@@ -84,6 +85,8 @@ const arrow = `
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
+        <HeroEffects client:load />
+
         <div class="hero-topline reveal reveal-1">
           <p class="eyebrow">
             <span class="status-dot" aria-hidden="true"></span>
@@ -194,6 +197,12 @@ const arrow = `
         </div>
       </section>
     </main>
+
+    <a class="resume-float" href={resume.pdf} rel="noopener" target="_blank">
+      <span class="resume-float-signal" aria-hidden="true"><i></i></span>
+      <span><span class="resume-float-prefix">Download </span>Résumé</span>
+      <span aria-hidden="true">↓</span>
+    </a>
 
     <footer>
       <span>© {new Date().getFullYear()} Troy Rhinehart</span>

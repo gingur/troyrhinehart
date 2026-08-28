@@ -138,27 +138,74 @@ footer a:focus-visible,
 
 .hero {
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   min-height: calc(100vh - 104px);
+  overflow: clip;
   padding: clamp(3rem, 7vh, 6rem) 0 clamp(4rem, 8vh, 7rem);
 }
 
-.hero::before {
+.hero > astro-island {
   position: absolute;
-  top: 16%;
-  right: 7%;
-  width: clamp(220px, 30vw, 460px);
-  aspect-ratio: 1;
-  border: 1px solid rgb(200 255 61 / 10%);
-  border-radius: 50%;
-  background:
-    radial-gradient(circle, rgb(200 255 61 / 5%) 0 1px, transparent 2px) 0 0 / 18px 18px,
-    radial-gradient(circle, rgb(200 255 61 / 7%), transparent 64%);
-  content: '';
-  mask-image: linear-gradient(135deg, black, transparent 72%);
+  inset: 0;
+  display: block;
+}
+
+.hero-effects {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
   pointer-events: none;
+}
+
+.hero-chandelier {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  height: 78%;
+  overflow: hidden;
+  opacity: 0.47;
+}
+
+.chandelier-column {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  transition:
+    transform 850ms ease-in-out,
+    filter 850ms ease-in-out;
+  will-change: transform, filter;
+}
+
+.chandelier-column b {
+  position: absolute;
+  inset: 0;
+}
+
+.chandelier-column .chandelier-hot {
+  transition: opacity 580ms ease-in-out;
+}
+
+.hero-particles,
+.hero-vignette {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hero-particles {
+  opacity: 0.72;
+}
+
+.hero-vignette {
+  background:
+    radial-gradient(ellipse 61% 58% at 49% 48%, rgb(9 11 10 / 80%), transparent 76%),
+    linear-gradient(180deg, transparent 65%, rgb(9 11 10 / 76%));
 }
 
 .eyebrow,
@@ -188,6 +235,8 @@ footer a:focus-visible,
 }
 
 .hero-topline {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
@@ -260,6 +309,8 @@ footer a:focus-visible,
 }
 
 .hero-bottom {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: minmax(300px, 1.2fr) minmax(240px, 0.9fr) auto;
   gap: clamp(2rem, 6vw, 6rem);
@@ -337,6 +388,59 @@ footer a:focus-visible,
   padding-block: 0.35rem;
   color: #c9cdc6;
   font-size: 0.82rem;
+}
+
+.resume-float {
+  position: fixed;
+  z-index: 30;
+  right: clamp(1rem, 2.3vw, 2rem);
+  bottom: clamp(1rem, 2.3vw, 2rem);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 46px;
+  border: 1px solid rgb(200 255 61 / 34%);
+  border-radius: 999px;
+  padding: 0.65rem 1rem;
+  background: rgb(9 11 10 / 76%);
+  box-shadow:
+    0 0 0 1px rgb(200 255 61 / 8%),
+    0 12px 40px rgb(0 0 0 / 48%);
+  color: #dfe3db;
+  font-size: 0.72rem;
+  font-weight: 600;
+  backdrop-filter: blur(14px);
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.resume-float:hover,
+.resume-float:focus-visible {
+  border-color: var(--lime);
+  color: var(--lime);
+  transform: translateY(-2px);
+}
+
+.resume-float-signal {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 10px rgb(200 255 61 / 64%);
+}
+
+.resume-float-signal i {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--lime);
+  animation: resume-ring 2.8s ease-out infinite;
 }
 
 .reveal {
@@ -942,6 +1046,13 @@ footer nav {
   }
 }
 
+@keyframes resume-ring {
+  to {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+
 @media (max-width: 1050px) {
   .hero {
     min-height: auto;
@@ -1020,6 +1131,15 @@ footer nav {
   .hero {
     min-height: auto;
     padding: 5rem 0 7rem;
+  }
+
+  .hero-chandelier {
+    height: 62%;
+    opacity: 0.39;
+  }
+
+  .hero-particles {
+    opacity: 0.58;
   }
 
   .hero-topline {
@@ -1127,6 +1247,15 @@ footer nav {
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .resume-float {
+    min-height: 42px;
+    padding-inline: 0.85rem;
+  }
+
+  .resume-float-prefix {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1156,9 +1285,11 @@ footer nav {
 
   body::before,
   .topbar,
+  .hero-effects,
   .company-visual,
   .activity-section,
   .closing,
+  .resume-float,
   footer {
     display: none;
   }
