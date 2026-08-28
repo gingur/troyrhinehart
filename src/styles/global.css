@@ -23,6 +23,7 @@
 }
 
 html {
+  overflow-x: clip;
   background: var(--background);
   scroll-padding-top: 6rem;
 }
