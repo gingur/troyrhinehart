@@ -83,59 +83,45 @@ const arrow = `
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
-        <div class="hero-copy">
-          <p class="eyebrow reveal reveal-1">
+        <div class="hero-topline reveal reveal-1">
+          <p class="eyebrow">
             <span class="status-dot" aria-hidden="true"></span>
-            Principal engineer · Mesa, Arizona
+            Troy Rhinehart
           </p>
+          <p>Principal Software Engineer</p>
+          <p>Mesa, Arizona · 2010—Now</p>
+        </div>
+
+        <div class="hero-statement">
+          <p class="hero-marker reveal reveal-2" aria-hidden="true">15+</p>
           <h1 id="hero-title" class="reveal reveal-2">
-            I make complex systems <em>feel inevitable.</em>
+            I build the systems <em>behind ambitious products.</em>
           </h1>
-          <p class="hero-intro reveal reveal-3">
-            I’m Troy, a principal software engineer who turns ambitious ideas into platforms teams
-            can trust—from AI orchestration and developer tooling to web products used at massive
-            scale.
+        </div>
+
+        <div class="hero-bottom reveal reveal-3">
+          <p class="hero-intro">
+            AI platforms, developer tooling, and web architecture that help teams turn complex
+            ideas into dependable products at scale.
           </p>
-          <div class="hero-actions reveal reveal-4">
+          <div class="hero-focus" aria-label="Areas of focus">
+            <span>AI orchestration</span>
+            <span>Platforms</span>
+            <span>Developer experience</span>
+          </div>
+          <div class="hero-actions">
             <a class="button button-primary" href="#experience">
-              See the experience <Fragment set:html={arrow} />
+              Explore the work <Fragment set:html={arrow} />
             </a>
             <a class="text-link" href={`mailto:${resume.email}`}>Start a conversation</a>
           </div>
         </div>
-
-        <aside class="hero-brief reveal reveal-3" aria-label="Career summary">
-          <div class="brief-topline"><span>Career brief</span><span>2010—Now</span></div>
-          <dl>
-            <div>
-              <dt>Now</dt>
-              <dd>Principal Software Engineer<br /><span>Attentive</span></dd>
-            </div>
-            <div>
-              <dt>Previously</dt>
-              <dd>13 years building at scale<br /><span>GoDaddy</span></dd>
-            </div>
-            <div>
-              <dt>Focus</dt>
-              <dd>AI · Platforms · DX<br /><span>Technical leadership</span></dd>
-            </div>
-          </dl>
-          <div class="brief-signal" aria-hidden="true">
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-          </div>
-        </aside>
       </section>
 
-      <section id="experience" class="experience-section" aria-labelledby="experience-title">
+      <section id="experience" class="experience-section" aria-label="Experience">
         <header class="experience-heading">
           <p class="section-index">01 / Experience</p>
-          <div>
-            <h2 id="experience-title">The work is internal.<br />The impact isn’t.</h2>
-            <p>
-              Fifteen years of building the systems behind the product: architecture, platforms,
-              developer experience, and the technical direction that helps teams compound.
-            </p>
-          </div>
+          <p>Selected experience · 2010—Now</p>
         </header>
 
         <ol class="company-list">
