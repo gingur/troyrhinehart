@@ -271,7 +271,7 @@ footer a:focus-visible,
   margin: 0 0 1.4rem;
   color: #a7aca6;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -390,7 +390,7 @@ footer a:focus-visible,
   margin-inline: 2rem;
   color: #6f756f;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.62rem;
+  font-size: 0.66rem;
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -1214,7 +1214,7 @@ footer nav {
   .hero-marquee span {
     gap: 1.5rem;
     margin-inline: 1.5rem;
-    font-size: 0.58rem;
+    font-size: 0.62rem;
   }
 
   .hero-statement {
@@ -1231,7 +1231,7 @@ footer nav {
   }
 
   .hero-role {
-    font-size: 0.68rem;
+    font-size: 0.74rem;
   }
 
   .hero-bottom {
