@@ -1,5 +1,7 @@
 ---
 import { ClientRouter } from 'astro:transitions';
+import manropeFont from '@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2?url';
+import newsreaderFont from '@fontsource-variable/newsreader/files/newsreader-latin-wght-italic.woff2?url';
 import '../styles/global.css';
 
 interface Props {
@@ -21,10 +23,12 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#090b0c" />
+    <meta name="theme-color" content="#080b12" />
     <meta name="generator" content={Astro.generator} />
     <link rel="canonical" href={canonical.href} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href={manropeFont} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={newsreaderFont} as="font" type="font/woff2" crossorigin />
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />

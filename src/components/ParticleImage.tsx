@@ -86,6 +86,8 @@ export default function ParticleImage({
     canvas.height = Math.floor(size * dpr);
 
     let animationFrame = 0;
+    let animationDeadline = 0;
+    let isAnimating = false;
     let disposed = false;
     const image = new Image();
     image.crossOrigin = 'anonymous';
@@ -239,13 +241,26 @@ export default function ParticleImage({
         context.fill();
       }
 
-      if (!reducedMotion) animationFrame = requestAnimationFrame(render);
+      if (!reducedMotion && performance.now() < animationDeadline) {
+        animationFrame = requestAnimationFrame(render);
+      } else {
+        isAnimating = false;
+      }
+    };
+
+    const startAnimation = (duration: number) => {
+      if (reducedMotion || disposed) return;
+      animationDeadline = Math.max(animationDeadline, performance.now() + duration);
+      if (isAnimating) return;
+      isAnimating = true;
+      animationFrame = requestAnimationFrame(render);
     };
 
     const onLoad = () => {
       if (disposed) return;
       buildParticles();
-      animationFrame = requestAnimationFrame(render);
+      if (reducedMotion) render(0);
+      else startAnimation(4400);
     };
 
     if (image.complete && image.naturalWidth > 0) onLoad();
@@ -257,9 +272,11 @@ export default function ParticleImage({
         x: ((event.clientX - bounds.left) / bounds.width) * size,
         y: ((event.clientY - bounds.top) / bounds.height) * size,
       };
+      startAnimation(900);
     };
     const onPointerLeave = () => {
       mouseRef.current = null;
+      startAnimation(2200);
     };
 
     canvas.addEventListener('pointermove', onPointerMove);
@@ -299,7 +316,7 @@ export default function ParticleImage({
         height: size,
         maxWidth: '100%',
         background: 'transparent',
-        touchAction: 'none',
+        touchAction: 'manipulation',
       }}
     />
   );

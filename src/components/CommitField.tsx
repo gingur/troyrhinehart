@@ -131,10 +131,18 @@ export default function CommitField() {
         )}
       </header>
 
-      {error && <p className="commit-message">The contribution signal is temporarily offline.</p>}
+      {error && (
+        <p className="commit-message" role="status">
+          The contribution signal is temporarily offline.
+        </p>
+      )}
 
       {!data && !error && (
-        <div className="commit-loading" aria-label="Loading combined GitHub contribution activity">
+        <div
+          className="commit-loading"
+          role="status"
+          aria-label="Loading combined GitHub contribution activity"
+        >
           {Array.from({ length: 196 }, (_, index) => (
             <i className={index % 11 === 0 || index % 17 === 0 ? 'is-active' : ''} key={index} />
           ))}
