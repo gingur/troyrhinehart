@@ -1,5 +1,7 @@
 ---
 import { ClientRouter } from 'astro:transitions';
+import displayFont from '@fontsource-variable/big-shoulders-display/files/big-shoulders-display-latin-wght-normal.woff2?url';
+import manropeFont from '@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2?url';
 import '../styles/global.css';
 
 interface Props {
@@ -9,7 +11,7 @@ interface Props {
 
 const {
   title,
-  description = 'Placeholder description — troyrhinehart.com v1 scaffold.',
+  description = 'Troy Rhinehart is a principal software engineer focused on AI platforms, developer experience, and web architecture.',
 } = Astro.props;
 
 const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
@@ -21,9 +23,12 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
+    <meta name="theme-color" content="#06090a" />
     <meta name="generator" content={Astro.generator} />
     <link rel="canonical" href={canonical.href} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href={displayFont} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={manropeFont} as="font" type="font/woff2" crossorigin />
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
@@ -33,9 +38,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
     <ClientRouter />
     <slot name="head" />
   </head>
-  <body
-    class="min-h-screen bg-neutral-950 text-neutral-100 antialiased print:bg-white print:text-neutral-900"
-  >
+  <body class="min-h-screen antialiased print:bg-white print:text-neutral-900">
     <slot />
   </body>
 </html>

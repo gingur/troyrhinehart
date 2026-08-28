@@ -1,38 +1,280 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import CopyEmail from '../components/CopyEmail.tsx';
+import CommitField from '../components/CommitField';
+import ParticleImage from '../components/ParticleImage';
 import { site } from '../config/site';
+import { resume } from '../data/resume';
 
-const linkClass =
-  'text-neutral-300 underline-offset-4 transition-colors hover:text-neutral-50 hover:underline';
+const description = `${resume.name} is a ${resume.title.toLowerCase()} making engineering organizations faster through AI platforms, developer systems, and product architecture.`;
+
+const companyDetails = [
+  {
+    logo: '/logos/attentive.png',
+    color: '255,209,0',
+    accent: 'yellow',
+    label: 'Attentive',
+    eyebrow: 'The operating system for agentic engineering',
+    statement:
+      'Making AI-assisted development a dependable organizational capability—not a collection of individual experiments.',
+    gap: 3,
+    dotRadius: 1.35,
+  },
+  {
+    logo: '/logos/godaddy.png',
+    color: '27,219,219',
+    accent: 'cyan',
+    label: 'GoDaddy',
+    eyebrow: 'One platform. Millions of businesses.',
+    statement:
+      'Thirteen years turning product and platform complexity into reusable systems for teams and entrepreneurs.',
+    gap: 3,
+    dotRadius: 1.35,
+  },
+  {
+    logo: '/logos/village-voice.png',
+    color: '237,28,36',
+    accent: 'red',
+    label: 'Village Voice Media',
+    eyebrow: 'Shared identity before it was table stakes',
+    statement:
+      'The first production lesson: durable systems are the ones many products can trust.',
+    gap: 2,
+    dotRadius: 1,
+  },
+] as const;
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'Person',
+  name: resume.name,
+  jobTitle: resume.title,
+  email: `mailto:${resume.email}`,
+  url: new URL('/', Astro.site ?? Astro.url).href,
+  sameAs: [resume.linkedin.href, 'https://github.com/gingur'],
+  address: { '@type': 'PostalAddress', addressLocality: 'Mesa', addressRegion: 'AZ' },
+  knowsAbout: [...resume.skills],
+  alumniOf: resume.education.map((entry) => ({
+    '@type': 'CollegeOrUniversity',
+    name: entry.institution,
+  })),
+  worksFor: { '@type': 'Organization', name: resume.experience[0].company },
+};
+
+const arrow = `
+  <span class="button-arrow" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none">
+      <path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </span>`;
+
+const impactSignals = [
+  {
+    label: 'AI platform',
+    value: '11 / 80',
+    detail: 'providers / models, one integration point',
+  },
+  {
+    label: 'Delivery health',
+    value: '70 → 90%+',
+    detail: 'test reliability, with pipelines up to 80% faster',
+  },
+  {
+    label: 'Product reach',
+    value: 'Millions',
+    detail: 'of customer sites powered by platform architecture',
+  },
+] as const;
 ---
 
-<BaseLayout title={site.name}>
-  <main class="mx-auto flex min-h-screen max-w-2xl flex-col justify-center px-6 py-16">
-    <p class="mb-3 text-xs font-medium uppercase tracking-widest text-neutral-500">
-      Placeholder — v1 scaffold
-    </p>
-    <h1 class="text-4xl font-semibold tracking-tight sm:text-5xl">{site.name}</h1>
-    <p class="mt-4 text-lg text-neutral-400">{site.tagline}</p>
+<BaseLayout title={`${resume.name} — ${resume.title}`} description={description}>
+  <link
+    rel="preconnect"
+    href="https://github-contributions-api.jogruber.de"
+    crossorigin
+    slot="head"
+  />
+  <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} slot="head" />
 
-    <nav class="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm" aria-label="Contact">
-      <a class={linkClass} href="/resume/">Resume</a>
-      <a class={linkClass} href={`mailto:${site.email}`}>Email</a>
-      <a class={linkClass} href={site.links.linkedin} rel="me noopener" target="_blank">
-        LinkedIn
+  <a class="skip-link" href="#top">Skip to main content</a>
+
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="monogram" href="#top" aria-label="Troy Rhinehart, back to top">
+        <span translate="no">TR</span>
       </a>
-      <a class={linkClass} href={site.links.github} rel="me noopener" target="_blank">
-        GitHub
-      </a>
-    </nav>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#experience">Experience</a>
+        <a href="#activity">Activity</a>
+      </nav>
+      <div class="header-actions">
+        <a class="nav-resume" href="/resume/">Resume</a>
+        <a
+          class="nav-cta"
+          href={site.links.calendly}
+          rel="noopener"
+          target="_blank"
+        >
+          Book 30 Min <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </header>
 
-    <div class="mt-8">
-      <CopyEmail email={site.email} client:load />
-    </div>
+    <main id="top" tabindex="-1">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-grid" aria-hidden="true"></div>
 
-    <p class="mt-12 text-xs text-neutral-600">
-      All copy, links, and contact details on this page are placeholders. Real content ships in a
-      later spec.
-    </p>
-  </main>
+        <div class="hero-kicker reveal reveal-1">
+          <p>Principal Software Engineer</p>
+          <p>15+ years · Mesa, Arizona</p>
+        </div>
+
+        <h1 id="hero-title" class="reveal reveal-2">
+          <span class="hero-first-name">Troy</span>
+          <strong>Rhinehart</strong>
+        </h1>
+
+        <div class="hero-content reveal reveal-3">
+          <div class="hero-copy">
+            <p class="hero-thesis">I make engineering organizations faster.</p>
+            <p class="hero-intro">
+              I build AI platforms, developer systems, and product architecture that replace
+              friction with repeatable leverage.
+            </p>
+            <div class="hero-actions">
+              <a
+                class="button button-primary"
+                href={site.links.calendly}
+                rel="noopener"
+                target="_blank"
+              >
+                Book 30 Minutes <Fragment set:html={arrow} />
+              </a>
+              <a class="text-link" href="/resume/">View Resume</a>
+            </div>
+          </div>
+
+          <dl class="impact-ledger" aria-label="Selected impact">
+            {
+              impactSignals.map((signal) => (
+                <div>
+                  <dt>{signal.label}</dt>
+                  <dd>
+                    <strong>{signal.value}</strong>
+                    <span>{signal.detail}</span>
+                  </dd>
+                </div>
+              ))
+            }
+          </dl>
+        </div>
+
+        <a class="hero-scroll" href="#experience">
+          <span>Selected experience</span>
+          <span aria-hidden="true">↓</span>
+        </a>
+
+        <div class="hero-bus" aria-hidden="true">
+          <i></i><i></i><i></i>
+        </div>
+      </section>
+
+      <section id="experience" class="experience-section" aria-labelledby="experience-title">
+        <header class="experience-heading">
+          <h2 id="experience-title" class="section-index">01 / Experience</h2>
+          <p>Selected experience · 2010—Now</p>
+        </header>
+
+        <ol class="company-list">
+          {
+            resume.experience.map((job, index) => {
+              const details = companyDetails[index]!;
+              return (
+                <li class={`company-chapter company-${details.accent}`}>
+                  <div class="chapter-rail">
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    <p>{job.dates}</p>
+                  </div>
+
+                  <figure class="company-visual">
+                    <div class="particle-frame">
+                      <ParticleImage
+                        src={details.logo}
+                        size={380}
+                        gap={details.gap}
+                        dotRadius={details.dotRadius}
+                        color={details.color}
+                        ariaLabel={`${details.label} particle logo`}
+                        client:visible
+                      />
+                    </div>
+                    <figcaption>Move through the mark</figcaption>
+                  </figure>
+
+                  <article class="company-story">
+                    <p class="company-eyebrow">{details.eyebrow}</p>
+                    <h3 translate="no">{job.company}</h3>
+                    <p class="company-role">{job.role}</p>
+                    <p class="company-statement">{details.statement}</p>
+                    <ul>
+                      {job.highlights.map((highlight) => <li>{highlight}</li>)}
+                    </ul>
+                    {'note' in job && job.note && <p class="company-note">{job.note}</p>}
+                    <p class="company-location">{job.location}</p>
+                  </article>
+                </li>
+              );
+            })
+          }
+        </ol>
+      </section>
+
+      <section id="activity" class="activity-section" aria-labelledby="activity-title">
+        <header class="activity-heading">
+          <p class="section-index">02 / Activity</p>
+          <div>
+            <h2 id="activity-title">The work leaves a trail.</h2>
+            <p>
+              A rolling year of public work across five GitHub identities—combined so the pattern
+              is visible, not the account boundaries.
+            </p>
+          </div>
+        </header>
+        <CommitField client:idle />
+      </section>
+
+      <section class="closing" aria-labelledby="closing-title">
+        <p class="section-index">03 / Next</p>
+        <div class="closing-copy">
+          <h2 id="closing-title">Bring me the hard system.</h2>
+          <p>
+            The platform that has to scale, the developer workflow that drags, or the AI strategy
+            that needs to become real.
+          </p>
+        </div>
+        <div class="closing-actions">
+          <a
+            class="button button-primary"
+            href={site.links.calendly}
+            rel="noopener"
+            target="_blank"
+          >
+            Book 30 Minutes <Fragment set:html={arrow} />
+          </a>
+          <div>
+            <a href={`mailto:${resume.email}`}>Email</a>
+            <a href={resume.linkedin.href} rel="me noopener" target="_blank">LinkedIn ↗</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>© {new Date().getFullYear()} Troy Rhinehart</span>
+      <nav aria-label="Footer navigation">
+        <a href="/resume/">Resume</a>
+        <a href={site.links.github} rel="me noopener" target="_blank">GitHub ↗</a>
+        <a href="#top">Back to top ↑</a>
+      </nav>
+    </footer>
+  </div>
 </BaseLayout>
