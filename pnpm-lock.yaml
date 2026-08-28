@@ -8,10 +8,10 @@ importers:
 
   .:
     dependencies:
-      '@fontsource-variable/manrope':
+      '@fontsource-variable/big-shoulders-display':
         specifier: ^5.3.0
         version: 5.3.0
-      '@fontsource-variable/newsreader':
+      '@fontsource-variable/manrope':
         specifier: ^5.3.0
         version: 5.3.0
     devDependencies:
@@ -739,11 +739,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@fontsource-variable/big-shoulders-display@5.3.0':
+    resolution: {integrity: sha512-7k1REXMZFEa7gSWOURbmCJW5Gv9D0EbEFQgosZidM8Ob/qpPlK96vqyIzCTnNZ/C0XFZWxeKU53D3QdeHctYCA==}
+
   '@fontsource-variable/manrope@5.3.0':
     resolution: {integrity: sha512-6D5dgokHsWDDMtmXHznKa0hK229NN+1a4BLPmUCLqcO1Pw5EEhWY5RFt0AcXnVRAljFFPfRtLkJePQj6LSsV6g==}
-
-  '@fontsource-variable/newsreader@5.3.0':
-    resolution: {integrity: sha512-rrzYi43qMpbzwuFtf9OkWH8sxAPVPcQQQEwXpPtwaKYeJ8yVg5aLs5kawmo1f2Q1t1M38TLmEKCkGVDsYwgdFw==}
 
   '@gingur/devkit@git+https://github.com/gingur/devkit.git#95bf60cfc7bb959ee14a4d3aca9fe4879c278297':
     resolution: {commit: 95bf60cfc7bb959ee14a4d3aca9fe4879c278297, repo: https://github.com/gingur/devkit.git, type: git}
@@ -3536,9 +3536,9 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
-  '@fontsource-variable/manrope@5.3.0': {}
+  '@fontsource-variable/big-shoulders-display@5.3.0': {}
 
-  '@fontsource-variable/newsreader@5.3.0': {}
+  '@fontsource-variable/manrope@5.3.0': {}
 
   '@gingur/devkit@git+https://github.com/gingur/devkit.git#95bf60cfc7bb959ee14a4d3aca9fe4879c278297(oxfmt@0.58.0)(oxlint@1.73.0)(typescript@5.9.3)':
     dependencies:

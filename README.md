@@ -2,7 +2,7 @@
 
 troyrhinehart.com — personal site (Astro + React islands + Tailwind 4, deployed to Cloudflare Workers Static Assets).
 
-> **v1 scaffold.** The landing page is an intentionally placeholder card. Real design, bio, and copy land in later specs.
+The landing page is an impact-led portfolio with interactive career and contribution views.
 
 ## Resume
 
@@ -11,13 +11,13 @@ The resume is published two ways, both linked from the landing page:
 - **`/resume`** — HTML resume rendered from `src/data/resume.ts`. Responsive, indexable
   (includes `Person` JSON-LD), and carries print styles so browser Print produces a clean
   light-mode copy.
-- **`/resume.pdf`** — the source PDF in `public/`, offered as a download from
-  the HTML page.
+- **`/resume.pdf`** — the separately typeset PDF in `public/`, offered as a
+  download from the HTML page.
 
-`src/data/resume.ts` mirrors the PDF. **When the PDF is refreshed, replace
-`public/resume.pdf` and update `src/data/resume.ts` in the same commit** so the
-two do not drift. The phone number printed on the PDF is deliberately left out of the HTML
-page — that page is crawlable plain text, so email and LinkedIn are the contact channels on it.
+`src/data/resume.ts` is the source of truth for the HTML page. Keep its roles,
+dates, and outcomes factually aligned with `public/resume.pdf`; wording may differ
+to suit screen and print layouts. The phone number printed on the PDF is deliberately
+left out of the HTML page because the latter is crawlable plain text.
 
 ### Why `/resume.pdf` carries a canonical header
 

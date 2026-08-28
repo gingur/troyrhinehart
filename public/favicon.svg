@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#080b12" />
-  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" fill="none" stroke="#252c3b" />
+  <rect width="32" height="32" rx="7" fill="#06090a" />
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" fill="none" stroke="#20312e" />
   <text
     x="5"
     y="50%"
@@ -9,7 +9,6 @@
     font-size="13"
     font-weight="700"
     letter-spacing="0.4"
-    fill="#f3f1e8"
+    fill="#20e3ff"
   >TR</text>
-  <circle cx="26" cy="7" r="2" fill="#f2c14e" />
 </svg>

@@ -1,18 +1,18 @@
 @import 'tailwindcss';
+@import '@fontsource-variable/big-shoulders-display';
 @import '@fontsource-variable/manrope';
-@import '@fontsource-variable/newsreader/wght-italic.css';
 
 :root {
-  --ink: #f3f1e8;
-  --muted: #a4adbd;
-  --subtle: #697488;
-  --line: #252c3b;
-  --background: #080b12;
-  --panel: #0d1220;
-  --signal: #8fa7ff;
-  --signal-bright: #bbc7ff;
-  --signal-rgb: 143 167 255;
-  --warm: #f2c14e;
+  --ink: #f4f8f7;
+  --muted: #afbfbc;
+  --subtle: #748782;
+  --line: #20312e;
+  --background: #06090a;
+  --panel: #0a1112;
+  --signal: #20e3ff;
+  --signal-bright: #8df3ff;
+  --signal-rgb: 32 227 255;
+  --hot: #ff493d;
   color-scheme: dark;
   font-family: 'Manrope Variable', ui-sans-serif, system-ui, sans-serif;
   scroll-behavior: smooth;
@@ -29,11 +29,12 @@ html {
 
 body {
   margin: 0;
-  overflow-x: hidden;
+  overflow-x: clip;
   background:
-    radial-gradient(circle at 84% -8%, rgb(var(--signal-rgb) / 13%), transparent 32rem),
-    radial-gradient(circle at 8% 38%, rgb(41 69 132 / 9%), transparent 34rem), var(--background);
+    radial-gradient(circle at 86% -12%, rgb(var(--signal-rgb) / 11%), transparent 28rem),
+    radial-gradient(circle at 2% 42%, rgb(255 73 61 / 5%), transparent 30rem), var(--background);
   color: var(--ink);
+  font-size: 17px;
 }
 
 body::before {
@@ -43,13 +44,13 @@ body::before {
   right: 0;
   left: 0;
   height: 2px;
-  background: linear-gradient(90deg, var(--warm), var(--signal) 46%, #b898ff);
+  background: linear-gradient(90deg, var(--hot) 0 18%, var(--signal) 18% 100%);
   content: '';
 }
 
 ::selection {
   background: var(--signal);
-  color: #080b12;
+  color: #041012;
 }
 
 a {
@@ -76,7 +77,7 @@ a {
   padding: 0.7rem 0.9rem;
   border-radius: 7px;
   background: var(--signal-bright);
-  color: #080b12;
+  color: #041012;
   font-size: 0.8rem;
   font-weight: 700;
   transform: translateY(-160%);
@@ -108,7 +109,7 @@ a {
   align-items: center;
   height: 88px;
   border-bottom: 1px solid rgb(255 255 255 / 7%);
-  background: rgb(8 11 18 / 78%);
+  background: rgb(6 9 10 / 82%);
   backdrop-filter: blur(18px);
 }
 
@@ -116,21 +117,10 @@ a {
   display: inline-flex;
   align-items: center;
   justify-self: start;
-  gap: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.78rem;
+  font-size: 0.86rem;
   font-weight: 700;
   letter-spacing: 0.12em;
-}
-
-.monogram i,
-.status-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--warm);
-  box-shadow: 0 0 12px rgb(242 193 78 / 58%);
 }
 
 .nav-links,
@@ -143,7 +133,7 @@ a {
 .nav-links {
   gap: 2rem;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.86rem;
 }
 
 .header-actions {
@@ -153,7 +143,7 @@ a {
 
 .nav-resume {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.86rem;
 }
 
 .nav-cta {
@@ -164,8 +154,8 @@ a {
   border: 1px solid rgb(var(--signal-rgb) / 42%);
   border-radius: 8px;
   padding: 0.55rem 0.85rem;
-  color: #dfe4ff;
-  font-size: 0.76rem;
+  color: #d7fbff;
+  font-size: 0.84rem;
   font-weight: 650;
 }
 
@@ -244,7 +234,7 @@ footer a:focus-visible,
   gap: 2rem;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.64rem;
+  font-size: 0.72rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -252,38 +242,52 @@ footer a:focus-visible,
 .hero-kicker p {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
   margin: 0;
 }
 
 .hero h1 {
+  position: relative;
   align-self: center;
-  max-width: 1230px;
-  margin: clamp(3rem, 7vh, 6rem) 0;
-  font-size: clamp(6rem, 13vw, 12rem);
-  font-weight: 520;
-  letter-spacing: -0.09em;
-  line-height: 0.7;
+  max-width: 100%;
+  margin: clamp(2.5rem, 5vh, 4.5rem) 0;
+  font-family: 'Big Shoulders Display Variable', Impact, sans-serif;
+  font-size: clamp(9rem, 18.8vw, 17rem);
+  font-weight: 820;
+  letter-spacing: -0.052em;
+  line-height: 0.65;
   text-wrap: balance;
+  text-transform: uppercase;
 }
 
 .hero h1 span,
-.hero h1 em {
+.hero h1 strong {
   display: block;
 }
 
-.hero h1 em,
-.activity-heading h2 em,
-.closing h2 em {
-  color: var(--signal-bright);
-  font-family: 'Newsreader Variable', Georgia, serif;
-  font-style: italic;
-  font-weight: 380;
-  letter-spacing: -0.055em;
+.hero-first-name {
+  margin: 0 0 0.08em 0.04em;
+  color: var(--signal);
+  font-size: 0.37em;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  line-height: 0.94;
 }
 
-.hero h1 em {
-  margin-left: clamp(2rem, 15vw, 13rem);
+.hero h1 strong {
+  position: relative;
+  width: fit-content;
+  color: var(--ink);
+  font-weight: inherit;
+}
+
+.hero h1 strong::after {
+  position: absolute;
+  right: 0.02em;
+  bottom: -0.11em;
+  width: 24%;
+  height: 0.035em;
+  background: var(--hot);
+  content: '';
 }
 
 .hero-content {
@@ -302,8 +306,8 @@ footer a:focus-visible,
 .hero-thesis {
   margin: 0;
   color: var(--ink);
-  font-size: clamp(1.45rem, 2.2vw, 2.1rem);
-  font-weight: 520;
+  font-size: clamp(1.65rem, 2.6vw, 2.45rem);
+  font-weight: 580;
   letter-spacing: -0.035em;
   line-height: 1.17;
   text-wrap: balance;
@@ -312,7 +316,7 @@ footer a:focus-visible,
 .hero-intro {
   margin: 1.2rem 0 0;
   color: var(--muted);
-  font-size: 0.98rem;
+  font-size: 1.08rem;
   line-height: 1.72;
 }
 
@@ -333,7 +337,7 @@ footer a:focus-visible,
   border: 1px solid transparent;
   border-radius: 9px;
   padding: 0.72rem 1.15rem;
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   font-weight: 700;
   transition:
     transform 180ms ease,
@@ -341,24 +345,29 @@ footer a:focus-visible,
     box-shadow 180ms ease;
 }
 
-.button svg {
+.button-arrow {
+  display: grid;
+  place-items: center;
+  transition: transform 180ms ease;
+}
+
+.button-arrow svg {
   width: 16px;
   height: 16px;
-  transition: transform 180ms ease;
 }
 
 .button:hover {
   transform: translateY(-2px);
 }
 
-.button:hover svg {
+.button:hover .button-arrow {
   transform: translateX(3px);
 }
 
 .button-primary {
   background: var(--signal);
   box-shadow: 0 14px 38px rgb(var(--signal-rgb) / 16%);
-  color: #090d18;
+  color: #031113;
 }
 
 .button-primary:hover {
@@ -367,10 +376,10 @@ footer a:focus-visible,
 }
 
 .text-link {
-  border-bottom: 1px solid #4c566b;
+  border-bottom: 1px solid #3d5854;
   padding-block: 0.35rem;
-  color: #c8cede;
-  font-size: 0.8rem;
+  color: #d1e1de;
+  font-size: 0.9rem;
 }
 
 .impact-ledger {
@@ -391,7 +400,7 @@ footer a:focus-visible,
   margin: 0;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.64rem;
+  font-size: 0.7rem;
   font-weight: 500;
   letter-spacing: 0.1em;
   line-height: 1.5;
@@ -409,7 +418,7 @@ footer a:focus-visible,
 
 .impact-ledger strong {
   color: var(--signal-bright);
-  font-size: clamp(1.55rem, 2.4vw, 2.25rem);
+  font-size: clamp(1.8rem, 2.8vw, 2.6rem);
   font-weight: 470;
   letter-spacing: -0.055em;
   line-height: 1;
@@ -420,7 +429,7 @@ footer a:focus-visible,
   max-width: 15rem;
   margin-top: 0.75rem;
   color: var(--subtle);
-  font-size: 0.75rem;
+  font-size: 0.82rem;
   line-height: 1.55;
 }
 
@@ -432,7 +441,7 @@ footer a:focus-visible,
   border-top: 1px solid rgb(255 255 255 / 6%);
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.61rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -454,26 +463,6 @@ footer a:focus-visible,
   left: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgb(var(--signal-rgb) / 48%), transparent 86%);
-}
-
-.hero-bus i::before,
-.hero-bus i::after {
-  position: absolute;
-  top: -3px;
-  width: 7px;
-  height: 7px;
-  border: 1px solid var(--signal);
-  border-radius: 50%;
-  background: var(--background);
-  content: '';
-}
-
-.hero-bus i::before {
-  left: 28%;
-}
-
-.hero-bus i::after {
-  left: 68%;
 }
 
 .hero-bus i:nth-child(1) {
@@ -517,7 +506,7 @@ footer a:focus-visible,
   padding-block: 1.4rem;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.64rem;
+  font-size: 0.7rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -589,14 +578,14 @@ footer a:focus-visible,
   border-radius: 10px;
   color: var(--company);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
 }
 
 .chapter-rail p {
   margin: auto 0;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.61rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   writing-mode: vertical-rl;
@@ -616,7 +605,7 @@ footer a:focus-visible,
   aspect-ratio: 1;
   width: 100%;
   overflow: hidden;
-  border: 1px solid #2b3447;
+  border: 1px solid #223633;
   border-radius: 22px;
   background:
     linear-gradient(rgb(255 255 255 / 3%) 1px, transparent 1px),
@@ -674,7 +663,7 @@ footer a:focus-visible,
   margin-top: 1rem;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.59rem;
+  font-size: 0.66rem;
   letter-spacing: 0.1em;
   text-align: center;
   text-transform: uppercase;
@@ -690,23 +679,25 @@ footer a:focus-visible,
 
 .company-story h3 {
   margin: 1rem 0 0;
-  font-size: clamp(3rem, 5vw, 5.7rem);
-  font-weight: 520;
-  letter-spacing: -0.067em;
-  line-height: 0.94;
+  font-family: 'Big Shoulders Display Variable', Impact, sans-serif;
+  font-size: clamp(4rem, 6.5vw, 7rem);
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 0.86;
+  text-transform: uppercase;
 }
 
 .company-role {
   margin: 0.9rem 0 0;
   color: #d8dcea;
-  font-size: clamp(1rem, 1.7vw, 1.28rem);
+  font-size: clamp(1.08rem, 1.8vw, 1.38rem);
 }
 
 .company-statement {
   max-width: 650px;
   margin: 1.7rem 0 0;
   color: #b0b8c7;
-  font-size: 1rem;
+  font-size: 1.08rem;
   line-height: 1.7;
 }
 
@@ -714,7 +705,7 @@ footer a:focus-visible,
   margin: 1.7rem 0 0;
   padding: 1.5rem 0 0;
   border-top: 1px solid var(--line);
-  color: #929cad;
+  color: #9caeaa;
   list-style: none;
 }
 
@@ -740,7 +731,7 @@ footer a:focus-visible,
 .company-location {
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   line-height: 1.6;
 }
 
@@ -774,10 +765,13 @@ footer a:focus-visible,
 .activity-heading h2,
 .closing h2 {
   margin: 0;
-  font-size: clamp(3rem, 5.3vw, 5.6rem);
-  font-weight: 500;
-  letter-spacing: -0.065em;
-  line-height: 0.96;
+  font-family: 'Big Shoulders Display Variable', Impact, sans-serif;
+  font-size: clamp(4.4rem, 7vw, 7.4rem);
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 0.86;
+  text-transform: uppercase;
+  text-wrap: balance;
 }
 
 .activity-heading h2 {
@@ -788,6 +782,7 @@ footer a:focus-visible,
   max-width: 620px;
   margin: 1.5rem 0 0;
   color: var(--muted);
+  font-size: 1.06rem;
   line-height: 1.7;
 }
 
@@ -795,7 +790,7 @@ footer a:focus-visible,
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  border: 1px solid #2b3447;
+  border: 1px solid #223633;
   border-radius: 18px;
   background:
     linear-gradient(90deg, rgb(var(--signal-rgb) / 4%), transparent 44%),
@@ -874,7 +869,7 @@ footer a:focus-visible,
   border-radius: 9px;
   color: var(--signal-bright);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.64rem;
+  font-size: 0.7rem;
 }
 
 .commit-field-meta p,
@@ -883,7 +878,7 @@ footer a:focus-visible,
   margin: 0;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.61rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   line-height: 1.6;
   text-transform: uppercase;
@@ -891,12 +886,12 @@ footer a:focus-visible,
 
 .commit-field-meta p span {
   display: block;
-  color: #b0b8c8;
+  color: #b7c8c5;
 }
 
 .commit-total strong {
   color: var(--signal-bright);
-  font-size: 1.05rem;
+  font-size: 1.2rem;
   font-weight: 520;
   letter-spacing: -0.02em;
 }
@@ -905,8 +900,12 @@ footer a:focus-visible,
   position: relative;
   overflow-x: auto;
   padding: 0.25rem 0 1rem;
-  scrollbar-color: #46516b transparent;
+  scrollbar-color: #36534e transparent;
   scrollbar-width: thin;
+}
+
+.commit-mobile {
+  display: none;
 }
 
 .commit-calendar {
@@ -924,7 +923,7 @@ footer a:focus-visible,
   margin-bottom: 0.65rem;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.58rem;
+  font-size: 0.64rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1072,7 +1071,7 @@ footer a:focus-visible,
   border-bottom: 1px solid #46516a;
   padding-bottom: 0.25rem;
   color: var(--muted);
-  font-size: 0.73rem;
+  font-size: 0.82rem;
 }
 
 footer {
@@ -1082,7 +1081,7 @@ footer {
   padding-block: 2.5rem;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.64rem;
+  font-size: 0.7rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1094,6 +1093,21 @@ footer nav {
 
 .resume-page {
   font-family: 'Manrope Variable', ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.04rem;
+  line-height: 1.68;
+}
+
+.resume-page > header h1 {
+  font-family: 'Big Shoulders Display Variable', Impact, sans-serif;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.resume-summary {
+  max-width: 54rem;
+  line-height: 1.72;
 }
 
 @keyframes reveal {
@@ -1213,13 +1227,9 @@ footer nav {
   }
 
   .hero h1 {
-    margin-block: 4rem 3.5rem;
-    font-size: clamp(4.1rem, 21.5vw, 6.2rem);
-    line-height: 0.76;
-  }
-
-  .hero h1 em {
-    margin-left: 0;
+    margin-block: 4.25rem 3.75rem;
+    font-size: clamp(5.4rem, 24.2vw, 7rem);
+    line-height: 0.65;
   }
 
   .hero-content {
@@ -1300,7 +1310,7 @@ footer nav {
   }
 
   .company-story h3 {
-    font-size: clamp(2.8rem, 14vw, 4.5rem);
+    font-size: clamp(4rem, 18vw, 5.6rem);
   }
 
   .company-statement {
@@ -1309,7 +1319,7 @@ footer nav {
 
   .activity-heading h2,
   .closing h2 {
-    font-size: clamp(2.8rem, 13vw, 4.6rem);
+    font-size: clamp(4rem, 18vw, 5.8rem);
   }
 
   .commit-field {
@@ -1324,6 +1334,65 @@ footer nav {
   .commit-legend {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .commit-scroll {
+    display: none;
+  }
+
+  .commit-mobile {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .commit-month {
+    display: grid;
+    grid-template-columns: 5rem minmax(0, 1fr) 3rem;
+    gap: 0.7rem;
+    align-items: center;
+    min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .commit-month time,
+  .commit-month strong {
+    color: var(--subtle);
+    font-weight: 500;
+  }
+
+  .commit-month strong {
+    text-align: right;
+  }
+
+  .commit-month-track {
+    height: 9px;
+    overflow: hidden;
+    border-radius: 2px;
+    background: rgb(var(--signal-rgb) / 8%);
+  }
+
+  .commit-month-track i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--signal);
+    box-shadow: 0 0 12px rgb(var(--signal-rgb) / 28%);
+  }
+
+  .commit-month.is-current time,
+  .commit-month.is-current strong {
+    color: var(--ink);
+  }
+
+  .commit-month.is-current .commit-month-track i {
+    background: var(--hot);
+    box-shadow: 0 0 12px rgb(255 73 61 / 32%);
+  }
+
+  .legend-scale {
+    display: none;
   }
 
   .closing {
@@ -1382,7 +1451,7 @@ footer nav {
     color: #111;
   }
 
-  .hero h1 em,
+  .hero-first-name,
   .company-eyebrow {
     color: #333;
   }

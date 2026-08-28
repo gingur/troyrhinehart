@@ -8,7 +8,7 @@ const linkClass =
   'text-neutral-300 underline-offset-4 transition-colors hover:text-neutral-50 hover:underline print:text-neutral-900 print:no-underline';
 
 const sectionHeadingClass =
-  'mb-4 text-xs font-semibold uppercase tracking-widest text-neutral-500 print:text-neutral-600';
+  'mb-4 text-sm font-semibold uppercase tracking-widest text-neutral-500 print:text-neutral-600';
 
 const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
 
@@ -33,23 +33,23 @@ const jsonLd = {
 <BaseLayout title={`Resume — ${resume.name}`} description={description}>
   <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} slot="head" />
 
-  <a class="skip-link" href="#resume-content">Skip to résumé</a>
+  <a class="skip-link" href="#resume-content">Skip to resume</a>
 
   <main
     id="resume-content"
     tabindex="-1"
-    class="resume-page mx-auto max-w-3xl px-6 py-16 print:max-w-none print:px-0 print:py-0 print:text-neutral-900"
+    class="resume-page mx-auto max-w-4xl px-6 py-16 print:max-w-none print:px-0 print:py-0 print:text-neutral-900"
   >
     <p class="mb-8 text-sm print:hidden">
       <a class={linkClass} href="/">&larr; troyrhinehart.com</a>
     </p>
 
     <header class="border-b border-neutral-800 pb-8 print:border-neutral-300">
-      <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">{resume.name}</h1>
-      <p class="mt-2 text-lg text-neutral-400 print:text-neutral-700">{resume.title}</p>
+      <h1 class="text-5xl font-semibold tracking-tight sm:text-6xl">{resume.name}</h1>
+      <p class="mt-2 text-xl text-neutral-300 print:text-neutral-700">{resume.title}</p>
 
       <ul
-        class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-neutral-400 print:text-neutral-700"
+        class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-base text-neutral-400 print:text-neutral-700"
       >
         <li>{resume.location}</li>
         <li><a class={linkClass} href={`mailto:${resume.email}`}>{resume.email}</a></li>
@@ -60,11 +60,13 @@ const jsonLd = {
         </li>
       </ul>
 
-      <p class="mt-6 text-neutral-300 print:text-neutral-800">{resume.summary}</p>
+      <p class="resume-summary mt-7 text-lg text-neutral-200 print:text-neutral-800">
+        {resume.summary}
+      </p>
 
       <p class="mt-6 print:hidden">
         <a
-          class="inline-flex items-center rounded-md border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-200 transition-colors hover:border-neutral-500 hover:text-neutral-50"
+          class="inline-flex items-center rounded-md border border-neutral-700 px-4 py-2 text-base font-medium text-neutral-200 transition-colors hover:border-neutral-500 hover:text-neutral-50"
           href={resume.pdf}
           download={resume.pdfDownloadName}
         >
@@ -80,10 +82,10 @@ const jsonLd = {
           resume.experience.map((job) => (
             <li class="break-inside-avoid">
               <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                <h3 class="text-base font-medium text-neutral-100 print:text-neutral-900">
+                <h3 class="text-lg font-medium text-neutral-100 print:text-neutral-900">
                   {job.role} · <span class="text-neutral-300 print:text-neutral-800">{job.company}</span>
                 </h3>
-                <p class="text-sm text-neutral-500 print:text-neutral-600">
+                <p class="text-base text-neutral-500 print:text-neutral-600">
                   {job.dates} · {job.location}
                 </p>
               </div>

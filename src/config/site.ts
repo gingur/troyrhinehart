@@ -1,7 +1,7 @@
 export const site = {
   name: 'Troy Rhinehart',
   tagline:
-    'Principal engineer building AI platforms, developer tooling, and web products at scale.',
+    'Principal engineer building AI platforms, developer systems, and product architecture at scale.',
   email: 'troy.rhinehart@gmail.com',
   links: {
     calendly: 'https://calendly.com/troy-rhinehart/30min',

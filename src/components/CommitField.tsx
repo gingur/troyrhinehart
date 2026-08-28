@@ -8,11 +8,17 @@ const GITHUB_USERNAMES = [
   'gingur-bot',
 ] as const;
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
 type Day = { date: string; count: number; level: number };
 type UserResponse = { contributions: Day[] };
 type ContributionData = { days: Day[]; total: number; accounts: number };
+type MonthlyActivity = { key: string; label: string; total: number };
+
+const numberFormatter = new Intl.NumberFormat('en-US');
+const monthFormatter = new Intl.DateTimeFormat('en-US', { month: 'short' });
+const monthYearFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  year: 'numeric',
+});
 
 function contributionLevel(count: number, quartiles: [number, number, number]) {
   if (count === 0) return 0;
@@ -73,11 +79,11 @@ async function loadContributions(signal: AbortSignal): Promise<ContributionData>
 }
 
 function formatDate(date: string) {
-  return new Date(`${date}T00:00:00`).toLocaleDateString('en-US', {
+  return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  });
+  }).format(new Date(`${date}T00:00:00`));
 }
 
 export default function CommitField() {
@@ -106,6 +112,24 @@ export default function CommitField() {
     return grouped;
   }, [data]);
 
+  const monthlyActivity = useMemo<MonthlyActivity[]>(() => {
+    if (!data?.days.length) return [];
+    const grouped = new Map<string, number>();
+    for (const day of data.days) {
+      const key = day.date.slice(0, 7);
+      grouped.set(key, (grouped.get(key) ?? 0) + day.count);
+    }
+    return [...grouped.entries()]
+      .map(([key, total]) => ({
+        key,
+        label: monthYearFormatter.format(new Date(`${key}-01T00:00:00`)),
+        total,
+      }))
+      .reverse();
+  }, [data]);
+
+  const maxMonthlyTotal = Math.max(1, ...monthlyActivity.map((month) => month.total));
+
   return (
     <div className="commit-field">
       <div className="commit-orbits" aria-hidden="true">
@@ -125,7 +149,7 @@ export default function CommitField() {
         </div>
         {data && (
           <p className="commit-total" aria-live="polite">
-            <strong>{data.total.toLocaleString()}</strong> contributions · {data.accounts}{' '}
+            <strong>{numberFormatter.format(data.total)}</strong> contributions · {data.accounts}{' '}
             identities
           </p>
         )}
@@ -133,7 +157,7 @@ export default function CommitField() {
 
       {error && (
         <p className="commit-message" role="status">
-          The contribution signal is temporarily offline.
+          GitHub activity could not load. Refresh in a few minutes to try again.
         </p>
       )}
 
@@ -141,7 +165,7 @@ export default function CommitField() {
         <div
           className="commit-loading"
           role="status"
-          aria-label="Loading combined GitHub contribution activity"
+          aria-label="Loading combined GitHub contribution activity…"
         >
           {Array.from({ length: 196 }, (_, index) => (
             <i className={index % 11 === 0 || index % 17 === 0 ? 'is-active' : ''} key={index} />
@@ -160,14 +184,20 @@ export default function CommitField() {
                 const previousMonth = previous
                   ? new Date(`${previous.date}T00:00:00`).getMonth()
                   : -1;
-                return <span key={index}>{month !== previousMonth ? MONTHS[month] : ''}</span>;
+                return (
+                  <span key={index}>
+                    {month !== previousMonth && month >= 0
+                      ? monthFormatter.format(new Date(`${current!.date}T00:00:00`))
+                      : ''}
+                  </span>
+                );
               })}
             </div>
 
             <div
               className="commit-weeks"
               role="img"
-              aria-label={`${data.total.toLocaleString()} GitHub contributions across ${data.accounts} identities over the last year`}
+              aria-label={`${numberFormatter.format(data.total)} GitHub contributions across ${data.accounts} identities over the last year`}
             >
               {weeks.map((week, weekIndex) => (
                 <div className="commit-week" key={weekIndex}>
@@ -187,6 +217,29 @@ export default function CommitField() {
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {data && (
+        <div
+          className="commit-mobile"
+          role="img"
+          aria-label={`Monthly GitHub activity for the rolling year, newest first. ${monthlyActivity.map((month) => `${month.label}: ${numberFormatter.format(month.total)}`).join('; ')}. ${numberFormatter.format(data.total)} total contributions across ${data.accounts} identities.`}
+        >
+          {monthlyActivity.map((month, index) => (
+            <div
+              className={index === 0 ? 'commit-month is-current' : 'commit-month'}
+              key={month.key}
+            >
+              <time dateTime={`${month.key}-01`} aria-hidden="true">
+                {month.label}
+              </time>
+              <span className="commit-month-track" aria-hidden="true">
+                <i style={{ width: `${Math.max(3, (month.total / maxMonthlyTotal) * 100)}%` }} />
+              </span>
+              <strong aria-hidden="true">{numberFormatter.format(month.total)}</strong>
+            </div>
+          ))}
         </div>
       )}
 
