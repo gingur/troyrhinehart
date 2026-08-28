@@ -64,6 +64,15 @@ const arrow = `
   <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
     <path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`;
+
+const marqueeItems = [
+  'AI orchestration',
+  'Platform architecture',
+  'Developer experience',
+  'Web systems',
+  'Technical leadership',
+  'CI health',
+] as const;
 ---
 
 <BaseLayout title={`${resume.name} — ${resume.title}`} description={description}>
@@ -118,6 +127,16 @@ const arrow = `
               Explore the work <Fragment set:html={arrow} />
             </a>
             <a class="text-link" href={`mailto:${resume.email}`}>Start a conversation</a>
+          </div>
+        </div>
+
+        <div class="hero-marquee" aria-label="Areas of expertise">
+          <div class="hero-marquee-track" aria-hidden="true">
+            {
+              [...marqueeItems, ...marqueeItems].map((item) => (
+                <span>{item}<i></i></span>
+              ))
+            }
           </div>
         </div>
       </section>

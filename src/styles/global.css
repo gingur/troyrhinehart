@@ -149,8 +149,13 @@ footer a:focus-visible,
 
 .hero > astro-island {
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 50%;
   display: block;
+  width: 100vw;
+  width: 100dvw;
+  transform: translateX(-50%);
 }
 
 .hero-effects {
@@ -342,6 +347,54 @@ footer a:focus-visible,
   align-items: center;
   gap: 1.5rem;
   justify-content: flex-end;
+}
+
+.hero-marquee {
+  position: absolute;
+  z-index: 3;
+  bottom: 0;
+  left: 50%;
+  width: 100vw;
+  width: 100dvw;
+  overflow: hidden;
+  border-top: 1px solid rgb(255 255 255 / 8%);
+  background: rgb(9 11 10 / 54%);
+  backdrop-filter: blur(10px);
+  transform: translateX(-50%);
+}
+
+.hero-marquee-track {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  min-height: 44px;
+  animation: hero-marquee 34s linear infinite;
+  will-change: transform;
+}
+
+.hero-marquee:hover .hero-marquee-track {
+  animation-play-state: paused;
+}
+
+.hero-marquee span {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2rem;
+  margin-inline: 2rem;
+  color: #6f756f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.hero-marquee i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 7px rgb(200 255 61 / 55%);
 }
 
 .button {
@@ -1053,6 +1106,12 @@ footer nav {
   }
 }
 
+@keyframes hero-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
 @media (max-width: 1050px) {
   .hero {
     min-height: auto;
@@ -1140,6 +1199,16 @@ footer nav {
 
   .hero-particles {
     opacity: 0.58;
+  }
+
+  .hero-marquee-track {
+    min-height: 40px;
+  }
+
+  .hero-marquee span {
+    gap: 1.5rem;
+    margin-inline: 1.5rem;
+    font-size: 0.5rem;
   }
 
   .hero-topline {
@@ -1281,6 +1350,11 @@ footer nav {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .hero-marquee-track {
+    animation: none !important;
+    transform: none;
   }
 }
 
