@@ -32,8 +32,7 @@ body {
   margin: 0;
   overflow-x: hidden;
   background:
-    radial-gradient(circle at 75% 2%, rgb(168 140 255 / 7%), transparent 24rem),
-    radial-gradient(circle at 8% 28%, rgb(200 255 61 / 4%), transparent 26rem), var(--background);
+    radial-gradient(circle at 75% 2%, rgb(168 140 255 / 7%), transparent 24rem), var(--background);
   color: var(--ink);
 }
 
@@ -544,7 +543,9 @@ footer a:focus-visible,
 
 .company-chapter {
   --company: var(--lime);
+  --orb-x: 10%;
   position: relative;
+  isolation: isolate;
   display: grid;
   grid-template-columns: 72px minmax(300px, 0.82fr) minmax(390px, 1.18fr);
   gap: clamp(2rem, 4vw, 5rem);
@@ -560,6 +561,7 @@ footer a:focus-visible,
 
 .company-cyan {
   --company: #1bdbdb;
+  --orb-x: 90%;
 }
 
 .company-red {
@@ -578,6 +580,25 @@ footer a:focus-visible,
     color-mix(in srgb, var(--company) 60%, transparent)
   );
   content: '';
+}
+
+.company-chapter::before {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 100vw;
+  width: 100dvw;
+  background: radial-gradient(
+    ellipse 36% 78% at var(--orb-x) 50%,
+    color-mix(in srgb, var(--company) 12%, transparent),
+    color-mix(in srgb, var(--company) 5%, transparent) 42%,
+    transparent 74%
+  );
+  content: '';
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 
 .chapter-rail {
