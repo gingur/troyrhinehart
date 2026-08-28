@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import CommitField from '../components/CommitField';
 import ParticleImage from '../components/ParticleImage';
 import { resume } from '../data/resume';
 
@@ -168,8 +169,22 @@ const arrow = `
         </ol>
       </section>
 
+      <section class="activity-section" aria-labelledby="activity-title">
+        <header class="activity-heading">
+          <p class="section-index">02 / Activity</p>
+          <div>
+            <h2 id="activity-title">The work <em>between the milestones.</em></h2>
+            <p>
+              A live signal from the day-to-day: public contribution activity combined across my
+              GitHub identities.
+            </p>
+          </div>
+        </header>
+        <CommitField client:visible />
+      </section>
+
       <section class="closing" aria-labelledby="closing-title">
-        <p class="section-index">02 / Next</p>
+        <p class="section-index">03 / Next</p>
         <h2 id="closing-title">Let’s build the thing <em>behind the thing.</em></h2>
         <div>
           <a class="button button-primary" href={`mailto:${resume.email}`}>

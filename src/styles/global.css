@@ -591,6 +591,286 @@ footer a:focus-visible,
   text-transform: uppercase;
 }
 
+.activity-section {
+  padding-block: clamp(7rem, 11vw, 11rem);
+  border-top: 1px solid var(--line);
+}
+
+.activity-heading {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.26fr) minmax(0, 1fr);
+  gap: clamp(2rem, 6vw, 7rem);
+  align-items: start;
+  margin-bottom: clamp(3.5rem, 7vw, 6rem);
+}
+
+.activity-heading h2 {
+  max-width: 800px;
+  margin: 0;
+  font-size: clamp(3rem, 5.5vw, 5.8rem);
+  font-weight: 500;
+  letter-spacing: -0.065em;
+  line-height: 0.96;
+}
+
+.activity-heading h2 em {
+  color: var(--lime);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 400;
+  letter-spacing: -0.05em;
+}
+
+.activity-heading > div > p {
+  max-width: 620px;
+  margin: 1.7rem 0 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.commit-field {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid #292e2a;
+  background:
+    linear-gradient(90deg, rgb(200 255 61 / 2%), transparent 40%),
+    linear-gradient(rgb(255 255 255 / 1.5%), transparent), #0d100e;
+  padding: clamp(1.4rem, 3vw, 2.4rem);
+  box-shadow: 0 35px 100px rgb(0 0 0 / 20%);
+}
+
+.commit-field::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  opacity: 0.13;
+  background-image:
+    linear-gradient(rgb(255 255 255 / 10%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 10%) 1px, transparent 1px);
+  background-size: 32px 32px;
+  content: '';
+  mask-image: linear-gradient(90deg, transparent, black 22%, black 72%, transparent);
+}
+
+.commit-orbits {
+  position: absolute;
+  z-index: -1;
+  top: -155px;
+  right: -60px;
+  width: 360px;
+  height: 360px;
+  opacity: 0.24;
+}
+
+.commit-orbits i {
+  position: absolute;
+  border: 1px solid rgb(200 255 61 / 22%);
+  border-radius: 50%;
+}
+
+.commit-orbits i:first-child {
+  inset: 0;
+}
+
+.commit-orbits i:nth-child(2) {
+  inset: 18%;
+}
+
+.commit-orbits i:last-child {
+  inset: 36%;
+  background: radial-gradient(circle, rgb(200 255 61 / 8%), transparent 70%);
+}
+
+.commit-field-meta,
+.commit-field-meta > div,
+.commit-legend,
+.legend-scale {
+  display: flex;
+  align-items: center;
+}
+
+.commit-field-meta {
+  position: relative;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-bottom: 2.8rem;
+}
+
+.commit-field-meta > div {
+  gap: 0.9rem;
+}
+
+.commit-badge {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgb(200 255 61 / 48%);
+  border-radius: 50%;
+  color: var(--lime);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.58rem;
+}
+
+.commit-field-meta p,
+.commit-legend,
+.commit-message {
+  margin: 0;
+  color: #666c66;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.57rem;
+  letter-spacing: 0.08em;
+  line-height: 1.6;
+  text-transform: uppercase;
+}
+
+.commit-field-meta p span {
+  display: block;
+  color: #aeb3ad;
+}
+
+.commit-total strong {
+  color: var(--lime);
+  font-size: 1.1rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.commit-scroll {
+  position: relative;
+  overflow-x: auto;
+  padding: 0.25rem 0 1rem;
+  scrollbar-color: #3b413c transparent;
+  scrollbar-width: thin;
+}
+
+.commit-calendar {
+  width: max-content;
+  min-width: 100%;
+}
+
+.commit-months,
+.commit-weeks {
+  display: flex;
+  gap: 4px;
+}
+
+.commit-months {
+  margin-bottom: 0.65rem;
+  color: #575d57;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.5rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.commit-months span {
+  width: 11px;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.commit-week {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.commit-dot,
+.legend-scale i {
+  display: block;
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  transition:
+    background 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.commit-dot:not(.is-empty):hover {
+  z-index: 2;
+  transform: scale(1.45);
+}
+
+.commit-dot.level-0,
+.legend-scale .level-0 {
+  background: rgb(200 255 61 / 7%);
+}
+
+.commit-dot.level-1,
+.legend-scale .level-1 {
+  background: rgb(200 255 61 / 28%);
+}
+
+.commit-dot.level-2,
+.legend-scale .level-2 {
+  background: rgb(200 255 61 / 50%);
+}
+
+.commit-dot.level-3,
+.legend-scale .level-3 {
+  background: rgb(200 255 61 / 76%);
+  box-shadow: 0 0 5px rgb(200 255 61 / 40%);
+}
+
+.commit-dot.level-4,
+.legend-scale .level-4 {
+  background: var(--lime);
+  box-shadow: 0 0 8px rgb(200 255 61 / 66%);
+}
+
+.commit-dot.is-empty {
+  visibility: hidden;
+}
+
+.commit-legend {
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.legend-scale {
+  gap: 4px;
+}
+
+.legend-scale i:first-of-type {
+  margin-left: 0.35rem;
+}
+
+.legend-scale i:last-of-type {
+  margin-right: 0.35rem;
+}
+
+.commit-loading {
+  display: grid;
+  grid-template-columns: repeat(28, 11px);
+  gap: 4px;
+  overflow: hidden;
+  padding-block: 1.4rem;
+}
+
+.commit-loading i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgb(200 255 61 / 6%);
+  animation: commit-pulse 1.6s ease-in-out infinite alternate;
+}
+
+.commit-loading i.is-active {
+  background: rgb(200 255 61 / 26%);
+}
+
+.commit-message {
+  padding-block: 4rem;
+  color: #858b85;
+  text-align: center;
+}
+
 .closing {
   display: grid;
   grid-template-columns: minmax(150px, 0.25fr) minmax(0, 1fr) auto;
@@ -652,6 +932,12 @@ footer nav {
   }
 }
 
+@keyframes commit-pulse {
+  to {
+    opacity: 0.25;
+  }
+}
+
 @media (max-width: 1050px) {
   .hero {
     min-height: auto;
@@ -686,6 +972,10 @@ footer nav {
 }
 
 @media (max-width: 820px) {
+  .activity-heading {
+    grid-template-columns: 1fr;
+  }
+
   .company-chapter {
     grid-template-columns: 56px 1fr;
     min-height: 0;
@@ -807,6 +1097,27 @@ footer nav {
     font-size: 1rem;
   }
 
+  .activity-heading h2 {
+    font-size: clamp(2.8rem, 13vw, 4.6rem);
+  }
+
+  .commit-field {
+    margin-inline: -1rem;
+    border-right: 0;
+    border-left: 0;
+    padding-inline: 1rem;
+  }
+
+  .commit-field-meta,
+  .commit-legend {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .commit-calendar {
+    min-width: 805px;
+  }
+
   .closing {
     gap: 2rem;
   }
@@ -846,6 +1157,7 @@ footer nav {
   body::before,
   .topbar,
   .company-visual,
+  .activity-section,
   .closing,
   footer {
     display: none;
