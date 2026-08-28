@@ -1249,12 +1249,23 @@ footer nav {
   }
 
   .resume-float {
-    min-height: 42px;
-    padding-inline: 0.85rem;
+    justify-content: center;
+    width: 46px;
+    min-height: 46px;
+    gap: 0;
+    padding: 0;
   }
 
-  .resume-float-prefix {
+  .resume-float > span:nth-child(2) {
     display: none;
+  }
+
+  .resume-float-signal {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 6px;
+    height: 6px;
   }
 }
 
