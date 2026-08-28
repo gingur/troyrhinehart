@@ -596,6 +596,10 @@ footer a:focus-visible,
   border-top: 1px solid var(--line);
 }
 
+.activity-section astro-island {
+  display: block;
+}
+
 .activity-heading {
   display: grid;
   grid-template-columns: minmax(150px, 0.26fr) minmax(0, 1fr);
