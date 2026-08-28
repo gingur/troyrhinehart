@@ -96,20 +96,18 @@ const marqueeItems = [
       <section class="hero" aria-labelledby="hero-title">
         <HeroEffects client:load />
 
-        <div class="hero-topline reveal reveal-1">
-          <p class="eyebrow">
-            <span class="status-dot" aria-hidden="true"></span>
-            Troy Rhinehart
-          </p>
-          <p>Principal Software Engineer</p>
-          <p>Mesa, Arizona · 2010—Now</p>
-        </div>
-
         <div class="hero-statement">
-          <p class="hero-marker reveal reveal-2" aria-hidden="true">15+</p>
-          <h1 id="hero-title" class="reveal reveal-2">
-            I build the systems <em>behind ambitious products.</em>
-          </h1>
+          <p class="hero-marker reveal reveal-1" aria-hidden="true">15+</p>
+          <div class="hero-title-lockup">
+            <p class="hero-role reveal reveal-1">
+              <span class="status-dot" aria-hidden="true"></span>
+              Principal Software Engineer
+            </p>
+            <h1 id="hero-title" class="reveal reveal-2">Troy <em>Rhinehart.</em></h1>
+            <p class="hero-thesis reveal reveal-3">
+              I build the systems behind ambitious products.
+            </p>
+          </div>
         </div>
 
         <div class="hero-bottom reveal reveal-3">
@@ -133,8 +131,10 @@ const marqueeItems = [
         <div class="hero-marquee" aria-label="Areas of expertise">
           <div class="hero-marquee-track" aria-hidden="true">
             {
-              [...marqueeItems, ...marqueeItems].map((item) => (
-                <span>{item}<i></i></span>
+              [0, 1].map(() => (
+                <div class="hero-marquee-group">
+                  {marqueeItems.map((item) => <span>{item}<i></i></span>)}
+                </div>
               ))
             }
           </div>

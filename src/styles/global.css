@@ -82,7 +82,7 @@ a {
   justify-self: start;
   gap: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.78rem;
+  font-size: 0.84rem;
   font-weight: 700;
   letter-spacing: 0.12em;
 }
@@ -99,7 +99,7 @@ a {
   display: flex;
   gap: 2rem;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.84rem;
 }
 
 .nav-links a,
@@ -127,7 +127,7 @@ footer a:focus-visible,
   gap: 0.65rem;
   border-bottom: 1px solid var(--subtle);
   padding-block: 0.4rem;
-  font-size: 0.8rem;
+  font-size: 0.84rem;
 }
 
 .nav-cta:hover {
@@ -142,7 +142,6 @@ footer a:focus-visible,
   flex-direction: column;
   justify-content: space-between;
   min-height: calc(100vh - 104px);
-  overflow: clip;
   padding: clamp(3rem, 7vh, 6rem) 0 clamp(4rem, 8vh, 7rem);
 }
 
@@ -218,7 +217,7 @@ footer a:focus-visible,
   margin: 0;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.68rem;
+  font-size: 0.74rem;
   letter-spacing: 0.11em;
   line-height: 1.5;
   text-transform: uppercase;
@@ -238,32 +237,6 @@ footer a:focus-visible,
   box-shadow: 0 0 10px rgb(200 255 61 / 70%);
 }
 
-.hero-topline {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 2rem;
-  color: #717771;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.61rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.hero-topline p {
-  margin: 0;
-}
-
-.hero-topline > p:nth-child(2) {
-  color: #a8ada7;
-}
-
-.hero-topline > p:last-child {
-  justify-self: end;
-}
-
 .hero-statement {
   position: relative;
   z-index: 1;
@@ -271,7 +244,7 @@ footer a:focus-visible,
   grid-template-columns: clamp(55px, 7vw, 100px) minmax(0, 1fr);
   gap: clamp(1rem, 3vw, 3.5rem);
   align-items: start;
-  margin-block: clamp(5rem, 11vh, 9rem);
+  margin-block: clamp(4rem, 9vh, 7.5rem);
 }
 
 .hero-marker {
@@ -284,16 +257,32 @@ footer a:focus-visible,
   border-radius: 50%;
   color: var(--lime);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.61rem;
+  font-size: 0.68rem;
+}
+
+.hero-title-lockup {
+  min-width: 0;
+}
+
+.hero-role {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 1.4rem;
+  color: #a7aca6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .hero h1 {
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0;
-  font-size: clamp(4.8rem, 8.7vw, 9.2rem);
+  font-size: clamp(6rem, 11.4vw, 11.8rem);
   font-weight: 540;
-  letter-spacing: -0.078em;
-  line-height: 0.86;
+  letter-spacing: -0.082em;
+  line-height: 0.8;
 }
 
 .hero h1 em,
@@ -302,6 +291,14 @@ footer a:focus-visible,
   font-family: Georgia, 'Times New Roman', serif;
   font-weight: 400;
   letter-spacing: -0.05em;
+}
+
+.hero-thesis {
+  max-width: 620px;
+  margin: 2rem 0 0;
+  color: #9fa59e;
+  font-size: clamp(1rem, 1.35vw, 1.18rem);
+  line-height: 1.55;
 }
 
 .hero-intro {
@@ -335,7 +332,7 @@ footer a:focus-visible,
   padding: 0.45rem 0.7rem;
   color: #858b85;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.54rem;
+  font-size: 0.62rem;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
@@ -371,6 +368,16 @@ footer a:focus-visible,
   will-change: transform;
 }
 
+.hero-marquee-group {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  width: max-content;
+  min-width: 100vw;
+  min-width: 100dvw;
+  justify-content: space-around;
+}
+
 .hero-marquee:hover .hero-marquee-track {
   animation-play-state: paused;
 }
@@ -383,7 +390,7 @@ footer a:focus-visible,
   margin-inline: 2rem;
   color: #6f756f;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.55rem;
+  font-size: 0.62rem;
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -526,7 +533,7 @@ footer a:focus-visible,
   padding-block: 1.5rem;
   color: #626862;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -543,9 +550,7 @@ footer a:focus-visible,
 
 .company-chapter {
   --company: var(--lime);
-  --orb-x: 10%;
   position: relative;
-  isolation: isolate;
   display: grid;
   grid-template-columns: 72px minmax(300px, 0.82fr) minmax(390px, 1.18fr);
   gap: clamp(2rem, 4vw, 5rem);
@@ -561,7 +566,6 @@ footer a:focus-visible,
 
 .company-cyan {
   --company: #1bdbdb;
-  --orb-x: 90%;
 }
 
 .company-red {
@@ -582,25 +586,6 @@ footer a:focus-visible,
   content: '';
 }
 
-.company-chapter::before {
-  position: absolute;
-  z-index: -1;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: 100vw;
-  width: 100dvw;
-  background: radial-gradient(
-    ellipse 36% 78% at var(--orb-x) 50%,
-    color-mix(in srgb, var(--company) 12%, transparent),
-    color-mix(in srgb, var(--company) 5%, transparent) 42%,
-    transparent 74%
-  );
-  content: '';
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-
 .chapter-rail {
   align-self: stretch;
   display: flex;
@@ -619,14 +604,14 @@ footer a:focus-visible,
   border-radius: 50%;
   color: var(--company);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.63rem;
+  font-size: 0.7rem;
 }
 
 .chapter-rail p {
   margin: auto 0;
   color: #626862;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.58rem;
+  font-size: 0.64rem;
   letter-spacing: 0.11em;
   text-transform: uppercase;
   writing-mode: vertical-rl;
@@ -689,7 +674,7 @@ footer a:focus-visible,
   margin-top: 1.2rem;
   color: #555b55;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.54rem;
+  font-size: 0.62rem;
   letter-spacing: 0.11em;
   text-align: center;
   text-transform: uppercase;
@@ -755,7 +740,7 @@ footer a:focus-visible,
 .company-location {
   color: #646a64;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.64rem;
+  font-size: 0.7rem;
   line-height: 1.6;
 }
 
@@ -891,7 +876,7 @@ footer a:focus-visible,
   border-radius: 50%;
   color: var(--lime);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.58rem;
+  font-size: 0.64rem;
 }
 
 .commit-field-meta p,
@@ -900,7 +885,7 @@ footer a:focus-visible,
   margin: 0;
   color: #666c66;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.57rem;
+  font-size: 0.64rem;
   letter-spacing: 0.08em;
   line-height: 1.6;
   text-transform: uppercase;
@@ -941,7 +926,7 @@ footer a:focus-visible,
   margin-bottom: 0.65rem;
   color: #575d57;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.5rem;
+  font-size: 0.58rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1093,7 +1078,7 @@ footer {
   padding-block: 2.5rem;
   color: #646a64;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1229,15 +1214,7 @@ footer nav {
   .hero-marquee span {
     gap: 1.5rem;
     margin-inline: 1.5rem;
-    font-size: 0.5rem;
-  }
-
-  .hero-topline {
-    grid-template-columns: 1fr auto;
-  }
-
-  .hero-topline > p:nth-child(2) {
-    display: none;
+    font-size: 0.58rem;
   }
 
   .hero-statement {
@@ -1251,6 +1228,10 @@ footer nav {
 
   .hero h1 {
     font-size: clamp(3.7rem, 17.2vw, 5.8rem);
+  }
+
+  .hero-role {
+    font-size: 0.68rem;
   }
 
   .hero-bottom {
