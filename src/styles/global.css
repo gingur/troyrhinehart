@@ -521,9 +521,16 @@ footer a:focus-visible,
   inset: 29%;
 }
 
+.particle-frame astro-island {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
 .particle-frame canvas {
   width: min(88%, 380px) !important;
-  height: auto !important;
+  height: min(88%, 380px) !important;
 }
 
 .company-visual figcaption {
