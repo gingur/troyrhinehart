@@ -745,14 +745,14 @@ footer a:focus-visible,
 }
 
 .commit-calendar {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 805px;
 }
 
 .commit-months,
 .commit-weeks {
   display: flex;
-  gap: 4px;
+  justify-content: space-between;
 }
 
 .commit-months {
@@ -1112,10 +1112,6 @@ footer nav {
   .commit-legend {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .commit-calendar {
-    min-width: 805px;
   }
 
   .closing {
