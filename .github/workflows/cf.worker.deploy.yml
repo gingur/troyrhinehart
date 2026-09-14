@@ -11,11 +11,12 @@ permissions:
 
 jobs:
   deploy:
-    uses: gingur/devkit/.github/workflows/cf.worker.deploy.yml@main
+    uses: gingur/devkit/.github/workflows/cf.worker.deploy.yml@bcb233be9ebd2a8b489f23ebca70f8eeefbe2bc1
     with:
       runner: ${{ vars.RUNNER }}
       env: public
+      infisicalDomain: ${{ vars.INFISICAL_DOMAIN }}
       infisicalProject: gingur
       infisicalEnv: public
-      infisicalPath: /troyrhinehart/cloudflare
-      infisicalIdentity: 3556886a-b83e-496d-9072-848a3d408f34 # gh-cf-deploy
+      infisicalPath: /shared/cloudflare/account
+      infisicalIdentity: 3642b1dc-7f5c-47c8-8a46-1ba07151e612 # github-troyrhinehart-public

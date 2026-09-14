@@ -11,13 +11,15 @@ permissions:
 
 jobs:
   preview:
-    uses: gingur/devkit/.github/workflows/cf.worker.preview.yml@main
+    uses: gingur/devkit/.github/workflows/cf.worker.preview.yml@bcb233be9ebd2a8b489f23ebca70f8eeefbe2bc1
     with:
       app: troyrhinehart
       domain: troyrhinehart.com
       cfZone: 237ce07141f91c1ef4e427be200e1936 # troyrhinehart.com
+      runner: ${{ vars.RUNNER }}
+      infisicalDomain: ${{ vars.INFISICAL_DOMAIN }}
       infisicalProject: gingur
-      infisicalEnv: preview
-      infisicalPath: /troyrhinehart/cloudflare
-      infisicalIdentity: 3556886a-b83e-496d-9072-848a3d408f34 # gh-cf-deploy
+      infisicalEnv: public
+      infisicalPath: /shared/cloudflare/account
+      infisicalIdentity: fc16e9f8-0b25-4a05-a8c9-31ccaad8a369 # github-troyrhinehart-preview
     secrets: inherit
